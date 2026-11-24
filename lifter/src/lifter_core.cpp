@@ -176,14 +176,6 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             break;
         }
         uint64_t next_rip = rip + insn.length;
-        if (e.count == 0) {
-            // 首条：push/sumb rsp 或 mov [rsp],reg 视为标准序言（函数自己会建立栈帧）
-            if (mn == "push" || (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-                                 ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
-                mn == "mov" && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
-                e.hasPrologue = true;
-            }
-        }
         for (int oi = 0; oi < insn.operand_count; ++oi) {
             if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
                 e.usesMemory = true;
@@ -194,6 +186,15 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         const char* m = ZydisMnemonicGetString(insn.mnemonic);
         std::string mn = m ? m : "?";
         e.count++;
+        if (e.count == 0) {
+            // 首条是 push / sub rsp / mov [mem],reg 视为标准序言（函数自己建立栈帧）
+            if (mn == "push" ||
+                (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                 ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
+                (mn == "mov" && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY)) {
+                e.hasPrologue = true;
+            }
+        }
 
         if (mn == "nop" || mn == "int3" || mn == "endbr64") {
             // no-op
