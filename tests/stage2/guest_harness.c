@@ -48,7 +48,10 @@ int main(int argc, char** argv) {
 
     typedef unsigned long long (*fn_t)(unsigned long long, unsigned long long, unsigned long long, unsigned long long);
     fn_t fn = (fn_t)(uintptr_t)(va + delta);
+    fprintf(stderr, "stage: mapped base=%llx delta=%llx va=%llx\n",
+            imageBase, delta, va); fflush(stderr);
     unsigned long long rax = fn(args[0], args[1], args[2], args[3]);
+    fprintf(stderr, "stage: returned rax=%llu\n", rax); fflush(stderr);
     (void)top;
 
     printf("{\"rax\": %llu, \"va\": %llu, \"delta\": %llu}\n", rax, va, delta);
