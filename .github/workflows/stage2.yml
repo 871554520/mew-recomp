@@ -88,6 +88,9 @@ jobs:
           set -uo pipefail
           export WINEPREFIX=$HOME/.wine
           export WINEDEBUG=-all
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+          export DISPLAY=:99
+          timeout 120 wineboot -q > /dev/null 2>&1 || true
           read VA SIZE < generated/picked.txt
           export DISPLAY=:99
           Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
@@ -96,7 +99,7 @@ jobs:
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
             echo "== args: $ARGS"
             ./build/native_harness $ARGS > generated/native.out 2> generated/native.err || echo "native failed" 
-            wine build/guest_harness.exe Mewgenics.exe $VA $ARGS > generated/guest.out 2> generated/guest.err || echo "guest failed"
+            timeout 90 wine build/guest_harness.exe Mewgenics.exe $VA $ARGS > generated/guest.out 2> generated/guest.err || echo "guest failed"
             cat generated/native.out
             cat generated/guest.out
             if python3 tools/stage2_compare.py generated/guest.out generated/native.out; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
