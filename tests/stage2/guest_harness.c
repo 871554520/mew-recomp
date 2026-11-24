@@ -29,9 +29,10 @@ int main(int argc, char** argv) {
     unsigned long long imageBase = *(unsigned long long*)(opt + 24);
     size_t secTab = peOff + 24 + optSize;
 
-    unsigned char* mem = (unsigned char*)VirtualAlloc((void*)(uintptr_t)imageBase, 0x2000000,
+    unsigned char* mem = (unsigned char*)VirtualAlloc(NULL, 0x2000000,
                                                       MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-    if (!mem) { fprintf(stderr, "VirtualAlloc at 0x%llx failed\n", imageBase); return 1; }
+    if (!mem) { fprintf(stderr, "VirtualAlloc failed\n"); return 1; }
+    unsigned long long delta = (unsigned long long)(uintptr_t)mem - imageBase;
     for (unsigned short i = 0; i < nsec; ++i) {
         unsigned char* p = img + secTab + i * 40;
         unsigned int vsize = *(unsigned int*)(p + 8);
@@ -46,10 +47,10 @@ int main(int argc, char** argv) {
     unsigned long long top = (unsigned long long)(uintptr_t)(stk + (1 << 20) - 64);
 
     typedef unsigned long long (*fn_t)(unsigned long long, unsigned long long, unsigned long long, unsigned long long);
-    fn_t fn = (fn_t)(uintptr_t)(va);
+    fn_t fn = (fn_t)(uintptr_t)(va + delta);
     unsigned long long rax = fn(args[0], args[1], args[2], args[3]);
     (void)top;
 
-    printf("{\"rax\": %llu, \"va\": %llu}\n", rax, va);
+    printf("{\"rax\": %llu, \"va\": %llu, \"delta\": %llu}\n", rax, va, delta);
     return 0;
 }
