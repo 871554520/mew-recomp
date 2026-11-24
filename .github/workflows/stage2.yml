@@ -50,6 +50,10 @@ jobs:
           tail -60 generated/build.log
           exit $rc
 
+      - name: Dump candidate bytes
+        run: |
+          python3 tools/hexdump_va.py Mewgenics.exe 0x140a7d400 0x140b7a1d1 0x140c88f30 0x140cd1788 0x140cd3b7a | tee generated/hexdump.log
+
       - name: Pick pure function
         run: |
           mkdir -p generated
