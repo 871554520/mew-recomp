@@ -32,6 +32,8 @@ struct LiftResult {
     bool hasPrologue = false;  // 首条是 push reg / sub rsp 之类
     bool usesNonStackMem = false; // 访问非栈内存（全局/绝对地址），阶段 2 需要排除
     bool fallsOffEnd = false;     // 末尾不是 ret/jmp，执行会流出函数
+    uint32_t ptrArgMask = 0;      // 哪些参数寄存器被当作内存基址（bit0=rcx bit1=rdx bit2=r8 bit3=r9）
+    bool badMemBase = false;      // 内存基址来自非参数寄存器（静态不可判）
     std::string lastMnemonic;     // 最后一条解码出的助记符（诊断用）
 
 };
@@ -43,4 +45,5 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size);
 bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size);
 
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
-                      std::vector<std::pair<uint64_t, uint32_t>>& out);
+                      std::vector<std::pair<uint64_t, uint32_t>>& out,
+                      std::vector<uint32_t>* masks = nullptr);
