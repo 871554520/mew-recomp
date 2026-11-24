@@ -14,3 +14,13 @@ if (ZYDIS_INCLUDE_DIR AND ZYDIS_LIBRARY)
 else()
   message(WARNING "Zydis not found; isa_histogram will fail to link")
 endif()
+
+add_library(x64_runtime INTERFACE)
+target_include_directories(x64_runtime INTERFACE runtime/include)
+
+add_executable(mew_lifter lifter/src/main.cpp lifter/src/lifter_core.cpp)
+target_link_libraries(mew_lifter PRIVATE x64_runtime)
+if (ZYDIS_INCLUDE_DIR AND ZYDIS_LIBRARY)
+  target_include_directories(mew_lifter PRIVATE ${ZYDIS_INCLUDE_DIR})
+  target_link_libraries(mew_lifter PRIVATE ${ZYDIS_LIBRARY})
+endif()
