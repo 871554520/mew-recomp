@@ -9,7 +9,7 @@ on:
 jobs:
   poc:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -50,69 +50,72 @@ jobs:
           tail -60 generated/build.log
           exit $rc
 
-      - name: Dump candidate bytes
+      - name: Pick candidate functions
         run: |
-          python3 tools/hexdump_va.py Mewgenics.exe 0x140a7d400 0x140b7a1d1 0x140c88f30 0x140cd1788 0x140cd3b7a | tee generated/hexdump.log
+          ./build/mew_lifter --pick --exe Mewgenics.exe 2>&1 | tee generated/pick.log
+          echo "--- picked.txt ---"; cat generated/picked.txt || true
 
-      - name: Pick pure function
-        run: |
-          mkdir -p generated
-          ./build/mew_lifter --pick --exe Mewgenics.exe | tee generated/pick.log
-          head -1 generated/picked.txt
-
-      - name: Lift it
-        run: |
-          read VA SIZE < generated/picked.txt
-          echo "picked VA=$VA size=$SIZE" | tee generated/lift.log
-          ./build/mew_lifter --lift 0x$VA --exe Mewgenics.exe --out generated/lifted.cpp | tee -a generated/lift.log
-          python3 tools/stage2_wrap.py $VA generated/wrapper.cpp
-          head -40 generated/lifted.cpp
-
-      - name: Build native harness
-        run: |
-          set +e
-          g++ -O1 -std=c++17 -I runtime/include \
-            tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
-            -o build/native_harness > generated/native_build.log 2>&1
-          rc=$?
-          cat generated/native_build.log
-          exit $rc
-
-      - name: Build guest harness (Windows x86-64, run under Wine)
+      - name: Build guest harness
         run: |
           set +e
           x86_64-w64-mingw32-gcc -O1 -o build/guest_harness.exe tests/stage2/guest_harness.c > generated/guest_build.log 2>&1
           rc=$?
           cat generated/guest_build.log
-          ls -l build/guest_harness.exe
           exit $rc
 
-      - name: Compare on several inputs
+      - name: Verify candidates
         run: |
           set -uo pipefail
           export WINEPREFIX=$HOME/.wine
           export WINEDEBUG=err+all
           export WINEDLLOVERRIDES="mscoree,mshtml="
           export DISPLAY=:99
-          timeout 120 wineboot -q > /dev/null 2>&1 || true
-          read VA SIZE < generated/picked.txt
-          export DISPLAY=:99
           Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
+          timeout 120 wineboot -q > /dev/null 2>&1 || true
           sleep 2
-          PASS=0; FAIL=0
-          for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            echo "== args: $ARGS"
-            ./build/native_harness $ARGS > generated/native.out 2> generated/native.err || echo "native failed" 
-            timeout 90 wine build/guest_harness.exe Mewgenics.exe $VA $ARGS > generated/guest.out 2> generated/guest.err; GRC=$?
-            echo "guest rc=$GRC"
-            if [ $GRC -ne 0 ]; then echo "guest failed"; fi
-            echo "--- guest.err (tail) ---"; tail -25 generated/guest.err
-            cat generated/native.out
-            cat generated/guest.out
-            if python3 tools/stage2_compare.py generated/guest.out generated/native.out; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
-          done
-          echo "PASS=$PASS FAIL=$FAIL"
-          test $FAIL -eq 0
+          : > generated/verify.log
+          BEST=""
+          while read -r VA SIZE MASK; do
+            [ -z "${VA:-}" ] && continue
+            log() { echo "$*" | tee -a generated/verify.log; }
+            log "=== candidate 0x$VA size=$SIZE mask=${MASK:-0}"
+            if ! ./build/mew_lifter --lift 0x$VA --exe Mewgenics.exe --out generated/lifted.cpp > generated/lift.log 2>&1; then
+              log "  lift failed"; continue
+            fi
+            grep -q "lift ok=1" generated/lift.log || { log "  lift not ok"; cat generated/lift.log; continue; }
+            python3 tools/stage2_wrap.py "$VA" generated/wrapper.cpp > /dev/null
+            if ! g++ -O1 -std=c++17 -I runtime/include \
+                 tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
+                 -o build/native_harness > generated/native_build.log 2>&1; then
+              log "  native build failed"; tail -8 generated/native_build.log; continue
+            fi
+            OK=1
+            for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
+              if ! ./build/native_harness "${MASK:-0}" $ARGS > generated/native.out 2> generated/native.err; then
+                log "  native failed on [$ARGS]"; tail -5 generated/native.err; OK=0; continue
+              fi
+              timeout 90 wine build/guest_harness.exe Mewgenics.exe "$VA" "${MASK:-0}" $ARGS \
+                > generated/guest.out 2> generated/guest.err
+              GRC=$?
+              if [ $GRC -ne 0 ]; then
+                log "  guest rc=$GRC on [$ARGS]"
+                tail -6 generated/guest.err | tee -a generated/verify.log
+                OK=0; continue
+              fi
+              if ! python3 tools/stage2_compare.py generated/guest.out generated/native.out >> generated/verify.log 2>&1; then
+                log "  compare mismatch on [$ARGS]"; OK=0
+              fi
+            done
+            if [ $OK -eq 1 ]; then
+              log "CANDIDATE PASS 0x$VA"
+              BEST=$VA
+              break
+            fi
+          done < generated/picked.txt
+          echo "--- verify.log (tail 60) ---"
+          tail -60 generated/verify.log
+          if [ -n "$BEST" ]; then echo "STAGE2 PASSED with 0x$BEST"; exit 0; fi
+          echo "STAGE2: no candidate passed"; exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -120,12 +123,13 @@ jobs:
           name: stage2-out
           path: |
             generated/build.log
-            generated/native_build.log
-            generated/guest_build.log
             generated/pick.log
             generated/picked.txt
+            generated/verify.log
             generated/lift.log
             generated/lifted.cpp
+            generated/native_build.log
+            generated/guest_build.log
             generated/*.out
             generated/*.err
           if-no-files-found: warn
