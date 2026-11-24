@@ -31,16 +31,20 @@ int main(int argc, char** argv) {
 
     if (mode == "pick") {
         std::vector<std::pair<uint64_t, uint32_t>> cands;
-        pickPureFunction(pe, 32, 400, cands);
+        std::vector<uint32_t> masks;
+        pickPureFunction(pe, 32, 400, cands, &masks);
         std::printf("pure candidates: %zu\n", cands.size());
-        for (auto& c : cands) {
-            LiftResult r = liftFunction(pe, c.first, c.second);
-            std::printf("  va=0x%llx size=%u insns=%d\n", (unsigned long long)c.first, c.second, r.insnCount);
+        for (size_t i = 0; i < cands.size(); ++i) {
+            LiftResult r = liftFunction(pe, cands[i].first, cands[i].second);
+            std::printf("  va=0x%llx size=%u insns=%d ptr_mask=0x%x badbase=%d\n",
+                        (unsigned long long)cands[i].first, cands[i].second, r.insnCount,
+                        masks[i], (int)r.badMemBase);
         }
         if (!cands.empty()) {
             std::ofstream o("generated/picked.txt");
-            for (auto& c : cands)
-                o << std::hex << c.first << " " << std::dec << c.second << "\n";
+            for (size_t i = 0; i < cands.size(); ++i)
+                o << std::hex << cands[i].first << " " << std::dec << cands[i].second << " "
+                  << std::hex << masks[i] << "\n";
         }
         return cands.empty() ? 1 : 0;
     }
