@@ -66,15 +66,22 @@ jobs:
 
       - name: Build native harness
         run: |
+          set +e
           g++ -O1 -std=c++17 -I runtime/include \
             tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
-            -o build/native_harness
-          echo built
+            -o build/native_harness > generated/native_build.log 2>&1
+          rc=$?
+          cat generated/native_build.log
+          exit $rc
 
       - name: Build guest harness (Windows x86-64, run under Wine)
         run: |
-          x86_64-w64-mingw32-gcc -O1 -o build/guest_harness.exe tests/stage2/guest_harness.c
+          set +e
+          x86_64-w64-mingw32-gcc -O1 -o build/guest_harness.exe tests/stage2/guest_harness.c > generated/guest_build.log 2>&1
+          rc=$?
+          cat generated/guest_build.log
           ls -l build/guest_harness.exe
+          exit $rc
 
       - name: Compare on several inputs
         run: |
@@ -103,6 +110,8 @@ jobs:
           name: stage2-out
           path: |
             generated/build.log
+            generated/native_build.log
+            generated/guest_build.log
             generated/pick.log
             generated/picked.txt
             generated/lift.log
