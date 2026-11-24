@@ -418,6 +418,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         {
             const char* m2 = ZydisMnemonicGetString(insn.mnemonic);
             std::string last = m2 ? m2 : "?";
+            res.lastMnemonic = last;
             terminated = (last == "ret" || last == "jmp");
         }
         if (!terminated) e.fallsOffEnd = true;
@@ -454,7 +455,11 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (r.usesNonStackMem) continue;
         ++nNoAbs;
         if (r.usesMemory && !r.hasPrologue) continue;
-        if (r.fallsOffEnd) continue;
+        if (r.fallsOffEnd) {
+            fprintf(stderr, "[fell-off] va=0x%llx size=%u insns=%d last=%s\n",
+                    (unsigned long long)fn.first, fn.second, r.insnCount, r.lastMnemonic.c_str());
+            continue;
+        }
         ++nTerm;
         if (out.size() < 8) out.push_back(fn);
     }
