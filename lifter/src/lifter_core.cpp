@@ -406,6 +406,16 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         off += insn.length;
     }
 
+    // 末尾必须收尾：ret / jmp / 已 unsupported；否则执行会流到函数外（真机进入下一函数字节或 int3）
+    if (e.unsupported.empty()) {
+        bool terminated = false;
+        {
+            const char* m2 = ZydisMnemonicGetString(insn.mnemonic);
+            std::string last = m2 ? m2 : "?";
+            terminated = (last == "ret" || last == "jmp");
+        }
+        if (!terminated) e.unsupported.push_back("fallthrough-end");
+    }
     if (e.unsupported.empty()) e.out << "}\n";
     res.ok = e.unsupported.empty() && e.count > 0;
     res.code = e.out.str();
