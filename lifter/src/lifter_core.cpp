@@ -91,7 +91,8 @@ int regIdOf(ZydisRegister r) {
 std::string memExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& op,
                     uint64_t next_rip, Emit& e) {
     if (op.mem.base == ZYDIS_REGISTER_RIP) {
-        uint64_t abs = next_rip + (int64_t)op.mem.disp;
+        int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value.s : 0;
+        uint64_t abs = next_rip + d;
         e.usesRipData = true;
         return std::to_string(abs) + "ULL /* rip-data */";
     }
@@ -109,10 +110,13 @@ std::string memExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const 
         s << " + read_reg(ctx," << i << ",8)*" << (int)op.mem.scale;
         any = true;
     }
-    if (op.mem.disp || !any) {
-        if (any) s << " + ";
-        s << "(" << (int64_t)op.mem.disp << "LL)";
-        any = true;
+    {
+        int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value.s : 0;
+        if (d || !any) {
+            if (any) s << " + ";
+            s << "(" << d << "LL)";
+            any = true;
+        }
     }
     (void)in;
     return s.str();
