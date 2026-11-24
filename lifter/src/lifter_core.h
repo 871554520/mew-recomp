@@ -42,6 +42,8 @@ struct LiftResult {
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size);
 
 // 找「纯算法」候选函数：无 call、无 RIP 相对数据引用、全部指令都支持
+bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size);
+
 bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size);
 
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
