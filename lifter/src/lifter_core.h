@@ -29,6 +29,7 @@ struct LiftResult {
     bool hasCall = false;
     bool usesMemory = false;   // 任何内存操作数
     bool writesMemory = false; // 写内存
+    bool hasPrologue = false;  // 首条是 push reg / sub rsp 之类
 
 };
 
