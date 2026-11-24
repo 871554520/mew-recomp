@@ -96,3 +96,33 @@ static inline uint64_t read_reg(X64Ctx* c, int regid, int width) {
     }
     return v;
 }
+
+// ---- XMM 辅助 ----
+static inline void xmm_write_bytes(X64Ctx* c, int idx, const void* src, int bytes) {
+    std::memcpy(&c->xmm[idx], src, (size_t)bytes);
+}
+static inline uint64_t xmm_u64(X64Ctx* c, int idx) {
+    uint64_t v;
+    std::memcpy(&v, &c->xmm[idx], 8);
+    return v;
+}
+static inline void xmm_set_u64(X64Ctx* c, int idx, uint64_t v) {
+    std::memcpy(&c->xmm[idx], &v, 8);
+}
+static inline float xmm_f32(X64Ctx* c, int idx) { return c->xmm[idx].f32[0]; }
+static inline void xmm_set_f32(X64Ctx* c, int idx, float v) { c->xmm[idx].f32[0] = v; }
+static inline double xmm_f64(X64Ctx* c, int idx) { return c->xmm[idx].f64[0]; }
+static inline void xmm_set_f64(X64Ctx* c, int idx, double v) { c->xmm[idx].f64[0] = v; }
+
+// ---- 位运算辅助 ----
+template <typename T> static inline T rotl(T v, T n) {
+    int s = (int)(n & (sizeof(T) * 8 - 1));
+    return (T)((v << s) | (v >> ((int)sizeof(T) * 8 - s)));
+}
+template <typename T> static inline T rotr(T v, T n) {
+    int s = (int)(n & (sizeof(T) * 8 - 1));
+    return (T)((v >> s) | (v << ((int)sizeof(T) * 8 - s)));
+}
+static inline uint64_t bswap64(uint64_t v) {
+    return __builtin_bswap64(v);
+}
