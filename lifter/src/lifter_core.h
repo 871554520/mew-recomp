@@ -27,6 +27,9 @@ struct LiftResult {
     int insnCount = 0;
     bool usesRipData = false;
     bool hasCall = false;
+    bool usesMemory = false;   // 任何内存操作数
+    bool writesMemory = false; // 写内存
+
 };
 
 // 把某个函数转译成 C++（方案书阶段 3 的单函数形态）
