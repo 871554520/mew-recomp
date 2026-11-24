@@ -565,7 +565,9 @@ bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size) {
 
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-    const uint16_t kInit = (uint16_t)((1u << 1) | (1u << 2) | (1u << 8) | (1u << 9) | (1u << 4));
+    // 位=1 表示“该寄存器当前值未知（来自调用方或未初始化）”
+    uint16_t kInit = (uint16_t)(0xFFFFu & ~((1u << 1) | (1u << 2) | (1u << 8) | (1u << 9) | (1u << 4)));
+    kInit = (uint16_t)kInit;
 
     // 工作项：(地址, 进入时的已初始化掩码)
     std::vector<std::pair<uint64_t, uint16_t>> work{{va, kInit}};
@@ -577,10 +579,11 @@ bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size) {
         bool merged = false;
         for (auto& sv : seen) {
             if (sv.first == cur) {
-                uint16_t both = (uint16_t)(sv.second & init);
-                if (both == sv.second) { merged = true; break; }
-                sv.second = both;
-                init = both;
+                // 未知掩码：任一路径未知即视为未知（并集，保守）
+                uint16_t uni = (uint16_t)(sv.second | init);
+                if (uni == sv.second) { merged = true; break; }
+                sv.second = uni;
+                init = uni;
                 break;
             }
         }
@@ -607,13 +610,30 @@ bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size) {
                 insn.operand_count >= 2 &&
                 ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
                 ops[0].reg.value == ops[1].reg.value;
+            // ---- 污点检查 ----
+            bool srcUnknown = false;
             for (uint16_t oi = 0; oi < insn.operand_count; ++oi) {
+                if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                    int gb = gprIdxOf(ops[oi].mem.base);
+                    int gx = gprIdxOf(ops[oi].mem.index);
+                    if (gb >= 0 && (init & (1u << gb))) return false;   // 未知值当地址 -> 会崩
+                    if (gx >= 0 && (init & (1u << gx))) return false;
+                    continue;
+                }
                 if (ops[oi].type != ZYDIS_OPERAND_TYPE_REGISTER) continue;
                 int gi = gprIdxOf(ops[oi].reg.value);
                 if (gi < 0) continue;
-                bool isWrite = (oi == 0) && (wo0 || xorSelf);
-                if (!isWrite && !(init & (1u << gi))) return false;  // 读到未初始化寄存器
-                if (isWrite) init |= (uint16_t)(1u << gi);
+                bool reads = (oi >= 1) || !(wo0 || xorSelf);
+                if (reads && (init & (1u << gi))) srcUnknown = true;
+            }
+            if (insn.operand_count > 0 && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                int gd = gprIdxOf(ops[0].reg.value);
+                if (gd >= 0) {
+                    bool destReads = !(wo0 || xorSelf);
+                    bool unk = srcUnknown || (destReads && (init & (1u << gd)));
+                    if (xorSelf) unk = false;
+                    if (unk) init |= (uint16_t)(1u << gd); else init &= (uint16_t)~(1u << gd);
+                }
             }
             if (mn == "ret") break;
             if (mn == "jmp") {
