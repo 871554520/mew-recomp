@@ -114,6 +114,7 @@ struct Emit {
     bool writesMemory = false;
     bool hasPrologue = false;
     bool usesNonStackMem = false;
+    bool fallsOffEnd = false;
 };
 
 std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
@@ -414,7 +415,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             std::string last = m2 ? m2 : "?";
             terminated = (last == "ret" || last == "jmp");
         }
-        if (!terminated) e.unsupported.push_back("fallthrough-end");
+        if (!terminated) e.fallsOffEnd = true;
     }
     if (e.unsupported.empty()) e.out << "}\n";
     res.ok = e.unsupported.empty() && e.count > 0;
@@ -427,20 +428,32 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.writesMemory = e.writesMemory;
     res.hasPrologue = e.hasPrologue;
     res.usesNonStackMem = e.usesNonStackMem;
+    res.fallsOffEnd = e.fallsOffEnd;
     return res;
 }
 
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
                       std::vector<std::pair<uint64_t, uint32_t>>& out) {
     out.clear();
+    size_t nSize = 0, nLift = 0, nNoCall = 0, nNoRip = 0, nNoAbs = 0, nTerm = 0;
     for (const auto& fn : pe.functions) {
         if (fn.second < minSize || fn.second > maxSize) continue;
+        ++nSize;
         LiftResult r = liftFunction(pe, fn.first, fn.second);
-        if (!r.ok || r.usesRipData || r.hasCall) continue;
+        if (!r.ok) continue;
+        ++nLift;
+        if (r.hasCall) continue;
+        ++nNoCall;
+        if (r.usesRipData) continue;
+        ++nNoRip;
+        if (r.usesNonStackMem) continue;
+        ++nNoAbs;
         if (r.usesMemory && !r.hasPrologue) continue;
-        if (r.usesNonStackMem) continue;   // 只接受纯寄存器或纯栈访问
-        out.push_back(fn);
-        if (out.size() >= 8) break;
+        if (r.fallsOffEnd) continue;
+        ++nTerm;
+        if (out.size() < 8) out.push_back(fn);
     }
+    fprintf(stderr, "[funnel] size=%zu lift_ok=%zu no_call=%zu no_ripdata=%zu no_absmem=%zu terminated=%zu\n",
+            nSize, nLift, nNoCall, nNoRip, nNoAbs, nTerm);
     return !out.empty();
 }
