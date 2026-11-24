@@ -238,12 +238,14 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         } else if (mn == "jmp") {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t < va || t >= va + size) { e.unsupported.push_back("jump-out-of-func"); break; }
                 e.out << "  goto L_" << std::hex << t << std::dec << ";\n";
             } else {
                 e.unsupported.push_back("jmp-indirect");
             }
         } else if (mn.rfind("j", 0) == 0) {
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+            if (t < va || t >= va + size) { e.unsupported.push_back("jump-out-of-func"); break; }
             std::string cond;
             if (mn == "jz" || mn == "je") cond = "ctx->zf";
             else if (mn == "jnz" || mn == "jne") cond = "!ctx->zf";
