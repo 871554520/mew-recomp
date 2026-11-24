@@ -113,6 +113,7 @@ struct Emit {
     bool usesMemory = false;
     bool writesMemory = false;
     bool hasPrologue = false;
+    bool usesNonStackMem = false;
 };
 
 std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
@@ -120,6 +121,14 @@ std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t 
         int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
         e.usesRipData = true;
         return std::to_string((unsigned long long)(next_rip + d)) + "ULL /*rip*/";
+    }
+    if (op.mem.base == ZYDIS_REGISTER_NONE && op.mem.index == ZYDIS_REGISTER_NONE) {
+        // 绝对地址访问（镜像内全局/字符串）——阶段 2 排除
+        e.usesNonStackMem = true;
+    }
+    if (op.mem.base != ZYDIS_REGISTER_NONE &&
+        op.mem.base != ZYDIS_REGISTER_RSP && op.mem.base != ZYDIS_REGISTER_RBP) {
+        e.usesNonStackMem = true;
     }
     std::ostringstream s;
     bool any = false;
@@ -407,6 +416,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.usesMemory = e.usesMemory;
     res.writesMemory = e.writesMemory;
     res.hasPrologue = e.hasPrologue;
+    res.usesNonStackMem = e.usesNonStackMem;
     return res;
 }
 
@@ -418,6 +428,7 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         LiftResult r = liftFunction(pe, fn.first, fn.second);
         if (!r.ok || r.usesRipData || r.hasCall) continue;
         if (r.usesMemory && !r.hasPrologue) continue;
+        if (r.usesNonStackMem) continue;   // 只接受纯寄存器或纯栈访问
         out.push_back(fn);
         if (out.size() >= 8) break;
     }
