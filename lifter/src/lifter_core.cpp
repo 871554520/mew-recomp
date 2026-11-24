@@ -64,6 +64,8 @@ struct Emit {
     int count = 0;
     bool usesRipData = false;
     bool hasCall = false;
+    bool usesMemory = false;
+    bool writesMemory = false;
 };
 
 int regIdOf(ZydisRegister r) {
@@ -173,6 +175,12 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             break;
         }
         uint64_t next_rip = rip + insn.length;
+        for (int oi = 0; oi < insn.operand_count; ++oi) {
+            if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                e.usesMemory = true;
+                if (oi == 0) e.writesMemory = true;
+            }
+        }
         e.out << "L_" << std::hex << rip << std::dec << ": ;\n";
         const char* m = ZydisMnemonicGetString(insn.mnemonic);
         std::string mn = m ? m : "?";
@@ -280,6 +288,8 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.insnCount = e.count;
     res.usesRipData = e.usesRipData;
     res.hasCall = e.hasCall;
+    res.usesMemory = e.usesMemory;
+    res.writesMemory = e.writesMemory;
     return res;
 }
 
@@ -290,6 +300,7 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (fn.second < minSize || fn.second > maxSize) continue;
         LiftResult r = liftFunction(pe, fn.first, fn.second);
         if (!r.ok || r.usesRipData || r.hasCall) continue;
+        if (r.usesMemory) continue;   // 阶段 2 只验「纯寄存器」函数
         out.push_back(fn);
         if (out.size() >= 8) break;
     }
