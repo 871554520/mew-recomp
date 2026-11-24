@@ -438,6 +438,67 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     return res;
 }
 
+
+// 可达性判定：从入口走遍所有路径，任一路径流出 [va, va+size) 就返回 false
+bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size) {
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return false;
+    const uint8_t* base = pe.data.data() + sec->raw;
+    const uint32_t rva0 = (uint32_t)(va - pe.image_base - sec->va);
+    // 剥掉尾部填充
+    uint32_t eff = size;
+    while (eff > 0) {
+        uint8_t b = 0;
+        uint32_t o = va + eff - 1 - (uint32_t)pe.image_base - sec->va;
+        if (o < sec->rawsize) b = base[o]; else break;
+        if (b == 0xCC || b == 0x90) --eff; else break;
+    }
+    if (eff == 0) return false;
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    std::vector<uint64_t> work{va};
+    std::vector<uint64_t> seen;
+    while (!work.empty()) {
+        uint64_t cur = work.back(); work.pop_back();
+        for (uint64_t v : seen) if (v == cur) goto next_item;
+        seen.push_back(cur);
+        for (;;) {
+            if (cur < va || cur >= va + eff) return false;
+            uint32_t off = (uint32_t)(cur - va) + rva0;
+            if (off >= sec->rawsize || (uint32_t)(cur - va) >= eff) return false;
+            ZydisDecodedInstruction insn;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, base + off,
+                    sec->rawsize - off < eff - (uint32_t)(cur - va) ? sec->rawsize - off : eff - (uint32_t)(cur - va),
+                    &insn, ops))) return false;
+            uint64_t next_rip = cur + insn.length;
+            const char* m = ZydisMnemonicGetString(insn.mnemonic);
+            std::string mn = m ? m : "?";
+            if (mn == "ret") break;
+            if (mn == "jmp") {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) return false;
+                if (t < va || t >= va + eff) return false;
+                work.push_back(t);
+                break;
+            }
+            bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
+            if (isJcc) {
+                if (ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) return false;
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t < va || t >= va + eff) return false;
+                work.push_back(t);
+            } else if (mn == "call") {
+                return false;
+            }
+            cur = next_rip;
+            if (cur >= va + eff) return false;  // 非收尾指令淌出函数
+        }
+    next_item:;
+    }
+    return true;
+}
+
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
                       std::vector<std::pair<uint64_t, uint32_t>>& out) {
     out.clear();
@@ -455,7 +516,7 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (r.usesNonStackMem) continue;
         ++nNoAbs;
         if (r.usesMemory && !r.hasPrologue) continue;
-        if (r.fallsOffEnd) {
+        if (!controlFlowClosed(pe, fn.first, fn.second)) {
             fprintf(stderr, "[fell-off] va=0x%llx size=%u insns=%d last=%s\n",
                     (unsigned long long)fn.first, fn.second, r.insnCount, r.lastMnemonic.c_str());
             continue;
