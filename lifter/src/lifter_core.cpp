@@ -517,6 +517,126 @@ bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size) {
     return true;
 }
 
+
+// 寄存器输入分析：函数只能读取“我们提供的”寄存器（rcx/rdx/r8/r9 + rsp），
+// 读取未初始化寄存器（rbx/rsi/rdi/r12-r15/rax/r10/r11/rbp）说明它需要调用方上下文，阶段 2 不可独立调用。
+static int gprIdxOf(ZydisRegister r) {
+    switch (r) {
+        case ZYDIS_REGISTER_RAX: return 0;
+        case ZYDIS_REGISTER_RCX: return 1;
+        case ZYDIS_REGISTER_RDX: return 2;
+        case ZYDIS_REGISTER_RBX: return 3;
+        case ZYDIS_REGISTER_RSP: return 4;
+        case ZYDIS_REGISTER_RBP: return 5;
+        case ZYDIS_REGISTER_RSI: return 6;
+        case ZYDIS_REGISTER_RDI: return 7;
+        case ZYDIS_REGISTER_R8:  return 8;
+        case ZYDIS_REGISTER_R9:  return 9;
+        case ZYDIS_REGISTER_R10: return 10;
+        case ZYDIS_REGISTER_R11: return 11;
+        case ZYDIS_REGISTER_R12: return 12;
+        case ZYDIS_REGISTER_R13: return 13;
+        case ZYDIS_REGISTER_R14: return 14;
+        case ZYDIS_REGISTER_R15: return 15;
+        default: return -1;
+    }
+}
+
+static bool writesOnlyOperand0(const std::string& mn) {
+    static const char* k[] = {"mov", "movzx", "movsx", "movsxd", "movd", "movq", "lea", "pop",
+                              "setcc", "cbw", "cwde", "cdqe", "cdq", "cqo", "cwd", "bswap"};
+    for (const char* x : k) if (mn == x) return true;
+    return false;
+}
+
+bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size) {
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return false;
+    const uint8_t* base = pe.data.data() + sec->raw;
+    const uint32_t rva0 = (uint32_t)(va - pe.image_base - sec->va);
+    uint32_t eff = size;
+    while (eff > 0) {
+        uint32_t o = va + eff - 1 - (uint32_t)pe.image_base - sec->va;
+        if (o >= sec->rawsize) break;
+        uint8_t b = base[o];
+        if (b == 0xCC || b == 0x90) --eff; else break;
+    }
+    if (eff == 0) return false;
+
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    const uint16_t kInit = (uint16_t)((1u << 1) | (1u << 2) | (1u << 8) | (1u << 9) | (1u << 4));
+
+    // 工作项：(地址, 进入时的已初始化掩码)
+    std::vector<std::pair<uint64_t, uint16_t>> work{{va, kInit}};
+    std::vector<std::pair<uint64_t, uint16_t>> seen;
+    while (!work.empty()) {
+        std::pair<uint64_t, uint16_t> item = work.back(); work.pop_back();
+        uint64_t cur = item.first;
+        uint16_t init = item.second;
+        bool merged = false;
+        for (auto& sv : seen) {
+            if (sv.first == cur) {
+                uint16_t both = (uint16_t)(sv.second & init);
+                if (both == sv.second) { merged = true; break; }
+                sv.second = both;
+                init = both;
+                break;
+            }
+        }
+        if (merged) continue;
+        bool isNew = true;
+        for (auto& sv : seen) if (sv.first == cur) { isNew = false; break; }
+        if (isNew) seen.push_back({cur, init});
+
+        for (;;) {
+            if (cur < va || cur >= va + eff) return false;
+            uint32_t rel = (uint32_t)(cur - va);
+            uint32_t off = rel + rva0;
+            if (off >= sec->rawsize) return false;
+            ZydisDecodedInstruction insn;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            uint32_t avail = eff - rel;
+            if (sec->rawsize - off < avail) avail = sec->rawsize - off;
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, base + off, avail, &insn, ops))) return false;
+            uint64_t next_rip = cur + insn.length;
+            const char* m = ZydisMnemonicGetString(insn.mnemonic);
+            std::string mn = m ? m : "?";
+            const bool wo0 = writesOnlyOperand0(mn);
+            const bool xorSelf = (mn == "xor" || mn == "sub") &&
+                insn.operand_count >= 2 &&
+                ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                ops[0].reg.value == ops[1].reg.value;
+            for (uint16_t oi = 0; oi < insn.operand_count; ++oi) {
+                if (ops[oi].type != ZYDIS_OPERAND_TYPE_REGISTER) continue;
+                int gi = gprIdxOf(ops[oi].reg.value);
+                if (gi < 0) continue;
+                bool isWrite = (oi == 0) && (wo0 || xorSelf);
+                if (!isWrite && !(init & (1u << gi))) return false;  // 读到未初始化寄存器
+                if (isWrite) init |= (uint16_t)(1u << gi);
+            }
+            if (mn == "ret") break;
+            if (mn == "jmp") {
+                if (ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) return false;
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t < va || t >= va + eff) return false;
+                work.push_back({t, init});
+                break;
+            }
+            bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
+            if (isJcc) {
+                if (ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) return false;
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t < va || t >= va + eff) return false;
+                work.push_back({t, init});
+            }
+            cur = next_rip;
+            if (cur >= va + eff) return false;
+        }
+    }
+    return true;
+}
+
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
                       std::vector<std::pair<uint64_t, uint32_t>>& out,
                       std::vector<uint32_t>* masks) {
@@ -538,6 +658,7 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (r.usesMemory && r.ptrArgMask == 0 && !r.hasPrologue) continue;
         ++nFramed;
         if (!controlFlowClosed(pe, fn.first, fn.second)) continue;
+        if (!registerInputsOk(pe, fn.first, fn.second)) continue;
         ++nClosed;
         out.push_back(fn);
         if (masks) masks->push_back(r.ptrArgMask);
