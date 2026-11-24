@@ -5,9 +5,10 @@
 #include <cstring>
 #include <sstream>
 
+// ---------------- PE ----------------
 const Section* PeImage::byRva(uint32_t rva) const {
     for (const auto& s : sections)
-        if (rva >= s.va && rva < s.va + s.vsize) return &s;
+        if (rva >= s.va && rva < s.va + std::max(s.vsize, s.rawsize)) return &s;
     return nullptr;
 }
 
@@ -43,7 +44,6 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
         s.exec = (*(uint32_t*)(p + 36) & 0x20000000) != 0;
         pe.sections.push_back(s);
     }
-    // .pdata 函数表
     for (const auto& s : pe.sections) {
         if (s.name != ".pdata") continue;
         const uint8_t* raw = pe.data.data() + s.raw;
@@ -56,20 +56,19 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
     return true;
 }
 
+// ---------------- helpers ----------------
 namespace {
 
-struct Emit {
-    std::ostringstream out;
-    std::vector<std::string> unsupported;
-    int count = 0;
-    bool usesRipData = false;
-    bool hasCall = false;
-    bool usesMemory = false;
-    bool writesMemory = false;
-    bool hasPrologue = false;
-};
+const char* ctype(int bytes) {
+    switch (bytes) {
+        case 1: return "uint8_t";
+        case 2: return "uint16_t";
+        case 4: return "uint32_t";
+        default: return "uint64_t";
+    }
+}
 
-int regIdOf(ZydisRegister r) {
+int gprId(ZydisRegister r) {
     switch (r) {
         case ZYDIS_REGISTER_RAX: case ZYDIS_REGISTER_EAX: case ZYDIS_REGISTER_AX: case ZYDIS_REGISTER_AL: case ZYDIS_REGISTER_AH: return 0;
         case ZYDIS_REGISTER_RCX: case ZYDIS_REGISTER_ECX: case ZYDIS_REGISTER_CX: case ZYDIS_REGISTER_CL: case ZYDIS_REGISTER_CH: return 1;
@@ -91,66 +90,134 @@ int regIdOf(ZydisRegister r) {
     }
 }
 
-std::string memExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& op,
-                    uint64_t next_rip, Emit& e) {
+int xmmId(ZydisRegister r) {
+    switch (r) {
+        case ZYDIS_REGISTER_XMM0: return 0; case ZYDIS_REGISTER_XMM1: return 1;
+        case ZYDIS_REGISTER_XMM2: return 2; case ZYDIS_REGISTER_XMM3: return 3;
+        case ZYDIS_REGISTER_XMM4: return 4; case ZYDIS_REGISTER_XMM5: return 5;
+        case ZYDIS_REGISTER_XMM6: return 6; case ZYDIS_REGISTER_XMM7: return 7;
+        case ZYDIS_REGISTER_XMM8: return 8; case ZYDIS_REGISTER_XMM9: return 9;
+        case ZYDIS_REGISTER_XMM10: return 10; case ZYDIS_REGISTER_XMM11: return 11;
+        case ZYDIS_REGISTER_XMM12: return 12; case ZYDIS_REGISTER_XMM13: return 13;
+        case ZYDIS_REGISTER_XMM14: return 14; case ZYDIS_REGISTER_XMM15: return 15;
+        default: return -1;
+    }
+}
+
+struct Emit {
+    std::ostringstream out;
+    std::vector<std::string> unsupported;
+    int count = 0;
+    bool usesRipData = false;
+    bool hasCall = false;
+    bool usesMemory = false;
+    bool writesMemory = false;
+    bool hasPrologue = false;
+};
+
+std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
     if (op.mem.base == ZYDIS_REGISTER_RIP) {
         int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
-        uint64_t abs = next_rip + d;
         e.usesRipData = true;
-        return std::to_string(abs) + "ULL /* rip-data */";
+        return std::to_string((unsigned long long)(next_rip + d)) + "ULL /*rip*/";
     }
     std::ostringstream s;
     bool any = false;
     if (op.mem.base != ZYDIS_REGISTER_NONE) {
-        int b = regIdOf(op.mem.base);
-        if (b < 0) return "/*bad base*/0";
+        int b = gprId(op.mem.base);
+        if (b < 0) return "0";
         s << "read_reg(ctx," << b << ",8)";
         any = true;
     }
     if (op.mem.index != ZYDIS_REGISTER_NONE) {
-        int i = regIdOf(op.mem.index);
-        if (i < 0) return "/*bad index*/0";
-        s << " + read_reg(ctx," << i << ",8)*" << (int)op.mem.scale;
+        int i = gprId(op.mem.index);
+        if (i < 0) return "0";
+        if (any) s << " + ";
+        s << "read_reg(ctx," << i << ",8)*" << (int)op.mem.scale;
         any = true;
     }
-    {
-        int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
-        if (d || !any) {
-            if (any) s << " + ";
-            s << "(" << d << "LL)";
-            any = true;
-        }
+    int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
+    if (d || !any) {
+        if (any) s << " + ";
+        s << "(" << d << "LL)";
+        any = true;
     }
-    (void)in;
+    (void)pe;
     return s.str();
 }
 
-std::string srcExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& op,
+std::string valExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& op,
                     uint64_t next_rip, Emit& e) {
     switch (op.type) {
         case ZYDIS_OPERAND_TYPE_REGISTER: {
-            int id = regIdOf(op.reg.value);
-            if (id < 0) { e.unsupported.push_back("reg"); return "0"; }
-            return "read_reg(ctx," + std::to_string(id) + "," + std::to_string(op.size / 8) + ")";
+            int id = gprId(op.reg.value);
+            if (id >= 0) return "read_reg(ctx," + std::to_string(id) + "," + std::to_string(op.size / 8) + ")";
+            int xi = xmmId(op.reg.value);
+            if (xi >= 0) return "xmm_u64(ctx," + std::to_string(xi) + ")";
+            return "0";
         }
         case ZYDIS_OPERAND_TYPE_IMMEDIATE:
-            return std::to_string((uint64_t)op.imm.value.u) + "ULL";
+            return std::to_string((unsigned long long)op.imm.value.u) + "ULL";
         case ZYDIS_OPERAND_TYPE_MEMORY:
-            return "mem_read<uint64_t>(ctx," + memExpr(pe, in, op, next_rip, e) + ")";
+            return std::string("mem_read<") + ctype(op.size / 8) + ">(ctx," + addrExpr(pe, op, next_rip, e) + ")";
         default:
             return "0";
     }
 }
 
-void emitStore(const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst, const std::string& val, Emit& e) {
-    if (dst.type == ZYDIS_OPERAND_TYPE_REGISTER) {
-        int id = regIdOf(dst.reg.value);
-        int w = dst.size / 8;
-        e.out << "  write_reg(ctx," << id << "," << val << "," << w << ");\n";
-    } else if (dst.type == ZYDIS_OPERAND_TYPE_MEMORY) {
-        e.out << "  mem_write<uint64_t>(ctx," << /* addr computed by caller */ "0" << "," << val << ");\n";
-    }
+void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst,
+               const std::string& val, uint64_t next_rip, int bytes, Emit& e) {
     (void)in;
+    if (dst.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        int id = gprId(dst.reg.value);
+        if (id >= 0) { e.out << "  write_reg(ctx," << id << "," << val << "," << bytes << ");\n"; return; }
+        int xi = xmmId(dst.reg.value);
+        if (xi >= 0) { e.out << "  xmm_set_u64(ctx," << xi << "," << val << ");\n"; return; }
+        e.unsupported.push_back("reg-store");
+        return;
+    }
+    if (dst.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+        e.writesMemory = true;
+        e.out << "  mem_write<" << ctype(bytes) << ">(ctx," << addrExpr(pe, dst, next_rip, e) << "," << val << ");\n";
+        return;
+    }
+    e.unsupported.push_back("store");
+}
+
+std::string ccExpr(const std::string& mn) {
+    if (mn == "jz" || mn == "je") return "ctx->zf";
+    if (mn == "jnz" || mn == "jne") return "!ctx->zf";
+    if (mn == "js") return "ctx->sf";
+    if (mn == "jns") return "!ctx->sf";
+    if (mn == "jc" || mn == "jb") return "ctx->cf";
+    if (mn == "jnc" || mn == "jae") return "!ctx->cf";
+    if (mn == "jbe") return "(ctx->cf || ctx->zf)";
+    if (mn == "ja") return "(!ctx->cf && !ctx->zf)";
+    if (mn == "jl") return "(ctx->sf != ctx->of)";
+    if (mn == "jge") return "(ctx->sf == ctx->of)";
+    if (mn == "jle") return "(ctx->zf || (ctx->sf != ctx->of))";
+    if (mn == "jg") return "(!ctx->zf && (ctx->sf == ctx->of))";
+    return "";
+}
+
+// setcc / cmovcc 后缀 → 条件表达式
+std::string ccSuffix(const std::string& mn, const char* prefix) {
+    size_t n = std::strlen(prefix);
+    if (mn.rfind(prefix, 0) != 0) return "";
+    std::string suf = mn.substr(n);
+    if (suf == "z" || suf == "e") return "ctx->zf";
+    if (suf == "nz" || suf == "ne") return "!ctx->zf";
+    if (suf == "s") return "ctx->sf";
+    if (suf == "ns") return "!ctx->sf";
+    if (suf == "c" || suf == "b") return "ctx->cf";
+    if (suf == "nc" || suf == "ae") return "!ctx->cf";
+    if (suf == "be") return "(ctx->cf || ctx->zf)";
+    if (suf == "a") return "(!ctx->cf && !ctx->zf)";
+    if (suf == "l") return "(ctx->sf != ctx->of)";
+    if (suf == "ge") return "(ctx->sf == ctx->of)";
+    if (suf == "le") return "(ctx->zf || (ctx->sf != ctx->of))";
+    if (suf == "g") return "(!ctx->zf && (ctx->sf == ctx->of))";
+    return "";
 }
 
 }  // namespace
@@ -158,7 +225,7 @@ void emitStore(const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     LiftResult res;
     const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
-    if (!sec) { res.unsupported.push_back("no section"); return res; }
+    if (!sec) { res.unsupported.push_back("no-section"); return res; }
     const uint8_t* code = pe.data.data() + sec->raw + (uint32_t)(va - pe.image_base - sec->va);
 
     ZydisDecoder dec;
@@ -166,6 +233,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
 
     Emit e;
     e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
+
     size_t off = 0;
     ZydisDecodedInstruction insn;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
@@ -176,37 +244,44 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             break;
         }
         uint64_t next_rip = rip + insn.length;
-        for (int oi = 0; oi < insn.operand_count; ++oi) {
+        const char* m = ZydisMnemonicGetString(insn.mnemonic);
+        std::string mn = m ? m : "?";
+        e.count++;
+
+        for (uint16_t oi = 0; oi < insn.operand_count; ++oi) {
             if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
                 e.usesMemory = true;
                 if (oi == 0) e.writesMemory = true;
             }
         }
-        e.out << "L_" << std::hex << rip << std::dec << ": ;\n";
-        const char* m = ZydisMnemonicGetString(insn.mnemonic);
-        std::string mn = m ? m : "?";
-        e.count++;
-        if (e.count == 0) {
-            // 首条是 push / sub rsp / mov [mem],reg 视为标准序言（函数自己建立栈帧）
+        if (e.count == 1) {
             if (mn == "push" ||
-                (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-                 ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
+                (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
                 (mn == "mov" && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY)) {
                 e.hasPrologue = true;
             }
         }
 
-        if (mn == "nop" || mn == "int3" || mn == "endbr64") {
-            // no-op
+        e.out << "L_" << std::hex << rip << std::dec << ": ;\n";
+
+        const bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
+        const std::string setcc = ccSuffix(mn, "set");
+        const std::string cmovcc = ccSuffix(mn, "cmov");
+
+        if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+            /* no-op */
         } else if (mn == "ret") {
             e.out << "  ctx->rsp += 8; return;\n";
+        } else if (mn == "leave") {
+            e.out << "  write_reg(ctx,4,read_reg(ctx,5,8),8); write_reg(ctx,5,mem_read<uint64_t>(ctx,ctx->rsp),8); ctx->rsp += 8;\n";
         } else if (mn == "push") {
-            e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, " << srcExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+            e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, "
+                  << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
         } else if (mn == "pop") {
-            int id = regIdOf(ops[0].reg.value);
-            e.out << "  write_reg(ctx," << id << ",mem_read<uint64_t>(ctx,ctx->rsp),8); ctx->rsp += 8;\n";
-        } else if (mn == "mov" || mn == "movzx" || mn == "movsx" || mn == "movsxd") {
-            std::string v = srcExpr(pe, insn, ops[1], next_rip, e);
+            storeExpr(pe, insn, ops[0], "mem_read<uint64_t>(ctx,ctx->rsp)", next_rip, 8, e);
+            e.out << "  ctx->rsp += 8;\n";
+        } else if (mn == "mov" || mn == "movzx" || mn == "movsx" || mn == "movsxd" || mn == "movd" || mn == "movq") {
+            std::string v = valExpr(pe, insn, ops[1], next_rip, e);
             if (mn == "movzx") {
                 unsigned bits = ops[1].size;
                 if (bits < 64) {
@@ -214,37 +289,83 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
                     t << std::hex << ((1ULL << bits) - 1);
                     v = "(" + v + " & 0x" + t.str() + "ULL)";
                 }
+            } else if (mn == "movsx" || mn == "movsxd") {
+                v = "(uint64_t)(int64_t)(int" + std::to_string(ops[1].size) + "_t)(" + v + ")";
             }
-            if (mn == "movsx" || mn == "movsxd") v = "(uint64_t)(int64_t)(int" + std::to_string(ops[1].size * 8) + "_t)(" + v + ")";
-            if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
-                e.out << "  mem_write<uint64_t>(ctx," << memExpr(pe, insn, ops[0], next_rip, e) << "," << v << ");\n";
-            } else {
-                int id = regIdOf(ops[0].reg.value);
-                e.out << "  write_reg(ctx," << id << "," << v << "," << ops[0].size / 8 << ");\n";
-            }
+            storeExpr(pe, insn, ops[0], v, next_rip, ops[0].size / 8, e);
         } else if (mn == "lea") {
-            int id = regIdOf(ops[0].reg.value);
-            e.out << "  write_reg(ctx," << id << "," << memExpr(pe, insn, ops[1], next_rip, e) << "," << ops[0].size / 8 << ");\n";
-        } else if (mn == "add" || mn == "sub" || mn == "cmp" || mn == "and" || mn == "or" || mn == "xor" || mn == "test") {
-            std::string a = srcExpr(pe, insn, ops[0], next_rip, e);
-            std::string b = srcExpr(pe, insn, ops[1], next_rip, e);
+            storeExpr(pe, insn, ops[0], addrExpr(pe, ops[1], next_rip, e), next_rip, ops[0].size / 8, e);
+        } else if (mn == "add" || mn == "sub" || mn == "cmp" || mn == "and" || mn == "or" ||
+                   mn == "xor" || mn == "test") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = valExpr(pe, insn, ops[1], next_rip, e);
             int w = ops[0].size / 8;
-            std::string fn = (mn == "add") ? "add_flags" : (mn == "sub" || mn == "cmp") ? "sub_flags" : "logic_flags";
-            std::string expr = (mn == "and") ? "(" + a + " & " + b + ")" :
-                               (mn == "or") ? "(" + a + " | " + b + ")" :
-                               (mn == "xor") ? "(" + a + " ^ " + b + ")" :
-                               (mn == "test") ? "(" + a + " & " + b + ")" : "";
             std::string call;
-            if (fn == "logic_flags") call = "logic_flags(ctx," + expr + "," + std::to_string(w) + ")";
-            else call = fn + "(ctx," + a + "," + b + "," + std::to_string(w) + ")";
-            if (mn == "cmp" || mn == "test") {
-                e.out << "  " << call << ";\n";
-            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
-                e.out << "  mem_write<uint64_t>(ctx," << memExpr(pe, insn, ops[0], next_rip, e) << "," << call << ");\n";
-            } else {
-                int id = regIdOf(ops[0].reg.value);
-                e.out << "  write_reg(ctx," << id << "," << call << "," << w << ");\n";
+            if (mn == "add") call = "add_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")";
+            else if (mn == "sub" || mn == "cmp") call = "sub_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")";
+            else {
+                std::string opx = (mn == "and" || mn == "test") ? "&" : (mn == "or") ? "|" : "^";
+                call = "logic_flags(ctx,(" + a + " " + opx + " " + b + ")," + std::to_string(w) + ")";
             }
+            if (mn == "cmp" || mn == "test") e.out << "  (void)" << call << ";\n";
+            else storeExpr(pe, insn, ops[0], call, next_rip, w, e);
+        } else if (mn == "inc" || mn == "dec") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            int w = ops[0].size / 8;
+            std::string call = (mn == "inc") ? "add_flags(ctx," + a + ",1ULL," + std::to_string(w) + ")"
+                                             : "sub_flags(ctx," + a + ",1ULL," + std::to_string(w) + ")";
+            storeExpr(pe, insn, ops[0], call, next_rip, w, e);
+        } else if (mn == "neg") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            int w = ops[0].size / 8;
+            storeExpr(pe, insn, ops[0], "sub_flags(ctx,0ULL," + a + "," + std::to_string(w) + ")", next_rip, w, e);
+        } else if (mn == "not") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            storeExpr(pe, insn, ops[0], "(~" + a + ")", next_rip, ops[0].size / 8, e);
+        } else if (mn == "cdqe" || mn == "cwde" || mn == "cbw" || mn == "cdq" || mn == "cqo" || mn == "cwd") {
+            if (mn == "cdqe") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int32_t)read_reg(ctx,0,4),8);\n";
+            else if (mn == "cwde") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int16_t)read_reg(ctx,0,2),4);\n";
+            else if (mn == "cbw") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int8_t)read_reg(ctx,0,1),2);\n";
+            else if (mn == "cdq") e.out << "  write_reg(ctx,2,(uint64_t)(int64_t)((int64_t)(int32_t)read_reg(ctx,0,4) >> 31),4);\n";
+            else e.out << "  write_reg(ctx,2,(uint64_t)((int64_t)read_reg(ctx,0,8) >> 63),8);\n";
+        } else if (mn == "imul") {
+            if (insn.operand_count == 1) {
+                e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
+                      << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
+                         " write_reg(ctx,0,(uint64_t)p,8); write_reg(ctx,2,(uint64_t)(p>>64),8); }\n";
+            } else if (insn.operand_count == 2) {
+                int id = gprId(ops[0].reg.value);
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << ",8) * (int64_t)"
+                      << valExpr(pe, insn, ops[1], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+            } else {
+                int id = gprId(ops[0].reg.value);
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)"
+                      << valExpr(pe, insn, ops[1], next_rip, e) << " * (int64_t)"
+                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+            }
+        } else if (mn == "shl" || mn == "shr" || mn == "sar") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = (insn.operand_count > 1) ? valExpr(pe, insn, ops[1], next_rip, e) : "1ULL";
+            int w = ops[0].size / 8;
+            std::string shift = (mn == "shl") ? "<<" : ">>";
+            if (mn == "sar") {
+                storeExpr(pe, insn, ops[0],
+                          "(uint64_t)((int64_t)(" + a + ") >> (" + b + " & 63))", next_rip, w, e);
+            } else {
+                storeExpr(pe, insn, ops[0], "((" + a + ") " + shift + " (" + b + " & 63))", next_rip, w, e);
+            }
+        } else if (mn == "rol" || mn == "ror") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = (insn.operand_count > 1) ? valExpr(pe, insn, ops[1], next_rip, e) : "1ULL";
+            int w = ops[0].size / 8;
+            int bits = w * 8;
+            std::string fn = (mn == "rol") ? "rotl" : "rotr";
+            storeExpr(pe, insn, ops[0], std::string(fn) + "<uint64_t>(" + a + "," + b + ") & " +
+                                     std::to_string(bits == 64 ? ~0ULL : ((1ULL << bits) - 1)) + "ULL",
+                      next_rip, w, e);
+        } else if (mn == "bswap") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",bswap64(" << a << "),8);\n";
         } else if (mn == "jmp") {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
@@ -253,47 +374,30 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             } else {
                 e.unsupported.push_back("jmp-indirect");
             }
-        } else if (mn.rfind("j", 0) == 0) {
+        } else if (isJcc) {
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
             if (t < va || t >= va + size) { e.unsupported.push_back("jump-out-of-func"); break; }
-            std::string cond;
-            if (mn == "jz" || mn == "je") cond = "ctx->zf";
-            else if (mn == "jnz" || mn == "jne") cond = "!ctx->zf";
-            else if (mn == "js") cond = "ctx->sf";
-            else if (mn == "jns") cond = "!ctx->sf";
-            else if (mn == "jc" || mn == "jb") cond = "ctx->cf";
-            else if (mn == "jnc" || mn == "jae") cond = "!ctx->cf";
-            else if (mn == "jbe") cond = "(ctx->cf || ctx->zf)";
-            else if (mn == "ja") cond = "(!ctx->cf && !ctx->zf)";
-            else if (mn == "jl") cond = "(ctx->sf != ctx->of)";
-            else if (mn == "jge") cond = "(ctx->sf == ctx->of)";
-            else if (mn == "jle") cond = "(ctx->zf || (ctx->sf != ctx->of))";
-            else if (mn == "jg") cond = "(!ctx->zf && (ctx->sf == ctx->of))";
-            else cond = "";
-            if (cond.empty()) e.unsupported.push_back(mn);
-            else e.out << "  if (" << cond << ") goto L_" << std::hex << t << std::dec << ";\n";
+            std::string cond = ccExpr(mn);
+            if (cond.empty()) { e.unsupported.push_back(mn); break; }
+            e.out << "  if (" << cond << ") goto L_" << std::hex << t << std::dec << ";\n";
+        } else if (!setcc.empty()) {
+            storeExpr(pe, insn, ops[0], "((uint64_t)(" + setcc + "))", next_rip, 1, e);
+        } else if (!cmovcc.empty()) {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = valExpr(pe, insn, ops[1], next_rip, e);
+            storeExpr(pe, insn, ops[0], "((" + cmovcc + ") ? " + b + " : " + a + ")", next_rip, ops[0].size / 8, e);
         } else if (mn == "call") {
             e.hasCall = true;
             e.unsupported.push_back("call");
-        } else if (mn == "shl" || mn == "shr" || mn == "sar") {
-            std::string a = srcExpr(pe, insn, ops[0], next_rip, e);
-            std::string b = srcExpr(pe, insn, ops[1], next_rip, e);
-            int w = ops[0].size / 8;
-            std::string op2 = (mn == "shl") ? "<<" : (mn == "shr") ? ">>" : ">>";
-            if (ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-                int id = regIdOf(ops[0].reg.value);
-                e.out << "  write_reg(ctx," << id << ",(" << a << " " << op2 << " (" << b << " & 63))," << w << ");\n";
-            } else {
-                e.unsupported.push_back(mn + "-mem");
-            }
         } else {
             e.unsupported.push_back(mn);
         }
 
-        off += insn.length;
         if (!e.unsupported.empty()) break;
+        off += insn.length;
     }
-    e.out << "}\n";
+
+    if (e.unsupported.empty()) e.out << "}\n";
     res.ok = e.unsupported.empty() && e.count > 0;
     res.code = e.out.str();
     res.unsupported = e.unsupported;
@@ -313,7 +417,6 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (fn.second < minSize || fn.second > maxSize) continue;
         LiftResult r = liftFunction(pe, fn.first, fn.second);
         if (!r.ok || r.usesRipData || r.hasCall) continue;
-        // 阶段 2 只验：无 call、无 RIP 数据、跳转不出界、且要么纯寄存器要么有标准序言
         if (r.usesMemory && !r.hasPrologue) continue;
         out.push_back(fn);
         if (out.size() >= 8) break;
