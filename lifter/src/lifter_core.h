@@ -30,6 +30,7 @@ struct LiftResult {
     bool usesMemory = false;   // 任何内存操作数
     bool writesMemory = false; // 写内存
     bool hasPrologue = false;  // 首条是 push reg / sub rsp 之类
+    bool usesNonStackMem = false; // 访问非栈内存（全局/绝对地址），阶段 2 需要排除
 
 };
 
