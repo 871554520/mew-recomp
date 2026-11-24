@@ -238,6 +238,11 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     if (!sec) { res.unsupported.push_back("no-section"); return res; }
     const uint8_t* code = pe.data.data() + sec->raw + (uint32_t)(va - pe.image_base - sec->va);
 
+    // .pdata 的 size 含尾部 int3/nop 对齐填充；剥掉填充后再判定流程是否收尾
+    uint32_t effSize = size;
+    while (effSize > 0 && (code[effSize - 1] == 0xCC || code[effSize - 1] == 0x90)) --effSize;
+    if (effSize == 0) { res.unsupported.push_back("all-padding"); return res; }
+
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 
@@ -247,9 +252,9 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     size_t off = 0;
     ZydisDecodedInstruction insn;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-    while (off < size) {
+    while (off < effSize) {
         uint64_t rip = va + off;
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, size - off, &insn, ops))) {
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, effSize - off, &insn, ops))) {
             e.unsupported.push_back("decode-fail");
             break;
         }
@@ -379,14 +384,14 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         } else if (mn == "jmp") {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-                if (t < va || t >= va + size) { e.unsupported.push_back("jump-out-of-func"); break; }
+                if (t < va || t >= va + effSize) { e.unsupported.push_back("jump-out-of-func"); break; }
                 e.out << "  goto L_" << std::hex << t << std::dec << ";\n";
             } else {
                 e.unsupported.push_back("jmp-indirect");
             }
         } else if (isJcc) {
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-            if (t < va || t >= va + size) { e.unsupported.push_back("jump-out-of-func"); break; }
+            if (t < va || t >= va + effSize) { e.unsupported.push_back("jump-out-of-func"); break; }
             std::string cond = ccExpr(mn);
             if (cond.empty()) { e.unsupported.push_back(mn); break; }
             e.out << "  if (" << cond << ") goto L_" << std::hex << t << std::dec << ";\n";
