@@ -115,6 +115,8 @@ struct Emit {
     bool hasPrologue = false;
     bool usesNonStackMem = false;
     bool fallsOffEnd = false;
+    uint32_t ptrArgMask = 0;
+    bool badMemBase = false;
 };
 
 std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
@@ -123,13 +125,27 @@ std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t 
         e.usesRipData = true;
         return std::to_string((unsigned long long)(next_rip + d)) + "ULL /*rip*/";
     }
-    if (op.mem.base == ZYDIS_REGISTER_NONE && op.mem.index == ZYDIS_REGISTER_NONE) {
-        // 绝对地址访问（镜像内全局/字符串）——阶段 2 排除
-        e.usesNonStackMem = true;
-    }
-    if (op.mem.base != ZYDIS_REGISTER_NONE &&
-        op.mem.base != ZYDIS_REGISTER_RSP && op.mem.base != ZYDIS_REGISTER_RBP) {
-        e.usesNonStackMem = true;
+    // 内存基址性质分析：栈(rsp/rbp)、参数指针(rcx/rdx/r8/r9)、还是不可判定的寄存器
+    {
+        auto argIdxOf = [](ZydisRegister r) -> int {
+            switch (r) {
+                case ZYDIS_REGISTER_RCX: return 0;
+                case ZYDIS_REGISTER_RDX: return 1;
+                case ZYDIS_REGISTER_R8:  return 2;
+                case ZYDIS_REGISTER_R9:  return 3;
+                default: return -1;
+            }
+        };
+        ZydisRegister b = op.mem.base, ix = op.mem.index;
+        int bi = argIdxOf(b), ii = argIdxOf(ix);
+        if (bi >= 0) e.ptrArgMask |= (1u << bi);
+        if (ii >= 0) e.ptrArgMask |= (1u << ii);
+        bool stackBase = (b == ZYDIS_REGISTER_RSP || b == ZYDIS_REGISTER_RBP || b == ZYDIS_REGISTER_NONE);
+        if (!stackBase && bi < 0) { e.badMemBase = true; e.usesNonStackMem = true; }
+        if (b == ZYDIS_REGISTER_NONE && ix == ZYDIS_REGISTER_NONE) { e.badMemBase = true; e.usesNonStackMem = true; }
+        if (ix != ZYDIS_REGISTER_NONE && ii < 0) { e.badMemBase = true; e.usesNonStackMem = true; }
+        int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
+        if (d < -0x4000 || d > 0x8000) e.badMemBase = true;
     }
     std::ostringstream s;
     bool any = false;
@@ -435,6 +451,8 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.hasPrologue = e.hasPrologue;
     res.usesNonStackMem = e.usesNonStackMem;
     res.fallsOffEnd = e.fallsOffEnd;
+    res.ptrArgMask = e.ptrArgMask;
+    res.badMemBase = e.badMemBase;
     return res;
 }
 
@@ -500,9 +518,12 @@ bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size) {
 }
 
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
-                      std::vector<std::pair<uint64_t, uint32_t>>& out) {
+                      std::vector<std::pair<uint64_t, uint32_t>>& out,
+                      std::vector<uint32_t>* masks) {
     out.clear();
-    size_t nSize = 0, nLift = 0, nNoCall = 0, nNoRip = 0, nNoAbs = 0, nTerm = 0;
+    if (masks) masks->clear();
+    size_t nSize = 0, nLift = 0, nNoCall = 0, nNoRip = 0, nFramed = 0, nClosed = 0;
+    bool capped = false;
     for (const auto& fn : pe.functions) {
         if (fn.second < minSize || fn.second > maxSize) continue;
         ++nSize;
@@ -513,18 +534,16 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         ++nNoCall;
         if (r.usesRipData) continue;
         ++nNoRip;
-        if (r.usesNonStackMem) continue;
-        ++nNoAbs;
-        if (r.usesMemory && !r.hasPrologue) continue;
-        if (!controlFlowClosed(pe, fn.first, fn.second)) {
-            fprintf(stderr, "[fell-off] va=0x%llx size=%u insns=%d last=%s\n",
-                    (unsigned long long)fn.first, fn.second, r.insnCount, r.lastMnemonic.c_str());
-            continue;
-        }
-        ++nTerm;
-        if (out.size() < 8) out.push_back(fn);
+        // 纯栈访问要求有正规栈帧；用到参数指针的则无需栈帧
+        if (r.usesMemory && r.ptrArgMask == 0 && !r.hasPrologue) continue;
+        ++nFramed;
+        if (!controlFlowClosed(pe, fn.first, fn.second)) continue;
+        ++nClosed;
+        out.push_back(fn);
+        if (masks) masks->push_back(r.ptrArgMask);
+        if (out.size() >= 8) { capped = true; break; }
     }
-    fprintf(stderr, "[funnel] size=%zu lift_ok=%zu no_call=%zu no_ripdata=%zu no_absmem=%zu terminated=%zu\n",
-            nSize, nLift, nNoCall, nNoRip, nNoAbs, nTerm);
+    fprintf(stderr, "[funnel] size=%zu lift_ok=%zu no_call=%zu no_ripdata=%zu framed=%zu cf_closed=%zu capped=%d\n",
+            nSize, nLift, nNoCall, nNoRip, nFramed, nClosed, (int)capped);
     return !out.empty();
 }
