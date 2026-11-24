@@ -42,8 +42,13 @@ jobs:
 
       - name: Build lifter
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
+          mkdir -p generated
+          set +e
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > generated/build.log 2>&1
+          cmake --build build -j"$(nproc)" >> generated/build.log 2>&1
+          rc=$?
+          tail -60 generated/build.log
+          exit $rc
 
       - name: Pick pure function
         run: |
@@ -97,6 +102,7 @@ jobs:
         with:
           name: stage2-out
           path: |
+            generated/build.log
             generated/pick.log
             generated/picked.txt
             generated/lift.log
