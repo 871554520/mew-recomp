@@ -66,6 +66,7 @@ struct Emit {
     bool hasCall = false;
     bool usesMemory = false;
     bool writesMemory = false;
+    bool hasPrologue = false;
 };
 
 int regIdOf(ZydisRegister r) {
@@ -175,6 +176,14 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             break;
         }
         uint64_t next_rip = rip + insn.length;
+        if (e.count == 0) {
+            // 首条：push/sumb rsp 或 mov [rsp],reg 视为标准序言（函数自己会建立栈帧）
+            if (mn == "push" || (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                                 ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
+                mn == "mov" && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                e.hasPrologue = true;
+            }
+        }
         for (int oi = 0; oi < insn.operand_count; ++oi) {
             if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
                 e.usesMemory = true;
@@ -292,6 +301,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.hasCall = e.hasCall;
     res.usesMemory = e.usesMemory;
     res.writesMemory = e.writesMemory;
+    res.hasPrologue = e.hasPrologue;
     return res;
 }
 
@@ -302,7 +312,8 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
         if (fn.second < minSize || fn.second > maxSize) continue;
         LiftResult r = liftFunction(pe, fn.first, fn.second);
         if (!r.ok || r.usesRipData || r.hasCall) continue;
-        if (r.usesMemory) continue;   // 阶段 2 只验「纯寄存器」函数
+        // 阶段 2 只验：无 call、无 RIP 数据、跳转不出界、且要么纯寄存器要么有标准序言
+        if (r.usesMemory && !r.hasPrologue) continue;
         out.push_back(fn);
         if (out.size() >= 8) break;
     }
