@@ -18,6 +18,12 @@ struct alignas(16) XmmReg {
     };
 };
 
+inline uint64_t& cur_fn_va() {
+    static uint64_t v = 0;
+    return v;
+}
+#define MEW_SET_CUR_FN(VA) (cur_fn_va() = (uint64_t)(VA))
+
 struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
@@ -74,10 +80,11 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto it2 = std::lower_bound(v.begin(), v.end(), target_va);
     uint64_t near_lo = 0;
     if (it2 != v.begin()) near_lo = *(it2 - 1);
-    std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx (nearest_lo=0x%llx delta=%lld)\n",
+    std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx (nearest_lo=0x%llx delta=%lld) in_fn=0x%llx\n",
                  static_cast<unsigned long long>(target_va),
                  (unsigned long long)near_lo,
-                 (long long)((int64_t)target_va - (int64_t)near_lo));
+                 (long long)((int64_t)target_va - (int64_t)near_lo),
+                 (unsigned long long)cur_fn_va());
     if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
 }
@@ -109,8 +116,9 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
     if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
         static int logged = 0;
         if (logged < 20) {
-            std::fprintf(stderr, "[SAFE] unmapped read addr=0x%llx size=%zu\n",
-                         (unsigned long long)guest_addr, sizeof(T));
+            std::fprintf(stderr, "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)cur_fn_va());
             ++logged;
         }
         return v;
@@ -124,8 +132,9 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
     if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
         static int logged = 0;
         if (logged < 20) {
-            std::fprintf(stderr, "[SAFE] unmapped write addr=0x%llx size=%zu\n",
-                         (unsigned long long)guest_addr, sizeof(T));
+            std::fprintf(stderr, "[SAFE] unmapped write addr=0x%llx size=%zu in_fn=0x%llx\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)cur_fn_va());
             ++logged;
         }
         return;
