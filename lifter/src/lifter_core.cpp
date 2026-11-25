@@ -591,6 +591,10 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             e.out << "  { uint32_t a=(uint32_t)read_reg(ctx,0,4), b=0, c=(uint32_t)read_reg(ctx,1,4), d=0;\n"
                      "    x64_cpuid(a, c, &a, &b, &c, &d);\n"
                      "    write_reg(ctx,0,a,4); write_reg(ctx,3,b,4); write_reg(ctx,2,c,4); write_reg(ctx,1,d,4); }\n";
+        } else if (mn == "xgetbv") {
+            e.out << "  { uint32_t a=7, d=0; write_reg(ctx,0,a,4); write_reg(ctx,2,d,4); }\n";
+        } else if (mn == "xsetbv") {
+            /* 忽略：模拟器不管理 XCR */
         } else if (mn == "rdtsc") {
             e.out << "  { uint64_t t=x64_rdtsc(); write_reg(ctx,0,t,4); write_reg(ctx,2,(t>>32),4); }\n";
         } else if (mn == "bswap") {
