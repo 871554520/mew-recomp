@@ -92,8 +92,11 @@ int main(int argc, char** argv) {
                     (unsigned long long)cand.va, cand.size, cand.directCalls, closure.size());
         std::string path = outPath.empty() ? "generated/nested.txt" : outPath;
         std::ofstream o(path);
+        char maskbuf[32];
+        std::snprintf(maskbuf, sizeof(maskbuf), "0x%x", cand.ptr_mask);
         o << "# root va=0x" << std::hex << cand.va << std::dec << " size=" << cand.size
-          << " direct=" << cand.directCalls << " closure=" << closure.size() << "\n";
+          << " direct=" << cand.directCalls << " closure=" << closure.size()
+          << " mask=" << maskbuf << "\n";
         for (auto& c : closure) o << "0x" << std::hex << c.first << std::dec << " " << c.second << "\n";
         o.close();
         std::printf("wrote %s (%zu closure funcs)\n", path.c_str(), closure.size());
