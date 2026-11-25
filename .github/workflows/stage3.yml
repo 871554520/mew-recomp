@@ -254,7 +254,10 @@ jobs:
               --call-obj "$T" 65536 > generated/gpak_${T}.out 2> generated/gpak_${T}.err
             echo "rc=$?" | tee -a generated/gpak_direct.log
             grep -E 'STAGE5|CreateFileW|resources\.gpak|ReadFile|UNIMPL FUNC' generated/gpak_${T}.err | head -20 | tee -a generated/gpak_direct.log
-            grep -q 'STAGE5 PASS' generated/gpak_${T}.err && echo "GPAK ACCEPTANCE PASS at $T" | tee -a generated/gpak_direct.log
+            if grep -q 'STAGE5 PASS' generated/gpak_${T}.err; then
+              echo "GPAK ACCEPTANCE PASS at $T" | tee -a generated/gpak_direct.log
+            fi
+            true
           done
       - name: Stage 5 alt - run WITHOUT safe-mem (native backtrace of the real crash)
         run: |
