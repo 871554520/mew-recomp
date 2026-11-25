@@ -325,6 +325,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     if (mn.size() == 5 && (mn.rfind("padd", 0) == 0 || mn.rfind("psub", 0) == 0)) {
         char sz = mn[4];
         const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : (sz == 'd') ? "u32" : "u64";
+        const char* CT = (sz == 'b') ? "uint8_t" : (sz == 'w') ? "uint16_t" : (sz == 'd') ? "uint32_t" : "uint64_t";
         int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : (sz == 'd') ? 4 : 2;
         char op = (mn[1] == 'a') ? '+' : '-';
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
@@ -347,6 +348,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         bool arith = (mn == "psrad" || mn == "psraw");
         char sz = mn[4];
         const char* T = (sz == 'd') ? "u32" : (sz == 'q') ? "u64" : "u16";
+        const char* CT = (sz == 'd') ? "uint32_t" : (sz == 'q') ? "uint64_t" : "uint16_t";
         const char* ST = (sz == 'd') ? "int32_t" : (sz == 'q') ? "int64_t" : "int16_t";
         int lanes = (sz == 'q') ? 2 : (sz == 'd') ? 4 : 8;
         int bits = (sz == 'q') ? 64 : (sz == 'd') ? 32 : 16;
@@ -360,7 +362,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             else e.out << "(uint64_t)ctx->xmm[" << dx << "]." << T << "[" << i << "] >> sh";
             e.out << ";\n";
         }
-        e.out << "    for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+        e.out << "    for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << CT << ")t[i]; }\n";
         return true;
     }
     if (mn == "psrldq" || mn == "pslldq") {
@@ -386,13 +388,14 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         bool hi = (mn[6] == 'h');
         char sz = mn[8];
         const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : "u32";
+        const char* CT = (sz == 'b') ? "uint8_t" : (sz == 'w') ? "uint16_t" : "uint32_t";
         int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : 4;
         int half = lanes / 2;
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
         e.out << "  { uint64_t t[" << lanes << "]; for(int i=0;i<" << half << ";++i){ int k="
               << (hi ? "i+" + std::to_string(half) : "i") << ";"
               << " t[2*i]=ctx->xmm[" << dx << "]." << T << "[k]; t[2*i+1]=" << src << "." << T << "[k]; }"
-              << " for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+              << " for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << CT << ")t[i]; }\n";
         return true;
     }
     if (mn == "packuswb") {
