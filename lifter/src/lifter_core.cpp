@@ -540,6 +540,17 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             storeExpr(pe, insn, ops[0], std::string(fn) + "<uint64_t>(" + a + "," + b + ") & " +
                                      std::to_string(bits == 64 ? ~0ULL : ((1ULL << bits) - 1)) + "ULL",
                       next_rip, w, e);
+        } else if (mn == "int") {
+            uint64_t imm = (insn.operand_count > 0 && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+                         ? (uint64_t)ops[0].imm.value.u : 3;
+            if (imm == 3) {
+                /* int3：断点填充，按 nop 处理 */
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"int\");\n";
+            } else {
+                e.unsupported.push_back("int");
+            }
         } else if (mn == "bt" || mn == "btc" || mn == "btr" || mn == "bts") {
             int w = ops[0].size / 8;
             int nbits = w * 8;
