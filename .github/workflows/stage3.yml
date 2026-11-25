@@ -65,9 +65,9 @@ jobs:
 
       - name: Dump hot functions (debug)
         run: |
-          for VA in 140d3e354 140d6ad18; do
+          for VA in 140d4a240 140dab650 140dab670; do
             echo "===== sub_$VA ====="
-            awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -70
+            awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -200
           done | tee generated/hot_functions.txt
 
       - name: Compile all shards -> libmew_recomp.a
@@ -161,7 +161,7 @@ jobs:
       - name: Stage 5 - run launcher (log driven)
         run: |
           set +e
-          MEW_UNIMPL_CONTINUE=1 timeout 90 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
+          MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 90 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
           echo "--- unimpl/api log (first 40) ---"
