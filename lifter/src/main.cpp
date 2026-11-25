@@ -122,6 +122,7 @@ int main(int argc, char** argv) {
 
     if (mode == "shards") {
         if (outDir.empty()) { std::fprintf(stderr, "need --out-dir\n"); return 2; }
+        expandFunctionListByDataPointers(pe);
         std::vector<std::pair<uint64_t, uint32_t>> only;
         std::vector<std::pair<uint64_t, uint32_t>>* onlyPtr = nullptr;
         if (!onlyPath.empty()) { only = readOnlyList(onlyPath); onlyPtr = &only; }
