@@ -9,7 +9,7 @@ on:
 
 jobs:
   arm64-regression:
-    runs-on: macos-14          # Apple Silicon M1：免费，用于真 ARM64 语义验证
+    runs-on: macos-15          # Apple Silicon：免费，用于真 ARM64 语义验证
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
