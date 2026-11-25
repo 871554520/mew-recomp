@@ -79,7 +79,8 @@ struct NestedCand {
     size_t closure = 0;
 };
 bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
-                         std::vector<std::pair<uint64_t, uint32_t>>* closure);
+                         std::vector<std::pair<uint64_t, uint32_t>>* closure,
+                         size_t skip = 0);
 
 // 阶段 3：分片生成
 struct ShardStats {
