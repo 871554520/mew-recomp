@@ -102,6 +102,8 @@ jobs:
               break
             fi
             ROOT=$(awk '/^# root/{print $3}' generated/nested_$K.txt | sed 's/va=0x//')
+            MASK=$(awk '/^# root/{for(i=1;i<=NF;i++) if($i ~ /^mask=/) print substr($i,6)}' generated/nested_$K.txt)
+            echo "cand $K root=0x$ROOT mask=$MASK" >> generated/verify4.log
             DIR=generated/stage4_$K
             rm -rf "$DIR"; mkdir -p "$DIR"
             ./build/mew_lifter --shards 1 --only generated/nested_$K.txt --out-dir "$DIR" --exe Mewgenics.exe > /dev/null 2>&1
@@ -116,9 +118,9 @@ jobs:
             fi
             OK=1
             for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-              ./build-stage3/native_nested_$K 0 $ARGS > generated/n4_${K}.out 2> generated/n4_${K}.err
+              ./build-stage3/native_nested_$K "${MASK:-15}" $ARGS > generated/n4_${K}.out 2> generated/n4_${K}.err
               NRC=$?
-              timeout 90 wine build-stage3/guest_nested.exe Mewgenics.exe "0x$ROOT" 0 $ARGS \
+              timeout 90 wine build-stage3/guest_nested.exe Mewgenics.exe "0x$ROOT" "${MASK:-15}" $ARGS \
                 > generated/g4_${K}.out 2> generated/g4_${K}.err
               GRC=$?
               if [ $NRC -ne 0 ] || [ $GRC -ne 0 ]; then
