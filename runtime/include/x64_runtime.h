@@ -18,11 +18,51 @@ struct alignas(16) XmmReg {
     };
 };
 
+struct TraceEntry {
+    uint64_t va;
+    const char* tag;   // 普通函数为 nullptr，垫片传 API 名
+    uint64_t rcx;
+};
+
+struct CallRingTrace {
+    static constexpr size_t N = 64;
+    TraceEntry buf[N]{};
+    size_t idx = 0;
+
+    void push(uint64_t va, const char* tag, uint64_t rcx) {
+        buf[idx & (N - 1)] = TraceEntry{va, tag, rcx};
+        idx++;
+    }
+
+    void dump(const char* reason) const {
+        std::fprintf(stderr, "\n===== CALL RING TRACE (%s) =====\n", reason);
+        size_t start = idx > N ? idx - N : 0;
+        for (size_t i = start; i < idx; ++i) {
+            const auto& e = buf[i & (N - 1)];
+            if (e.tag)
+                std::fprintf(stderr, "  [%zu] API  %s (rcx=0x%llx)\n", i, e.tag,
+                             (unsigned long long)e.rcx);
+            else
+                std::fprintf(stderr, "  [%zu] FUNC sub_0x%llx (rcx=0x%llx)\n", i,
+                             (unsigned long long)e.va, (unsigned long long)e.rcx);
+        }
+        std::fprintf(stderr, "====================================\n");
+    }
+};
+
+inline CallRingTrace& call_trace() {
+    static thread_local CallRingTrace t;
+    return t;
+}
+
 inline uint64_t& cur_fn_va() {
     static uint64_t v = 0;
     return v;
 }
-#define MEW_SET_CUR_FN(VA) (cur_fn_va() = (uint64_t)(VA))
+
+#define MEW_SET_CUR_FN(CTX, VA) \
+    do { cur_fn_va() = (uint64_t)(VA); call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx); } while (0)
+#define MEW_TRACE_API(CTX, NAME) call_trace().push(0, (NAME), (CTX)->rcx)
 
 struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
@@ -95,6 +135,7 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
             return;
         }
     }
+    call_trace().dump("dispatch miss");
     if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
 }
