@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/mman.h>
+#include "guest_heap.h"
 #include <unistd.h>
 #include <unordered_map>
 #include <algorithm>
@@ -362,6 +363,8 @@ inline bool host_page_mapped(uint64_t addr, size_t n) {
 
 inline bool guest_mapped(uint64_t addr, size_t n = 1) {
     if (!addr) return false;
+    // O(1)：固定 Guest 堆池 / 镜像 / 栈区 都在这几条区间比较里
+    if (g_guest_heap.contains(addr, n)) return true;
     for (const auto& r : guest_mem_ranges())
         if (addr >= r.lo && addr + n <= r.hi) return true;
     // 未登记的地址：交给宿主页表判断。bias=0 时 guest 地址就是宿主地址，
