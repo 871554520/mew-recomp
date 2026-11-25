@@ -359,6 +359,12 @@ void shim_WINMM_timeGetTime(X64Ctx* c) {
     ret0(c, (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000ull));
 }
 
+void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
+    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+    std::fprintf(stderr, "[game] %s\n", p ? p : "");
+    ret0(c, 0);
+}
+
 // ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
 namespace {
 
