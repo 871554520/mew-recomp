@@ -1872,11 +1872,21 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
             LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
                                           LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
                                           LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
-            if (r.ok) {
+            // 带占位的函数一律整函数占位，绝不执行「半截」。
+            // 半执行会跳过 epilogue：rsp 不平、rbx/rbp/rsi/rdi 停在被改写后的值，
+            // 调用方随后 `add rbx,0x10; mov rax,[rbx]` 就会读到 [0x10] 并崩溃
+            // （实测 __acrt_initialize_locks 清空 rbx 后撞占位直接 return）。
+            if (r.ok && !r.stubbed) {
                 o << "// va=0x" << hexva(fn.first) << " size=" << fn.second
-                  << " insns=" << r.insnCount << (r.stubbed ? " STUBBED" : "") << "\n";
+                  << " insns=" << r.insnCount << "\n";
                 o << r.code << "\n";
-                if (r.stubbed) ++st.stubbed; else ++st.ok;
+                ++st.ok;
+            } else if (r.ok && r.stubbed) {
+                o << "// va=0x" << hexva(fn.first) << " size=" << fn.second
+                  << " insns=" << r.insnCount << " STUBBED-FULL (no partial exec)\n";
+                o << "void sub_" << hexva(fn.first) << "(X64Ctx* ctx) {\n"
+                     "  UNIMPL_FUNC(0x" << hexva(fn.first) << "ULL);\n}\n\n";
+                ++st.stubbed;
             } else {
                 o << "// va=0x" << hexva(fn.first) << " LIFT-FAILED:";
                 for (const auto& u : r.unsupported) o << " " << u;
