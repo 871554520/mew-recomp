@@ -294,8 +294,12 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
             mew_dump_guest_str("  str", _v);                                      \
         }                                                                        \
         call_trace().dump("fastfail");                                           \
-        if (mew_unimpl_continue()) return;                                       \
-        std::abort();                                                            \
+        /* 真实语义：__fastfail 永不返回。以前在 MEW_UNIMPL_CONTINUE 下 return，   \
+           会让 abort 的兜底路径继续跑，产生垃圾指针与十万级 dispatch miss，        \
+           日志全是噪声。除非显式要求继续，否则到此终止。 */                       \
+        if (mew_unimpl_continue() && std::getenv("MEW_FASTFAIL_CONTINUE")) return; \
+        std::fflush(stderr);                                                     \
+        std::_Exit(3);                                                           \
     } while (0)
 
 // 由生成的 dispatch_table.cpp 提供
