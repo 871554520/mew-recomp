@@ -245,6 +245,17 @@ jobs:
           grep -n 'CALL RING TRACE' generated/runner.err | head -5 || true
           exit 0
 
+      - name: Stage 5 direct - call gpak loader with a zeroed object
+        run: |
+          set +e
+          for T in 0x1409b5380 0x1409b9970; do
+            echo "=== --call-obj $T ===" | tee -a generated/gpak_direct.log
+            MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 60 ./build-stage3/mew_runner Mewgenics.exe \
+              --call-obj "$T" 65536 > generated/gpak_${T}.out 2> generated/gpak_${T}.err
+            echo "rc=$?" | tee -a generated/gpak_direct.log
+            grep -E 'STAGE5|CreateFileW|resources\.gpak|ReadFile|UNIMPL FUNC' generated/gpak_${T}.err | head -20 | tee -a generated/gpak_direct.log
+            grep -q 'STAGE5 PASS' generated/gpak_${T}.err && echo "GPAK ACCEPTANCE PASS at $T" | tee -a generated/gpak_direct.log
+          done
       - name: Stage 5 alt - run WITHOUT safe-mem (native backtrace of the real crash)
         run: |
           set +e
@@ -372,6 +383,9 @@ jobs:
             generated/runner_b.err
             generated/runner_nosafe.out
             generated/runner_nosafe.err
+            generated/gpak_direct.log
+            generated/gpak_0x*.out
+            generated/gpak_0x*.err
             generated/stage3b/manifest.tsv
             discovered_entries.txt
           if-no-files-found: warn
