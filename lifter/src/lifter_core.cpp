@@ -2711,7 +2711,19 @@ std::vector<uint64_t> findCallers(const PeImage& pe, uint64_t target_va) {
     return out;
 }
 
+static size_t addExtraEntriesImpl(PeImage& pe, const std::vector<uint64_t>& seeds, bool allow_inside);
+
 size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
+    return addExtraEntriesImpl(pe, seeds, false);
+}
+// 运行期 discovered_entries.txt 报出来的目标：允许落在函数体内。
+// MSVC 常把两个小叶子函数/片段打包进同一条 .pdata（例如 0x140d6adc0 的前 8 字节是
+// `xor eax,eax; ret`，真正目标在 +8），严格过滤会把它们全丢掉。
+size_t addExtraEntriesAllowInside(PeImage& pe, const std::vector<uint64_t>& seeds) {
+    return addExtraEntriesImpl(pe, seeds, true);
+}
+
+static size_t addExtraEntriesImpl(PeImage& pe, const std::vector<uint64_t>& seeds, bool allow_inside) {
     size_t added = 0;
     size_t skipped_inside = 0;
     // 种子可能落在某个已知函数体内部（典型：DIR64 槽指向函数尾巴/共享尾声）。
@@ -2731,7 +2743,7 @@ size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
     };
     for (uint64_t v : seeds) {
         if (pe.hasFunction(v)) continue;
-        if (inside_known(v)) { ++skipped_inside; continue; }
+        if (!allow_inside && inside_known(v)) { ++skipped_inside; continue; }
         const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
         if (!sec || !sec->exec) continue;
         uint32_t len = 0;
