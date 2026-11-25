@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 struct alignas(16) XmmReg {
     union {
@@ -47,6 +48,26 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx\n",
                  static_cast<unsigned long long>(target_va));
     std::abort();
+}
+
+// ---------------- guest 已映射区间登记（垫片防崩） ----------------
+struct GuestMemRange { uint64_t lo, hi; };
+
+inline std::vector<GuestMemRange>& guest_mem_ranges() {
+    static std::vector<GuestMemRange> r;
+    return r;
+}
+
+inline void register_guest_range(uint64_t guest_lo, uint64_t len) {
+    if (!len) return;
+    guest_mem_ranges().push_back({guest_lo, guest_lo + len});
+}
+
+inline bool guest_mapped(uint64_t addr, size_t n = 1) {
+    if (!addr) return false;
+    for (const auto& r : guest_mem_ranges())
+        if (addr >= r.lo && addr + n <= r.hi) return true;
+    return false;
 }
 
 template <typename T>
