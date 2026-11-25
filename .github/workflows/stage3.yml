@@ -176,7 +176,8 @@ jobs:
           echo "--- counts ---"
           grep -c '\[UNIMPL INSN\]' generated/runner.err
           grep -c '\[UNIMPL API\]' generated/runner.err
-          grep -c '\[UNIMPL FUNC\]' generated/runner.err
+          grep -c '\[UNIMPL FUNC\]' generated/runner.err || true
+          exit 0
 
       - name: Stage 5 - gpak direct call
         run: |
