@@ -565,6 +565,7 @@ std::string hexStr(uint64_t v);
 
 // 片段模式下发现的额外入口（跳转目标）
 std::unordered_set<uint64_t>* g_needed_entries = nullptr;
+std::unordered_map<std::string, size_t>* g_stub_hist = nullptr;
 
 // 从 PE 原始字节读 8 字节（未应用重定位，值就是原始 VA）
 static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out);
@@ -579,6 +580,7 @@ void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const Zydis
         if (xi >= 0) { e.out << "  xmm_set_u64(ctx," << xi << "," << val << ");\n"; return; }
         if (e.flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
+            if (g_stub_hist) (*g_stub_hist)["reg-store"]++;
             e.out << "  UNIMPL_INSN(0x" << hexStr(next_rip) << "ULL, \"reg-store\");\n";
             return;
         }
@@ -1142,6 +1144,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             }
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
+            if (g_stub_hist) (*g_stub_hist)[mn]++;
             e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
         } else {
             e.unsupported.push_back(mn);
@@ -2295,6 +2298,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             }
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
+            if (g_stub_hist) (*g_stub_hist)[mn]++;
             e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
         } else {
             e.unsupported.push_back(mn);
@@ -2437,4 +2441,22 @@ size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
     pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
     std::fprintf(stderr, "[seeds] added=%zu total=%zu\n", added, pe.functions.size());
     return added;
+}
+
+void stubHistogram(const PeImage& pe, std::map<std::string, size_t>& out, size_t* stubbedFuncs, size_t* totalFuncs) {
+    out.clear();
+    std::unordered_map<std::string, size_t> hist;
+    size_t stubFns = 0, total = 0;
+    g_stub_hist = &hist;
+    for (const auto& fn : pe.functions) {
+        ++total;
+        LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
+                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
+                                      LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
+        if (r.stubbed) ++stubFns;
+    }
+    g_stub_hist = nullptr;
+    for (const auto& kv : hist) out[kv.first] = kv.second;
+    if (stubbedFuncs) *stubbedFuncs = stubFns;
+    if (totalFuncs) *totalFuncs = total;
 }
