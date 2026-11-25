@@ -7,6 +7,7 @@ static inline void set_zsp(X64Ctx* c, uint64_t r, int width) {
     uint64_t mask = width >= 8 ? ~0ULL : ((1ULL << (width * 8)) - 1);
     r &= mask;
     c->zf = (r == 0);
+    c->pf = (__builtin_parity((unsigned)(r & 0xFF)) == 0);  // PF：低字节偶数个 1
     c->sf = ((r >> (width * 8 - 1)) & 1) != 0;
 }
 
