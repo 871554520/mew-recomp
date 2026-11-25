@@ -1349,6 +1349,31 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             /* 4 字节 RVA 形式噪声太大（会把立即数当表项），暂不扫描 */
         }
     }
+    // 代码里的直接调用/跳转目标：不少是没被 .pdata 登记的冷片段
+    {
+        ZydisDecoder dec;
+        ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+        for (const auto& fn : pe.functions) {
+            const Section* sec = pe.byRva((uint32_t)(fn.first - pe.image_base));
+            if (!sec) continue;
+            uint32_t base_off = sec->raw + (uint32_t)(fn.first - pe.image_base - sec->va);
+            size_t off = 0;
+            ZydisDecodedInstruction insn;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            while (off < fn.second) {
+                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, pe.data.data() + base_off + off,
+                                                         fn.second - off, &insn, ops))) break;
+                uint64_t next_rip = fn.first + off + insn.length;
+                if ((insn.mnemonic == ZYDIS_MNEMONIC_CALL || insn.mnemonic == ZYDIS_MNEMONIC_JMP) &&
+                    ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    if (t >= text_lo && t < text_hi && !pe.hasFunction(t)) pending.insert(t);
+                }
+                off += insn.length;
+            }
+        }
+    }
+
     const size_t candidates = pending.size();
     size_t added = 0;
     std::unordered_map<std::string, size_t> why;
@@ -1367,12 +1392,18 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
         for (const auto& f : pe.functions)
             if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
         uint32_t len = 0;
-        if (base && base + fsize > v) len = (uint32_t)(base + fsize - v);
-        else {
-            const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
-            if (!sec) continue;
-            uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
-            len = (sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 4096) : 0);
+        if (base && base + fsize > v) {
+            len = (uint32_t)(base + fsize - v);
+        } else {
+            // 取到下一个已登记函数起点（冷片段通常在两个函数之间的空隙里）
+            for (const auto& f : pe.functions)
+                if (f.first > v) { len = (uint32_t)(f.first - v); break; }
+            if (!len) {
+                const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
+                if (!sec) continue;
+                uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
+                len = (sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 512) : 0);
+            }
         }
         if (!len) continue;
 
