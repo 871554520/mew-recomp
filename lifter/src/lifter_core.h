@@ -24,6 +24,9 @@ struct PeImage {
     std::vector<Section> sections;
     std::vector<std::pair<uint64_t, uint32_t>> functions;  // va, size
     std::vector<ImportSlot> imports;                       // IAT 表
+    uint64_t guard_check_va = 0;                           // Load Config: GuardCFCheckFunctionPointer
+    uint64_t guard_dispatch_va = 0;                        // Load Config: GuardCFDispatchFunctionPointer
+    std::vector<uint64_t> gfids;                           // Load Config: GFIDS 合法间接目标
     const Section* byRva(uint32_t rva) const;
     const ImportSlot* importBySlot(uint64_t slot_va) const;
     bool hasFunction(uint64_t va) const;
