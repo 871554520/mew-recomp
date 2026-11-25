@@ -54,6 +54,13 @@ jobs:
           ./build/isa_histogram Mewgenics.exe generated/isa_histogram.json
           python3 tools/summarize_isa.py generated/isa_histogram.json generated/isa_freq.tsv | tee generated/isa_report.txt
 
+      - name: Find gpak loader (string xref)
+        run: |
+          for S in "resources.gpak" ".gpak" "gpak"; do
+            echo "===== $S ====="
+            ./build/mew_lifter --find-string "$S" --exe Mewgenics.exe 2>&1 | tee -a generated/gpak_xref.txt
+          done
+
       - name: Generate 64 shards + dispatch table + shims
         run: |
           mkdir -p generated/stage3
@@ -193,4 +200,5 @@ jobs:
             generated/runner.err
             generated/runner_api.log
             generated/hot_functions.txt
+            generated/gpak_xref.txt
           if-no-files-found: warn
