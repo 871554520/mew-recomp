@@ -55,13 +55,22 @@ inline CallRingTrace& call_trace() {
     return t;
 }
 
+inline X64Ctx*& cur_ctx_ptr() {
+    static X64Ctx* p = nullptr;
+    return p;
+}
+
 inline uint64_t& cur_fn_va() {
     static uint64_t v = 0;
     return v;
 }
 
 #define MEW_SET_CUR_FN(CTX, VA) \
-    do { cur_fn_va() = (uint64_t)(VA); call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx); } while (0)
+    do {                                                                     \
+        cur_ctx_ptr() = (CTX);                                                \
+        cur_fn_va() = (uint64_t)(VA);                                         \
+        call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx);               \
+    } while (0)
 #define MEW_TRACE_API(CTX, NAME) call_trace().push(0, (NAME), (CTX)->rcx)
 
 struct X64Ctx {
