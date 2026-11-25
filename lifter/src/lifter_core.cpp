@@ -237,6 +237,213 @@ struct Emit {
     bool stubbed = false;
 };
 
+
+static bool is_xmm_reg(const ZydisDecodedOperand& o) {
+    return o.type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(o.reg.value) >= 0;
+}
+static bool is_gpr_reg(const ZydisDecodedOperand& o) {
+    return o.type == ZYDIS_OPERAND_TYPE_REGISTER && gprId(o.reg.value) >= 0;
+}
+
+// 读操作数（xmm 或内存），返回 C++ 表达式字符串；bytes = 1/2/4/8/16
+static std::string sseRead(const PeImage& pe, const ZydisDecodedOperand& o,
+                           uint64_t next_rip, Emit& e, int bytes) {
+    if (is_xmm_reg(o)) return "ctx->xmm[" + std::to_string(xmmId(o.reg.value)) + "]";
+    std::string addr = addrExpr(pe, o, next_rip, e);
+    if (bytes == 4) return "g_f32(" + addr + ")";
+    if (bytes == 8) return "g_f64(" + addr + ")";
+    if (bytes == 16) return "g_u128(" + addr + ")";
+    return "g_u64(" + addr + ")";
+}
+
+bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
+                const ZydisDecodedInstruction& insn,
+                const ZydisDecodedOperand* ops, uint64_t next_rip) {
+    if (insn.operand_count < 1) return false;
+    const ZydisDecodedOperand& d0 = ops[0];
+    int dx = is_xmm_reg(d0) ? xmmId(d0.reg.value) : -1;
+    int dg = is_gpr_reg(d0) ? gprId(d0.reg.value) : -1;
+    // 目标寄存器 id 用于写入
+    auto dst = [&]() { return dx >= 0 ? ("ctx->xmm[" + std::to_string(dx) + "]") : std::string(); };
+
+    // ---- 标量浮点 ----
+    if (mn == "movss" || mn == "movsd") {
+        int bytes = (mn == "movss") ? 4 : 8;
+        std::string src = sseRead(pe, ops[1], next_rip, e, bytes);
+        if (dx >= 0 && is_xmm_reg(ops[1])) {
+            e.out << "  " << dst() << ".u64[0] = " << src << ".u64[0];\n";
+        } else if (dx >= 0) {
+            e.out << "  " << dst() << ".u64[0] = g_u64(" << addrExpr(pe, ops[1], next_rip, e) << ");\n";
+            e.out << "  " << dst() << ".u64[1] = 0ULL;\n";
+        } else {
+            // store xmm/imm -> mem
+            std::string srcx = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+            std::string addr = addrExpr(pe, ops[0], next_rip, e);
+            if (bytes == 4) e.out << "  g_st32(" << addr << ", " << srcx << ".u32[0]);\n";
+            else e.out << "  g_st64(" << addr << ", " << srcx << ".u64[0]);\n";
+        }
+        return true;
+    }
+    const bool scalar_ss = mn.size() > 3 && mn.substr(mn.size() - 2) == "ss";
+    const bool scalar_sd = mn.size() > 3 && mn.substr(mn.size() - 2) == "sd";
+    const char* base = nullptr;
+    if (scalar_ss || scalar_sd) {
+        std::string stem = mn.substr(0, mn.size() - 2);
+        if (stem == "add" || stem == "sub" || stem == "mul" || stem == "div" ||
+            stem == "sqrt" || stem == "min" || stem == "max") base = nullptr;
+        else if (mn == "addss" || mn == "subss" || mn == "mulss" || mn == "divss" ||
+                 mn == "sqrtss" || mn == "minss" || mn == "maxss") base = "ss";
+        if (mn == "addss" || mn == "subss" || mn == "mulss" || mn == "divss" ||
+            mn == "sqrtss" || mn == "minss" || mn == "maxss") {
+            std::string a = "ctx->xmm[" + std::to_string(dx) + "].f32[0]";
+            std::string b = sseRead(pe, ops[1], next_rip, e, 4);
+            std::string bv = (is_xmm_reg(ops[1])) ? b + ".f32[0]"
+                                                 : "g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")";
+            std::string op;
+            if (mn == "addss") op = a + " + " + bv;
+            else if (mn == "subss") op = a + " - " + bv;
+            else if (mn == "mulss") op = a + " * " + bv;
+            else if (mn == "divss") op = a + " / " + bv;
+            else if (mn == "sqrtss") op = "std::sqrt(" + bv + ")";
+            else if (mn == "minss") op = "std::fmin(" + a + ", " + bv + ")";
+            else op = "std::fmax(" + a + ", " + bv + ")";
+            e.out << "  ctx->xmm[" << dx << "].f32[0] = " << op << ";\n";
+            return true;
+        }
+        if (mn == "addsd" || mn == "subsd" || mn == "mulsd" || mn == "divsd" || mn == "sqrtsd") {
+            std::string a = "ctx->xmm[" + std::to_string(dx) + "].f64[0]";
+            std::string bv = (is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f64[0]")
+                                                  : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+            std::string op;
+            if (mn == "addsd") op = a + " + " + bv;
+            else if (mn == "subsd") op = a + " - " + bv;
+            else if (mn == "mulsd") op = a + " * " + bv;
+            else if (mn == "divsd") op = a + " / " + bv;
+            else op = "std::sqrt(" + bv + ")";
+            e.out << "  ctx->xmm[" << dx << "].f64[0] = " << op << ";\n";
+            return true;
+        }
+    }
+    if (mn == "ucomiss" || mn == "comiss" || mn == "ucomisd" || mn == "comisd") {
+        bool single = (mn == "ucomiss" || mn == "comiss");
+        std::string a = single ? ("ctx->xmm[" + std::to_string(dx) + "].f32[0]")
+                               : ("ctx->xmm[" + std::to_string(dx) + "].f64[0]");
+        std::string b = single ? ((is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[0]")
+                                                       : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")"))
+                               : ((is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f64[0]")
+                                                       : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")"));
+        e.out << "  sse::" << (single ? "ucomiss" : "ucomisd") << "(ctx, " << a << ", " << b << ");\n";
+        return true;
+    }
+    // ---- 类型转换 ----
+    if (mn == "cvtsi2ss" || mn == "cvtsi2sd") {
+        int w = ops[1].size / 8;
+        std::string src = "read_reg(ctx," + std::to_string(gprId(ops[1].reg.value)) + "," + std::to_string(w) + ")";
+        if (mn == "cvtsi2ss")
+            e.out << "  ctx->xmm[" << dx << "].f32[0] = (float)(int64_t)" << src << ";\n";
+        else
+            e.out << "  ctx->xmm[" << dx << "].f64[0] = (double)(int64_t)" << src << ";\n";
+        return true;
+    }
+    if (mn == "cvttss2si" || mn == "cvttsd2si") {
+        int w = ops[0].size / 8;
+        std::string src = (is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]." + (mn == "cvttss2si" ? "f32[0]" : "f64[0]"))
+                                               : ((mn == "cvttss2si") ? ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")")
+                                                                       : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")"));
+        if (mn == "cvttss2si")
+            e.out << "  write_reg(ctx," << dg << ",(uint64_t)(int64_t)sse::cvttss2si(" << src << ")," << w << ");\n";
+        else
+            e.out << "  write_reg(ctx," << dg << ",(uint64_t)sse::cvttsd2si(" << src << ")," << w << ");\n";
+        return true;
+    }
+    if (mn == "cvtss2sd") {
+        std::string src = is_xmm_reg(ops[1]) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[0]")
+                                             : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+        e.out << "  ctx->xmm[" << dx << "].f64[0] = (double)" << src << ";\n";
+        return true;
+    }
+    if (mn == "cvtsd2ss") {
+        std::string src = is_xmm_reg(ops[1]) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f64[0]")
+                                             : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+        e.out << "  ctx->xmm[" << dx << "].f32[0] = (float)" << src << ";\n";
+        return true;
+    }
+    // ---- 128 位搬运与位运算 ----
+    if (mn == "movaps" || mn == "movups" || mn == "movdqa" || mn == "movdqu") {
+        if (is_xmm_reg(ops[1])) {
+            e.out << "  " << dst() << ".u64[0] = ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[0];\n"
+                  << "  " << dst() << ".u64[1] = ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[1];\n";
+        } else {
+            uint64_t a = 0; (void)a;
+            std::string addr = addrExpr(pe, ops[1], next_rip, e);
+            e.out << "  " << dst() << ".u64[0] = g_u64(" << addr << ");\n"
+                  << "  " << dst() << ".u64[1] = g_u64(" << addr << " + 8ULL);\n";
+        }
+        return true;
+    }
+    if (mn == "xorps" || mn == "xorpd" || mn == "pxor" || mn == "andps" || mn == "orps") {
+        auto srcExpr = [&](int lane) -> std::string {
+            if (is_xmm_reg(ops[1])) return "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].u64[" + std::to_string(lane) + "]";
+            std::string addr = addrExpr(pe, ops[1], next_rip, e);
+            return "g_u64(" + addr + (lane ? " + 8ULL)" : ")");
+        };
+        char opch = (mn == "andps") ? '&' : (mn == "orps") ? '|' : '^';
+        for (int lane = 0; lane < 2; ++lane)
+            e.out << "  " << dst() << ".u64[" << lane << "] = " << dst() << ".u64[" << lane << "] "
+                  << opch << " " << srcExpr(lane) << ";\n";
+        return true;
+    }
+    // ---- 打包单精度算术 ----
+    if (mn == "addps" || mn == "subps" || mn == "mulps" || mn == "divps") {
+        char opch = (mn == "addps") ? '+' : (mn == "subps") ? '-' : (mn == "mulps") ? '*' : '/';
+        for (int lane = 0; lane < 4; ++lane) {
+            std::string b = is_xmm_reg(ops[1]) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[" + std::to_string(lane) + "]")
+                                               : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + " + " + std::to_string(lane * 4) + "ULL)");
+            e.out << "  ctx->xmm[" << dx << "].f32[" << lane << "] = ctx->xmm[" << dx << "].f32["
+                  << lane << "] " << opch << " " << b << ";\n";
+        }
+        return true;
+    }
+    if (mn == "shufps") {
+        uint8_t imm = (uint8_t)ops[2].imm.value.u;
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint32_t t[4] = {";
+        for (int i = 0; i < 4; ++i) {
+            int sel = (imm >> (i * 2)) & 3;
+            if (i < 2) e.out << "ctx->xmm[" << dx << "].u32[" << sel << "]";
+            else e.out << src << ".u32[" << sel << "]";
+            if (i < 3) e.out << ", ";
+        }
+        e.out << "}; for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "movd" || mn == "movq") {
+        int bytes = (mn == "movd") ? 4 : 8;
+        if (is_xmm_reg(ops[0]) && is_gpr_reg(ops[1])) {
+            e.out << "  ctx->xmm[" << dx << "].u64[0] = read_reg(ctx," << gprId(ops[1].reg.value) << ","
+                  << bytes << ");\n  ctx->xmm[" << dx << "].u64[1] = 0ULL;\n";
+            return true;
+        }
+        if (is_gpr_reg(ops[0]) && is_xmm_reg(ops[1])) {
+            e.out << "  write_reg(ctx," << dg << ",ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[0],"
+                  << bytes << ");\n";
+            return true;
+        }
+        if (is_xmm_reg(ops[0]) && ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            std::string addr = addrExpr(pe, ops[1], next_rip, e);
+            e.out << "  ctx->xmm[" << dx << "].u64[0] = g_u64(" << addr << ");\n";
+            return true;
+        }
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            std::string addr = addrExpr(pe, ops[0], next_rip, e);
+            e.out << "  g_st64(" << addr << ", ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[0]);\n";
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 std::string hexStr(uint64_t v);
 
 bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
@@ -540,7 +747,9 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
         const std::string setcc = ccSuffix(mn, "set");
         const std::string cmovcc = ccSuffix(mn, "cmov");
 
-        if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+        if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
+            /* SSE 已处理 */
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
             /* no-op */
         } else if (mn == "ret") {
             e.out << "  ctx->rsp += 8; return;\n";
@@ -1694,7 +1903,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         const std::string setcc = ccSuffix(mn, "set");
         const std::string cmovcc = ccSuffix(mn, "cmov");
 
-        if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+        if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
+            /* SSE 已处理 */
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
             /* no-op */
         } else if (mn == "ret") {
             e.out << "  ctx->rsp += 8; return;\n";
