@@ -58,6 +58,30 @@ for reloc in binary.relocations:
 # 没有 .pdata 登记的 thunk（例如 0x140d578c0: xor r8d,r8d; xor edx,edx; jmp ...）。
 # 这类入口纯 .pdata/.reloc 都挖不到，但占位率与运行期 miss 主要就来自它们。
 n_pad = 0
+# 已登记函数的区间：填充候选如果落在某个 .pdata 区间内部，那它只是函数体内的
+# 对齐填充，不是新入口（误收会让生成器对同一 VA 生成两种长度）。
+pdata_ranges = []
+try:
+    pd_sec = binary.get_section('.pdata')
+    if pd_sec is not None:
+        pd_raw = bytes(binary.get_content_from_virtual_address(
+            image_base + pd_sec.virtual_address, pd_sec.virtual_size or pd_sec.sizeof_raw_data))
+        for k in range(0, len(pd_raw) - 11, 12):
+            b, e, _u = struct.unpack_from('<III', pd_raw, k)
+            if b or e:
+                pdata_ranges.append((image_base + b, image_base + e))
+        pdata_ranges.sort()
+except Exception as exc:  # noqa: BLE001
+    print('pdata range scan failed:', exc)
+
+def _inside_known(va):
+    for lo, hi in pdata_ranges:
+        if lo <= va < hi:
+            return True
+        if lo > va:
+            break
+    return False
+
 try:
     text_bytes = bytes(binary.get_content_from_virtual_address(text_start, len_range := text_end - text_start))
     i = 0
@@ -72,14 +96,14 @@ try:
         run = j - i
         if run >= 3 and j < limit and n_pad < 30000:
             va = text_start + j
-            if va % 16 == 0 and va not in known and va not in seeds:
+            if va % 16 == 0 and va not in known and va not in seeds and not _inside_known(va):
                 seeds.add(va)
                 n_pad += 1
         i = j
 except Exception as exc:  # noqa: BLE001
     print('padding scan failed:', exc)
 
-print('padding-entry candidates:', n_pad)
+print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))
 
 with open(out_path, 'w', encoding='utf-8') as f:
