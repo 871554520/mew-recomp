@@ -955,7 +955,8 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure,
                          size_t skip) {
     struct Info { bool ok; bool okNoStub; int direct; bool ind; bool iat; bool rip; uint32_t size;
-                  uint32_t ptrMask; bool nonStackMem; };
+                  uint32_t ptrMask; bool nonStackMem; bool prologue; std::string last;
+                  bool badBase; };
     std::unordered_map<uint64_t, Info> infos;
     infos.reserve(pe.functions.size() * 2);
     std::unordered_map<uint64_t, uint32_t> sizes;
@@ -974,6 +975,9 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         i.size = fn.second;
         i.ptrMask = r.ptrArgMask;
         i.nonStackMem = r.usesNonStackMem;
+        i.prologue = r.hasPrologue;
+        i.last = r.lastMnemonic;
+        i.badBase = r.badMemBase;
         infos[fn.first] = i;
     }
 
@@ -1035,7 +1039,11 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
             if (!ci->second.okNoStub) ++stubbed;
             if (ci->second.iat) hasIat = true;
             if (ci->second.ind) hasInd = true;
-            if (strict && (ci->second.ptrMask != 0 || ci->second.nonStackMem)) { ok = false; break; }
+            if (strict) {
+                if (ci->second.ptrMask != 0 || ci->second.nonStackMem) { ok = false; break; }
+                if (!ci->second.prologue || ci->second.last != "ret") { ok = false; break; }
+                if (ci->second.badBase) { ok = false; break; }
+            }
             auto sz = sizes.find(cur);
             if (sz == sizes.end()) { ok = false; break; }
             std::vector<uint64_t> tgts;
@@ -1061,6 +1069,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         c.size = fn.second;
         c.directCalls = ri.direct;
         c.closure = seen.size();
+        c.ptr_mask = ri.ptrMask;
         if (out) *out = c;
         if (closure) {
             closure->clear();
