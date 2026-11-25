@@ -119,6 +119,12 @@ void init_guest_thread_ctx(X64Ctx* ctx, const GuestImage& img) {
     ctx->mem_bias = img.mem_bias;
     uint64_t host_top = ((uint64_t)(uintptr_t)stack + kStack - 0x100) & ~0xFULL;
     ctx->rsp = (uint64_t)((int64_t)host_top - img.mem_bias);
+    // 4KB 伪 TEB：gs:[0x30]=Self, gs:[0x58]=TLS 数组
+    void* teb = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (teb == MAP_FAILED) std::abort();
+    std::memset(teb, 0, 4096);
+    ctx->gs_base = (uint64_t)((int64_t)(uintptr_t)teb - img.mem_bias);
+    ctx->fs_base = ctx->gs_base;
     ctx->rbx = 0; ctx->rbp = 0; ctx->rsi = 0; ctx->rdi = 0;
     ctx->r12 = ctx->r13 = ctx->r14 = ctx->r15 = 0;
 }
