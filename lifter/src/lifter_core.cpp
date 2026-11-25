@@ -974,9 +974,17 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         while (off < size) {
             if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, size - off, &insn, ops))) break;
             uint64_t next_rip = va + off + insn.length;
-            if (insn.mnemonic == ZYDIS_MNEMONIC_CALL && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+            // 直接调用 + 跨块尾跳（jmp/jcc 到本函数范围外）都算闭包边
+            if ((insn.mnemonic == ZYDIS_MNEMONIC_CALL || insn.mnemonic == ZYDIS_MNEMONIC_JMP) &&
+                ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-                if (pe.hasFunction(t)) tgts.push_back(t);
+                if (t < va || t >= va + size) {
+                    if (pe.hasFunction(t)) tgts.push_back(t);
+                }
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+                       insn.mnemonic >= ZYDIS_MNEMONIC_JB && insn.mnemonic <= ZYDIS_MNEMONIC_JZ) {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if ((t < va || t >= va + size) && pe.hasFunction(t)) tgts.push_back(t);
             }
             off += insn.length;
         }
