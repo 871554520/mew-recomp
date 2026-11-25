@@ -54,6 +54,34 @@ for reloc in binary.relocations:
         if text_start <= val < text_end and val not in known:
             seeds.add(val)
 
+# 对齐填充后的隐藏入口：MSVC 会用 `cc` 拉起对齐，紧随其后的代码常常是
+# 没有 .pdata 登记的 thunk（例如 0x140d578c0: xor r8d,r8d; xor edx,edx; jmp ...）。
+# 这类入口纯 .pdata/.reloc 都挖不到，但占位率与运行期 miss 主要就来自它们。
+n_pad = 0
+try:
+    text_bytes = bytes(binary.get_content_from_virtual_address(text_start, len_range := text_end - text_start))
+    i = 0
+    limit = len(text_bytes)
+    while i < limit:
+        if text_bytes[i] != 0xCC:
+            i += 1
+            continue
+        j = i
+        while j < limit and text_bytes[j] == 0xCC:
+            j += 1
+        run = j - i
+        if run >= 3 and j < limit and n_pad < 30000:
+            va = text_start + j
+            if va % 16 == 0 and va not in known and va not in seeds:
+                seeds.add(va)
+                n_pad += 1
+        i = j
+except Exception as exc:  # noqa: BLE001
+    print('padding scan failed:', exc)
+
+print('padding-entry candidates:', n_pad)
+print('total seeds:', len(seeds))
+
 with open(out_path, 'w', encoding='utf-8') as f:
     for va in sorted(seeds):
         f.write('0x%x\n' % va)
