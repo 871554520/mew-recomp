@@ -421,7 +421,8 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
 
     Emit e;
     e.flags = flags;
-    e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
+    e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n"
+          << "  MEW_SET_CUR_FN(0x" << hexStr(va) << "ULL);\n";
 
     size_t off = 0;
     ZydisDecodedInstruction insn;
@@ -1573,7 +1574,8 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
     Emit e;
     e.flags = flags;
     std::string lastMn;
-    e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
+    e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n"
+          << "  MEW_SET_CUR_FN(0x" << hexStr(va) << "ULL);\n";
 
     for (const auto& kv : blocks) {
         const uint64_t rip = kv.first;
