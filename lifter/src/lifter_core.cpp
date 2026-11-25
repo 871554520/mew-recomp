@@ -457,6 +457,10 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
 
         e.out << "L_" << std::hex << rip << std::dec << ": ;\n";
 
+        bool xmmOp = false;
+        for (uint16_t oi = 0; oi < insn.operand_count; ++oi)
+            if (ops[oi].type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(ops[oi].reg.value) >= 0) xmmOp = true;
+
         const bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
         const std::string setcc = ccSuffix(mn, "set");
         const std::string cmovcc = ccSuffix(mn, "cmov");
@@ -607,7 +611,7 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             e.out << "    uint64_t r=add_flags(ctx,d,s," << w << ");\n";
             storeExpr(pe, insn, ops[0], "r", next_rip, w, e);
             e.out << "  }\n";
-        } else if (insn.operand_count == 0 && (mn == "stosb" || mn == "stosw" || mn == "stosd" || mn == "stosq" ||
+        } else if (!xmmOp && (mn == "stosb" || mn == "stosw" || mn == "stosd" || mn == "stosq" ||
                    mn == "movsb" || mn == "movsw" || mn == "movsd" || mn == "movsq" ||
                    mn == "lodsb" || mn == "lodsw" || mn == "lodsd" || mn == "lodsq" ||
                    mn == "scasb" || mn == "scasw" || mn == "scasd" || mn == "scasq" ||
