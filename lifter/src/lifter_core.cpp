@@ -607,6 +607,32 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             e.out << "    uint64_t r=add_flags(ctx,d,s," << w << ");\n";
             storeExpr(pe, insn, ops[0], "r", next_rip, w, e);
             e.out << "  }\n";
+        } else if (insn.operand_count == 0 && (mn == "stosb" || mn == "stosw" || mn == "stosd" || mn == "stosq" ||
+                   mn == "movsb" || mn == "movsw" || mn == "movsd" || mn == "movsq" ||
+                   mn == "lodsb" || mn == "lodsw" || mn == "lodsd" || mn == "lodsq" ||
+                   mn == "scasb" || mn == "scasw" || mn == "scasd" || mn == "scasq" ||
+                   mn == "cmpsb" || mn == "cmpsw" || mn == "cmpsd" || mn == "cmpsq")) {
+            const char* base = mn.c_str();
+            char op = base[0];
+            char sz = mn.back();
+            int bytes = (sz == 'b') ? 1 : (sz == 'w') ? 2 : (sz == 'd') ? 4 : 8;
+            int rep = (insn.attributes & ZYDIS_ATTRIB_HAS_REP) ? 1 : 0;
+            int repne = (insn.attributes & ZYDIS_ATTRIB_HAS_REPNE) ? 1 : 0;
+            if (op == 's' && mn.rfind("stos", 0) == 0) e.out << "  x64_stos(ctx," << bytes << "," << rep << ");\n";
+            else if (op == 'm') e.out << "  x64_movs(ctx," << bytes << "," << rep << ");\n";
+            else if (op == 'l') e.out << "  x64_lods(ctx," << bytes << "," << rep << ");\n";
+            else if (mn.rfind("scas", 0) == 0) e.out << "  x64_scas(ctx," << bytes << "," << rep << "," << repne << ");\n";
+            else e.out << "  x64_cmps(ctx," << bytes << "," << rep << "," << repne << ");\n";
+        } else if (mn == "cld") {
+            e.out << "  ctx->df = false;\n";
+        } else if (mn == "std") {
+            e.out << "  ctx->df = true;\n";
+        } else if (mn == "clc") {
+            e.out << "  ctx->cf = false;\n";
+        } else if (mn == "stc") {
+            e.out << "  ctx->cf = true;\n";
+        } else if (mn == "cmc") {
+            e.out << "  ctx->cf = !ctx->cf;\n";
         } else if (mn == "xchg") {
             std::string v0 = valExpr(pe, insn, ops[0], next_rip, e);
             std::string v1 = valExpr(pe, insn, ops[1], next_rip, e);
