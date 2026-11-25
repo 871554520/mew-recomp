@@ -16,6 +16,18 @@
 #include "x64_runtime.h"
 #include "win32_common.h"
 
+// ---- 前向声明：动态加载表可能在定义之前引用 ----
+void shim_KERNEL32_FlsAlloc(X64Ctx*);
+void shim_KERNEL32_FlsFree(X64Ctx*);
+void shim_KERNEL32_FlsGetValue(X64Ctx*);
+void shim_KERNEL32_FlsSetValue(X64Ctx*);
+void shim_KERNEL32_RtlCaptureContext(X64Ctx*);
+void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx*);
+void shim_KERNEL32_RtlVirtualUnwind(X64Ctx*);
+void shim_KERNEL32_RtlPcToFileHeader(X64Ctx*);
+void shim_KERNEL32_OutputDebugStringA(X64Ctx*);
+
+
 namespace {
 thread_local uint64_t g_tls[1024];
 bool g_tls_used[1024] = {false};
