@@ -430,6 +430,14 @@ RecompFn lookup_api(const char* name) {
         {"IsDebuggerPresent", shim_KERNEL32_IsDebuggerPresent},
         {"RaiseException", shim_KERNEL32_RaiseException},
         {"RtlUnwind", shim_KERNEL32_RtlUnwind},
+        {"FlsAlloc", shim_KERNEL32_FlsAlloc},
+        {"FlsFree", shim_KERNEL32_FlsFree},
+        {"FlsGetValue", shim_KERNEL32_FlsGetValue},
+        {"FlsSetValue", shim_KERNEL32_FlsSetValue},
+        {"RtlCaptureContext", shim_KERNEL32_RtlCaptureContext},
+        {"RtlLookupFunctionEntry", shim_KERNEL32_RtlLookupFunctionEntry},
+        {"RtlVirtualUnwind", shim_KERNEL32_RtlVirtualUnwind},
+        {"RtlPcToFileHeader", shim_KERNEL32_RtlPcToFileHeader},
         {"GetSystemInfo", shim_KERNEL32_GetSystemInfo},
         {"InitializeSListHead", shim_KERNEL32_InitializeSListHead},
         {"SetUnhandledExceptionFilter", shim_KERNEL32_SetUnhandledExceptionFilter},
@@ -495,3 +503,38 @@ void shim_KERNEL32_GetProcAddress(X64Ctx* c) {
     ret0(c, va);
 }
 void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
+
+// ---------------- FLs(纤程局部存储) / 异常上下文 / 其它启动 API ----------------
+void shim_KERNEL32_FlsAlloc(X64Ctx* c) {
+    std::lock_guard<std::mutex> lk(g_tls_mu);
+    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) { g_tls_used[i] = true; ret0(c, i); return; }
+    ret0(c, (uint64_t)-1);
+}
+void shim_KERNEL32_FlsFree(X64Ctx* c) {
+    uint32_t i = (uint32_t)arg0(c);
+    if (i < 1024) g_tls_used[i] = false;
+    ret0(c, 1);
+}
+void shim_KERNEL32_FlsGetValue(X64Ctx* c) { ret0(c, g_tls[(uint32_t)arg0(c) & 1023]); }
+void shim_KERNEL32_FlsSetValue(X64Ctx* c) { g_tls[(uint32_t)arg0(c) & 1023] = arg1(c); ret0(c, 1); }
+
+void shim_KERNEL32_RtlCaptureContext(X64Ctx* c) {
+    if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 0x4d0);
+    ret0(c, 0);
+}
+void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_RtlVirtualUnwind(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_RtlUnwindEx(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_RtlPcToFileHeader(X64Ctx* c) { ret0(c, 0x140000000ULL); }
+void shim_KERNEL32_TerminateProcess(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] TerminateProcess(code=%u)\n", (unsigned)arg1(c));
+    std::exit((int)arg1(c));
+}
+void shim_KERNEL32_GetModuleFileNameA(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_VirtualQuery(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_GetProcessTimes(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_QueryFullProcessImageNameW(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_GetFileInformationByHandle(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_DeviceIoControl(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_GetVolumeInformationW(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_GetDriveTypeW(X64Ctx* c) { ret0(c, 2); }
