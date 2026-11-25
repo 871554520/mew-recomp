@@ -99,6 +99,10 @@ size_t expandFunctionListByDataPointers(PeImage& pe);
 // 追加额外入口（来自 .reloc/GFIDS 挖掘或运行期发现）
 size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds);
 
+// 统计占位助记符频次
+void stubHistogram(const PeImage& pe, std::map<std::string, size_t>& out,
+                   size_t* stubbedFuncs, size_t* totalFuncs);
+
 // 阶段 3：分片生成
 struct ShardStats {
     size_t total = 0, ok = 0, stubbed = 0, failed = 0;
