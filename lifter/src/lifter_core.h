@@ -96,6 +96,9 @@ std::vector<uint64_t> findCallers(const PeImage& pe, uint64_t target_va);
 // 数据段里指向 .text 的函数指针补登为额外入口（处理 CRT 初始化表 / C++ 虚表 / 冷片段）
 size_t expandFunctionListByDataPointers(PeImage& pe);
 
+// 追加额外入口（来自 .reloc/GFIDS 挖掘或运行期发现）
+size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds);
+
 // 阶段 3：分片生成
 struct ShardStats {
     size_t total = 0, ok = 0, stubbed = 0, failed = 0;
