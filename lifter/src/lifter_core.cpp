@@ -387,10 +387,10 @@ static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
 }  // namespace
 
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
-    return liftFunctionEx(pe, va, size, 0);
+    return liftLinearEx(pe, va, size, 0);
 }
 
-LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     LiftResult res;
     const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
     if (!sec) { res.unsupported.push_back("no-section"); return res; }
@@ -1474,4 +1474,550 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
     std::fprintf(stderr, "[expand] code_targets=%zu data_ptrs=%zu extra=%zu functions=%zu\n",
                  work_code.size(), work_data.size(), added, pe.functions.size());
     return added;
+}
+
+// ---------------- 可达代码发现版（阶段 3 主路径） ----------------
+LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+    LiftResult res;
+    const Section* sec0 = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec0) { res.unsupported.push_back("no-section"); return res; }
+
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+    auto decodeAt = [&](uint64_t addr, ZydisDecodedInstruction* insn, ZydisDecodedOperand* ops) -> bool {
+        const Section* s2 = pe.byRva((uint32_t)(addr - pe.image_base));
+        if (!s2) return false;
+        uint32_t off = s2->raw + (uint32_t)(addr - pe.image_base - s2->va);
+        if (off >= s2->raw + s2->rawsize) return false;
+        size_t avail = (size_t)(s2->raw + s2->rawsize - off);
+        return ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, pe.data.data() + off, avail, insn, ops));
+    };
+
+    // ---- 发现可达指令 ----
+    std::map<uint64_t, uint32_t> blocks;
+    std::unordered_set<uint64_t> seen;
+    std::vector<uint64_t> work{va};
+    while (!work.empty() && blocks.size() < 4000) {
+        uint64_t addr = work.back();
+        work.pop_back();
+        if (seen.count(addr)) continue;
+        uint64_t cur = addr;
+        while (true) {
+            if (seen.count(cur)) break;
+            if (cur != va && pe.hasFunction(cur)) break;
+            const Section* cur_sec = pe.byRva((uint32_t)(cur - pe.image_base));
+            if (!cur_sec || !cur_sec->exec) break;
+            ZydisDecodedInstruction insn;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            if (!decodeAt(cur, &insn, ops)) break;
+            seen.insert(cur);
+            blocks[cur] = insn.length;
+            const char* m = ZydisMnemonicGetString(insn.mnemonic);
+            std::string mn = m ? m : "?";
+            uint64_t next_rip = cur + insn.length;
+
+            if (mn == "ret") break;
+            if (mn == "jmp") {
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    if (!pe.hasFunction(t) || t == va) work.push_back(t);
+                    break;
+                }
+                // 跳转表
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                    ops[0].mem.index != ZYDIS_REGISTER_NONE) {
+                    int64_t disp = ops[0].mem.disp.has_displacement ? (int64_t)ops[0].mem.disp.value : 0;
+                    uint64_t tbl = 0;
+                    if (ops[0].mem.base == ZYDIS_REGISTER_RIP) tbl = next_rip + disp;
+                    else if (ops[0].mem.base == ZYDIS_REGISTER_NONE) tbl = (uint64_t)(uint32_t)disp;
+                    int scale = (int)ops[0].mem.scale;
+                    if (tbl && (scale == 8 || scale == 4)) {
+                        for (int k = 0; k < 256; ++k) {
+                            uint64_t raw = 0;
+                            if (!readGuestQword(pe, tbl + (uint64_t)k * scale, &raw)) break;
+                            if (!raw) continue;
+                            work.push_back(raw);
+                        }
+                    }
+                }
+                break;
+            }
+            const bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
+            if (isJcc && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                work.push_back(t);
+                cur = next_rip;
+                continue;
+            }
+            if (mn == "jrcxz" || mn == "jecxz" || mn == "jcxz") {
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    work.push_back(t);
+                }
+                cur = next_rip;
+                continue;
+            }
+            cur = next_rip;
+        }
+    }
+    if (blocks.empty()) { res.unsupported.push_back("no-code"); return res; }
+
+    std::unordered_set<uint64_t> labelSet;
+    for (const auto& kv : blocks) labelSet.insert(kv.first);
+    const uint64_t max_end = blocks.rbegin()->first + blocks.rbegin()->second;
+    const uint64_t effSize = max_end > va ? (max_end - va) : size;
+
+    Emit e;
+    e.flags = flags;
+    std::string lastMn;
+    e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
+
+    for (const auto& kv : blocks) {
+        const uint64_t rip = kv.first;
+        ZydisDecodedInstruction insn;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        if (!decodeAt(rip, &insn, ops)) { e.unsupported.push_back("decode-fail"); break; }
+        const uint64_t next_rip = rip + insn.length;
+        const char* m = ZydisMnemonicGetString(insn.mnemonic);
+        std::string mn = m ? m : "?";
+        e.count++;
+
+        for (uint16_t oi = 0; oi < insn.operand_count; ++oi) {
+            if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                e.usesMemory = true;
+                if (oi == 0) e.writesMemory = true;
+            }
+        }
+        if (e.count == 1) {
+            if (mn == "push" ||
+                (mn == "sub" && ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && ops[0].reg.value == ZYDIS_REGISTER_RSP) ||
+                (mn == "mov" && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY)) {
+                e.hasPrologue = true;
+            }
+        }
+
+        e.out << "L_" << std::hex << rip << std::dec << ": ;\n";
+
+        bool xmmOp = false;
+        for (uint16_t oi = 0; oi < insn.operand_count; ++oi)
+            if (ops[oi].type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(ops[oi].reg.value) >= 0) xmmOp = true;
+
+        const bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
+        const std::string setcc = ccSuffix(mn, "set");
+        const std::string cmovcc = ccSuffix(mn, "cmov");
+
+        if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+            /* no-op */
+        } else if (mn == "ret") {
+            e.out << "  ctx->rsp += 8; return;\n";
+        } else if (mn == "leave") {
+            e.out << "  write_reg(ctx,4,read_reg(ctx,5,8),8); write_reg(ctx,5,mem_read<uint64_t>(ctx,ctx->rsp),8); ctx->rsp += 8;\n";
+        } else if (mn == "push") {
+            e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, "
+                  << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+        } else if (mn == "pop") {
+            storeExpr(pe, insn, ops[0], "mem_read<uint64_t>(ctx,ctx->rsp)", next_rip, 8, e);
+            e.out << "  ctx->rsp += 8;\n";
+        } else if (mn == "mov" || mn == "movzx" || mn == "movsx" || mn == "movsxd" || mn == "movd" || mn == "movq") {
+            std::string v = valExpr(pe, insn, ops[1], next_rip, e);
+            if (mn == "movzx") {
+                unsigned bits = ops[1].size;
+                if (bits < 64) {
+                    std::ostringstream t;
+                    t << std::hex << ((1ULL << bits) - 1);
+                    v = "(" + v + " & 0x" + t.str() + "ULL)";
+                }
+            } else if (mn == "movsx" || mn == "movsxd") {
+                v = "(uint64_t)(int64_t)(int" + std::to_string(ops[1].size) + "_t)(" + v + ")";
+            }
+            storeExpr(pe, insn, ops[0], v, next_rip, ops[0].size / 8, e);
+        } else if (mn == "lea") {
+            storeExpr(pe, insn, ops[0], addrExpr(pe, ops[1], next_rip, e), next_rip, ops[0].size / 8, e);
+        } else if (mn == "add" || mn == "sub" || mn == "cmp" || mn == "and" || mn == "or" ||
+                   mn == "xor" || mn == "test") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = valExpr(pe, insn, ops[1], next_rip, e);
+            int w = ops[0].size / 8;
+            std::string call;
+            if (mn == "add") call = "add_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")";
+            else if (mn == "sub" || mn == "cmp") call = "sub_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")";
+            else {
+                std::string opx = (mn == "and" || mn == "test") ? "&" : (mn == "or") ? "|" : "^";
+                call = "logic_flags(ctx,(" + a + " " + opx + " " + b + ")," + std::to_string(w) + ")";
+            }
+            if (mn == "cmp" || mn == "test") e.out << "  (void)" << call << ";\n";
+            else storeExpr(pe, insn, ops[0], call, next_rip, w, e);
+        } else if (mn == "inc" || mn == "dec") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            int w = ops[0].size / 8;
+            std::string call = (mn == "inc") ? "add_flags(ctx," + a + ",1ULL," + std::to_string(w) + ")"
+                                             : "sub_flags(ctx," + a + ",1ULL," + std::to_string(w) + ")";
+            storeExpr(pe, insn, ops[0], call, next_rip, w, e);
+        } else if (mn == "neg") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            int w = ops[0].size / 8;
+            storeExpr(pe, insn, ops[0], "sub_flags(ctx,0ULL," + a + "," + std::to_string(w) + ")", next_rip, w, e);
+        } else if (mn == "not") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            storeExpr(pe, insn, ops[0], "(~" + a + ")", next_rip, ops[0].size / 8, e);
+        } else if (mn == "cdqe" || mn == "cwde" || mn == "cbw" || mn == "cdq" || mn == "cqo" || mn == "cwd") {
+            if (mn == "cdqe") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int32_t)read_reg(ctx,0,4),8);\n";
+            else if (mn == "cwde") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int16_t)read_reg(ctx,0,2),4);\n";
+            else if (mn == "cbw") e.out << "  write_reg(ctx,0,(uint64_t)(int64_t)(int8_t)read_reg(ctx,0,1),2);\n";
+            else if (mn == "cdq") e.out << "  write_reg(ctx,2,(uint64_t)(int64_t)((int64_t)(int32_t)read_reg(ctx,0,4) >> 31),4);\n";
+            else e.out << "  write_reg(ctx,2,(uint64_t)((int64_t)read_reg(ctx,0,8) >> 63),8);\n";
+        } else if (mn == "imul") {
+            if (insn.operand_count == 1) {
+                e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
+                      << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
+                         " write_reg(ctx,0,(uint64_t)p,8); write_reg(ctx,2,(uint64_t)(p>>64),8); }\n";
+            } else if (insn.operand_count == 2) {
+                int id = gprId(ops[0].reg.value);
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << ",8) * (int64_t)"
+                      << valExpr(pe, insn, ops[1], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+            } else {
+                int id = gprId(ops[0].reg.value);
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)"
+                      << valExpr(pe, insn, ops[1], next_rip, e) << " * (int64_t)"
+                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+            }
+        } else if (mn == "shl" || mn == "shr" || mn == "sar") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = (insn.operand_count > 1) ? valExpr(pe, insn, ops[1], next_rip, e) : "1ULL";
+            int w = ops[0].size / 8;
+            std::string shift = (mn == "shl") ? "<<" : ">>";
+            if (mn == "sar") {
+                storeExpr(pe, insn, ops[0],
+                          "(uint64_t)((int64_t)(" + a + ") >> (" + b + " & 63))", next_rip, w, e);
+            } else {
+                storeExpr(pe, insn, ops[0], "((" + a + ") " + shift + " (" + b + " & 63))", next_rip, w, e);
+            }
+        } else if (mn == "rol" || mn == "ror") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = (insn.operand_count > 1) ? valExpr(pe, insn, ops[1], next_rip, e) : "1ULL";
+            int w = ops[0].size / 8;
+            int bits = w * 8;
+            std::string fn = (mn == "rol") ? "rotl" : "rotr";
+            storeExpr(pe, insn, ops[0], std::string(fn) + "<uint64_t>(" + a + "," + b + ") & " +
+                                     std::to_string(bits == 64 ? ~0ULL : ((1ULL << bits) - 1)) + "ULL",
+                      next_rip, w, e);
+        } else if (mn == "int") {
+            uint64_t imm = (insn.operand_count > 0 && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+                         ? (uint64_t)ops[0].imm.value.u : 3;
+            if (imm == 3) {
+                /* int3：断点填充，按 nop 处理 */
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"int\");\n";
+            } else {
+                e.unsupported.push_back("int");
+            }
+        } else if (mn == "bt" || mn == "btc" || mn == "btr" || mn == "bts") {
+            int w = ops[0].size / 8;
+            int nbits = w * 8;
+            e.out << "  { uint64_t b=" << valExpr(pe, insn, ops[0], next_rip, e)
+                  << "; uint64_t ii=(" << valExpr(pe, insn, ops[1], next_rip, e) << ") & " << (nbits - 1) << ";\n"
+                     "    ctx->cf = ((b >> ii) & 1ULL) != 0;\n";
+            if (mn == "bts") e.out << "    b |= (1ULL << ii);\n";
+            else if (mn == "btr") e.out << "    b &= ~(1ULL << ii);\n";
+            else if (mn == "btc") e.out << "    b ^= (1ULL << ii);\n";
+            if (mn != "bt") storeExpr(pe, insn, ops[0], "b", next_rip, w, e);
+            e.out << "  }\n";
+        } else if (mn == "bsf" || mn == "bsr" || mn == "tzcnt" || mn == "lzcnt" || mn == "popcnt") {
+            int w = ops[0].size / 8;
+            std::string src = valExpr(pe, insn, ops[1], next_rip, e);
+            std::string fn = (mn == "bsf" || mn == "tzcnt") ? "x64_ctz"
+                           : (mn == "bsr" || mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
+            storeExpr(pe, insn, ops[0], fn + "(" + src + ", " + std::to_string(w * 8) + ")", next_rip, w, e);
+            if (mn == "bsf" || mn == "bsr") {
+                e.out << "  (void)sub_flags(ctx," << src << ",0ULL," << w << ");\n";
+            }
+        } else if (mn == "cmpxchg") {
+            int w = ops[0].size / 8;
+            std::string dst = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string srcv = valExpr(pe, insn, ops[1], next_rip, e);
+            uint64_t mask = w >= 8 ? ~0ULL : ((1ULL << (w * 8)) - 1);
+            e.out << "  { uint64_t d=" << dst << ", s=" << srcv
+                  << ", acc=read_reg(ctx,0," << w << ") & " << mask << "ULL;\n"
+                     "    (void)sub_flags(ctx,acc,d," << w << ");\n"
+                     "    if (ctx->zf) { d = s; } else { write_reg(ctx,0,d," << w << "); }\n";
+            storeExpr(pe, insn, ops[0], "d", next_rip, w, e);
+            e.out << "  }\n";
+        } else if (mn == "xadd") {
+            int w = ops[0].size / 8;
+            std::string dst = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string srcv = valExpr(pe, insn, ops[1], next_rip, e);
+            e.out << "  { uint64_t d=" << dst << ", s=" << srcv << ";\n";
+            storeExpr(pe, insn, ops[1], "d", next_rip, w, e);
+            e.out << "    uint64_t r=add_flags(ctx,d,s," << w << ");\n";
+            storeExpr(pe, insn, ops[0], "r", next_rip, w, e);
+            e.out << "  }\n";
+        } else if (!xmmOp && (mn == "stosb" || mn == "stosw" || mn == "stosd" || mn == "stosq" ||
+                   mn == "movsb" || mn == "movsw" || mn == "movsd" || mn == "movsq" ||
+                   mn == "lodsb" || mn == "lodsw" || mn == "lodsd" || mn == "lodsq" ||
+                   mn == "scasb" || mn == "scasw" || mn == "scasd" || mn == "scasq" ||
+                   mn == "cmpsb" || mn == "cmpsw" || mn == "cmpsd" || mn == "cmpsq")) {
+            const char* base = mn.c_str();
+            char op = base[0];
+            char sz = mn.back();
+            int bytes = (sz == 'b') ? 1 : (sz == 'w') ? 2 : (sz == 'd') ? 4 : 8;
+            int rep = (insn.attributes & ZYDIS_ATTRIB_HAS_REP) ? 1 : 0;
+            int repne = (insn.attributes & ZYDIS_ATTRIB_HAS_REPNE) ? 1 : 0;
+            if (op == 's' && mn.rfind("stos", 0) == 0) e.out << "  x64_stos(ctx," << bytes << "," << rep << ");\n";
+            else if (op == 'm') e.out << "  x64_movs(ctx," << bytes << "," << rep << ");\n";
+            else if (op == 'l') e.out << "  x64_lods(ctx," << bytes << "," << rep << ");\n";
+            else if (mn.rfind("scas", 0) == 0) e.out << "  x64_scas(ctx," << bytes << "," << rep << "," << repne << ");\n";
+            else e.out << "  x64_cmps(ctx," << bytes << "," << rep << "," << repne << ");\n";
+        } else if (mn == "cld") {
+            e.out << "  ctx->df = false;\n";
+        } else if (mn == "std") {
+            e.out << "  ctx->df = true;\n";
+        } else if (mn == "clc") {
+            e.out << "  ctx->cf = false;\n";
+        } else if (mn == "stc") {
+            e.out << "  ctx->cf = true;\n";
+        } else if (mn == "cmc") {
+            e.out << "  ctx->cf = !ctx->cf;\n";
+        } else if (mn == "xchg") {
+            std::string v0 = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string v1 = valExpr(pe, insn, ops[1], next_rip, e);
+            e.out << "  { uint64_t t0=" << v0 << "; uint64_t t1=" << v1 << ";\n";
+            storeExpr(pe, insn, ops[0], "t1", next_rip, ops[0].size / 8, e);
+            storeExpr(pe, insn, ops[1], "t0", next_rip, ops[1].size / 8, e);
+            e.out << "  }\n";
+        } else if (mn == "cpuid") {
+            e.out << "  { uint32_t a=(uint32_t)read_reg(ctx,0,4), b=0, c=(uint32_t)read_reg(ctx,1,4), d=0;\n"
+                     "    x64_cpuid(a, c, &a, &b, &c, &d);\n"
+                     "    write_reg(ctx,0,a,4); write_reg(ctx,3,b,4); write_reg(ctx,2,c,4); write_reg(ctx,1,d,4); }\n";
+        } else if (mn == "xgetbv") {
+            e.out << "  { uint32_t a=7, d=0; write_reg(ctx,0,a,4); write_reg(ctx,2,d,4); }\n";
+        } else if (mn == "xsetbv") {
+            /* 忽略：模拟器不管理 XCR */
+        } else if (mn == "rdtsc") {
+            e.out << "  { uint64_t t=x64_rdtsc(); write_reg(ctx,0,t,4); write_reg(ctx,2,(t>>32),4); }\n";
+        } else if (mn == "bswap") {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",bswap64(" << a << "),8);\n";
+        } else if (mn == "jmp") {
+            if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t >= va && t < va + effSize) {
+                    if (labelSet.count(t)) {
+                        e.out << "  goto L_" << hexStr(t) << ";\n";
+                    } else if (flags & LIFT_STUB_UNKNOWN) {
+                        e.stubbed = true;
+                        e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
+                    } else {
+                        e.unsupported.push_back("jump-missing");
+                        break;
+                    }
+                } else if (flags & LIFT_FRAGMENT) {
+                    if (g_needed_entries) g_needed_entries->insert(t);
+                    e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
+                } else if (flags & LIFT_TAIL_JUMP) {
+                    // 尾调用：不压模拟返回地址，直接跳/返回
+                    if (pe.hasFunction(t)) {
+                        e.out << "  return sub_" << hexStr(t) << "(ctx);\n";
+                    } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
+                    }
+                } else { e.unsupported.push_back("jump-out-of-func"); break; }
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                       ops[0].mem.index != ZYDIS_REGISTER_NONE) {
+                // switch 跳转表：jmp qword ptr [index*scale + table]
+                int64_t disp = ops[0].mem.disp.has_displacement ? (int64_t)ops[0].mem.disp.value : 0;
+                uint64_t tbl = 0;
+                if (ops[0].mem.base == ZYDIS_REGISTER_RIP) tbl = next_rip + disp;
+                else if (ops[0].mem.base == ZYDIS_REGISTER_NONE) tbl = (uint64_t)(uint32_t)disp;
+                int idx_reg = gprId(ops[0].mem.index);
+                int scale = (int)ops[0].mem.scale;
+                bool expanded = false;
+                if (tbl && idx_reg >= 0 && (scale == 8 || scale == 4) && effSize < 0x10000) {
+                    std::vector<std::pair<uint64_t, uint64_t>> table;  // (index, target)
+                    bool all_in = true;
+                    for (int k = 0; k < 256; ++k) {
+                        uint64_t raw = 0;
+                        if (!readGuestQword(pe, tbl + (uint64_t)k * scale, &raw)) { break; }
+                        if (!raw) continue;
+                        // 表项可能是原始 VA，也可能已被重定位；两种都接受
+                        uint64_t t = raw;
+                        if (t > (1ULL << 47)) t = (uint64_t)((int64_t)raw - pe.image_base) + pe.image_base;  // no-op 保护
+                        if (t < va || t >= va + effSize) { all_in = false; break; }
+                        if (!labelSet.count(t)) { all_in = false; break; }
+                        table.push_back({(uint64_t)k, t});
+                        if (table.size() >= 128) break;
+                    }
+                    if (all_in && table.size() >= 2) {
+                        e.out << "  { uint64_t ix = read_reg(ctx," << idx_reg << ",8);\n"
+                                 "    switch (ix) {\n";
+                        for (const auto& kv : table)
+                            e.out << "      case " << kv.first << "ULL: goto L_" << hexStr(kv.second) << ";\n";
+                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-table-oor\");\n"
+                                 "    }\n"
+                                 "  }\n";
+                        expanded = true;
+                    }
+                }
+                if (!expanded) {
+                    if (flags & LIFT_TAIL_JUMP) {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                    } else {
+                        e.unsupported.push_back("jmp-indirect");
+                    }
+                }
+            } else if (flags & LIFT_TAIL_JUMP) {
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[0].mem.base == ZYDIS_REGISTER_RIP) {
+                    uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
+                    if (const ImportSlot* im = pe.importBySlot(slot)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx); return;\n";
+                    }
+                } else {
+                    e.indirectCall = true;
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                }
+            } else {
+                e.unsupported.push_back("jmp-indirect");
+            }
+        } else if (mn == "jrcxz" || mn == "jecxz" || mn == "jcxz") {
+            uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+            std::string cond = (mn == "jrcxz") ? "(read_reg(ctx,1,8) == 0)"
+                             : (mn == "jecxz") ? "(read_reg(ctx,1,4) == 0)"
+                                               : "(read_reg(ctx,1,2) == 0)";
+            if (t >= va && t < va + effSize && labelSet.count(t)) {
+                e.out << "  if (" << cond << ") goto L_" << hexStr(t) << ";\n";
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
+            } else {
+                e.unsupported.push_back(mn);
+            }
+        } else if (isJcc) {
+            uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+            std::string cond = ccExpr(mn);
+            if (t >= va && t < va + effSize && !labelSet.count(t)) {
+                if (flags & LIFT_STUB_UNKNOWN) {
+                    e.stubbed = true;
+                    e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
+                } else {
+                    e.unsupported.push_back("jump-missing");
+                }
+                off += insn.length;
+                continue;
+            }
+            if (t < va || t >= va + effSize) {
+                if ((flags & LIFT_FRAGMENT) && !cond.empty()) {
+                    if (g_needed_entries) g_needed_entries->insert(t);
+                    e.out << "  if (" << cond << ") { dispatch_indirect(0x" << hexStr(t)
+                          << "ULL, ctx); return; }\n";
+                    off += insn.length;
+                    continue;
+                }
+                if ((flags & LIFT_TAIL_JUMP) && pe.hasFunction(t)) {
+                    if (cond.empty()) { e.unsupported.push_back(mn); break; }
+                    // 目标在另一块：cond 成立即尾跳进冷片段
+                    e.out << "  if (" << cond << ") return sub_" << hexStr(t) << "(ctx);\n";
+                    off += insn.length;
+                    continue;
+                }
+                e.unsupported.push_back("jump-out-of-func"); break;
+            }
+            if (cond.empty()) { e.unsupported.push_back(mn); break; }
+            e.out << "  if (" << cond << ") goto L_" << std::hex << t << std::dec << ";\n";
+        } else if (!setcc.empty()) {
+            storeExpr(pe, insn, ops[0], "((uint64_t)(" + setcc + "))", next_rip, 1, e);
+        } else if (!cmovcc.empty()) {
+            std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string b = valExpr(pe, insn, ops[1], next_rip, e);
+            storeExpr(pe, insn, ops[0], "((" + cmovcc + ") ? " + b + " : " + a + ")", next_rip, ops[0].size / 8, e);
+        } else if (mn == "call") {
+            e.hasCall = true;
+            if (!(flags & LIFT_ALLOW_CALL)) {
+                e.unsupported.push_back("call");
+            } else {
+                const auto pushRet = [&]() {
+                    e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, 0x"
+                          << hexStr(next_rip) << "ULL);\n";
+                };
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    pushRet();
+                    if (pe.hasFunction(t)) {
+                        e.directCalls++;
+                        e.out << "  sub_" << hexStr(t) << "(ctx);\n";
+                    } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx);\n";
+                    }
+                } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                           ops[0].mem.base == ZYDIS_REGISTER_RIP) {
+                    uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
+                    pushRet();
+                    if (const ImportSlot* im = pe.importBySlot(slot)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx);\n";
+                    }
+                } else {
+                    pushRet();
+                    e.indirectCall = true;
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx);\n";
+                }
+            }
+        } else if (flags & LIFT_STUB_UNKNOWN) {
+            e.stubbed = true;
+            e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
+        } else {
+            e.unsupported.push_back(mn);
+        }
+
+        if (!e.unsupported.empty()) break;
+        lastMn = mn;
+
+        // 顺序流：下一地址不在已发现集合里就按间接调用处理
+        if (blocks.count(next_rip)) {
+            e.out << "  goto L_" << hexStr(next_rip) << ";\n";
+        } else {
+            e.out << "  dispatch_indirect(0x" << hexStr(next_rip) << "ULL, ctx); return;\n";
+        }
+    }
+
+    res.lastMnemonic = lastMn;
+    if (e.unsupported.empty()) e.out << "}\n";
+    res.ok = e.unsupported.empty() && e.count > 0;
+    res.code = e.out.str();
+    res.unsupported = e.unsupported;
+    res.insnCount = e.count;
+    res.usesRipData = e.usesRipData;
+    res.hasCall = e.hasCall;
+    res.usesMemory = e.usesMemory;
+    res.writesMemory = e.writesMemory;
+    res.hasPrologue = e.hasPrologue;
+    res.usesNonStackMem = e.usesNonStackMem;
+    res.ptrArgMask = e.ptrArgMask;
+    res.badMemBase = e.badMemBase;
+    res.directCalls = e.directCalls;
+    res.indirectCall = e.indirectCall;
+    res.iatCall = e.iatCall;
+    res.stubbed = e.stubbed;
+    return res;
+}
+
+LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+    if (flags & LIFT_FRAGMENT) return liftReachableEx(pe, va, size, flags);
+    return liftLinearEx(pe, va, size, flags);
 }
