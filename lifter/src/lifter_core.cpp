@@ -2030,3 +2030,52 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
     if (flags & LIFT_FRAGMENT) return liftReachableEx(pe, va, size, flags);
     return liftLinearEx(pe, va, size, flags);
 }
+
+std::vector<std::pair<uint64_t, uint64_t>> findStringRefs(const PeImage& pe, const char* needle) {
+    std::vector<std::pair<uint64_t, uint64_t>> out;
+    const size_t nlen = std::strlen(needle);
+    std::vector<uint64_t> targets;
+    for (const auto& sec : pe.sections) {
+        if (sec.exec || sec.rawsize < nlen) continue;
+        const uint8_t* p = pe.data.data() + sec.raw;
+        for (uint32_t off = 0; off + nlen <= sec.rawsize; ++off) {
+            if (std::memcmp(p + off, needle, nlen) != 0) continue;
+            targets.push_back(pe.image_base + sec.va + off);
+        }
+    }
+    if (targets.empty()) return out;
+    for (const auto& t : targets) std::fprintf(stderr, "[str] "%s" @ 0x%llx\n", needle, (unsigned long long)t);
+    std::vector<uint64_t> tset(targets.begin(), targets.end());
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    for (const auto& fn : pe.functions) {
+        const Section* sec = pe.byRva((uint32_t)(fn.first - pe.image_base));
+        if (!sec || !sec->exec) continue;
+        size_t off = 0;
+        ZydisDecodedInstruction insn;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        const uint8_t* code = pe.data.data() + sec->raw + (uint32_t)(fn.first - pe.image_base - sec->va);
+        while (off < fn.second) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, fn.second - off, &insn, ops))) break;
+            uint64_t next_rip = fn.first + off + insn.length;
+            for (uint16_t oi = 0; oi < insn.operand_count; ++oi) {
+                uint64_t ref = 0;
+                if (ops[oi].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                    (ops[oi].mem.base == ZYDIS_REGISTER_RIP)) {
+                    ref = next_rip + (int64_t)ops[oi].mem.disp.value;
+                } else if (ops[oi].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+                           ops[oi].size == 32) {
+                    ref = (uint64_t)(uint32_t)ops[oi].imm.value.u;
+                }
+                if (!ref) continue;
+                for (uint64_t tv : tset)
+                    if (ref == tv || ref == (tv & 0xFFFFFFFFULL))
+                        out.push_back({tv, fn.first});
+            }
+            off += insn.length;
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
