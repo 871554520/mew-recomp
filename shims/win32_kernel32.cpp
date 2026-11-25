@@ -26,6 +26,16 @@ void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx*);
 void shim_KERNEL32_RtlVirtualUnwind(X64Ctx*);
 void shim_KERNEL32_RtlPcToFileHeader(X64Ctx*);
 void shim_KERNEL32_OutputDebugStringA(X64Ctx*);
+void shim_KERNEL32_GetCommandLineA(X64Ctx*);
+void shim_KERNEL32_GetCommandLineW(X64Ctx*);
+void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx*);
+void shim_KERNEL32_GetStartupInfoW(X64Ctx*);
+void shim_KERNEL32_EncodePointer(X64Ctx*);
+void shim_KERNEL32_DecodePointer(X64Ctx*);
+void shim_KERNEL32_AppPolicyGetProcessTerminationMethod(X64Ctx*);
+void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx*);
+void shim_KERNEL32_GetStdHandle(X64Ctx*);
+void shim_KERNEL32_GetFileType(X64Ctx*);
 
 
 namespace {
@@ -233,33 +243,6 @@ void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
 void shim_KERNEL32_InitializeSListHead(X64Ctx* c) { if (arg0(c)) mem_write<uint64_t>(c, arg0(c), 0); ret0(c, 0); }
 void shim_KERNEL32_SetUnhandledExceptionFilter(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_UnhandledExceptionFilter(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_ExitProcess(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
-    std::exit((int)arg0(c));
-}
-void shim_KERNEL32_GetCommandLineW(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_GetCommandLineA(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_GetStartupInfoW(X64Ctx* c) { if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 104); ret0(c, 0); }
-
-void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
-    uint32_t cp = (uint32_t)arg0(c);
-    uint64_t src = arg2(c);
-    int srclen = (int)arg3(c);
-    uint64_t dst = 0, dstlen = 0;
-    // 后两个参数在栈上（Win64 第 5/6 参数）
-    (void)cp;
-    if (srclen < 0) {
-        size_t n = 0;
-        const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, src);
-        while (p[n]) ++n;
-        srclen = (int)n;
-    }
-    std::string s = utf16_to_utf8((const uint16_t*)guest_ptr_from_ctx(c, src), (size_t)srclen);
-    (void)dst; (void)dstlen;
-    ret0(c, (uint64_t)s.size());
-}
 
 void shim_KERNEL32_MultiByteToWideChar(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_lstrlenW(X64Ctx* c) {
@@ -298,33 +281,10 @@ void shim_KERNEL32_IsValidCodePage(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_IsValidLocale(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetUserDefaultLCID(X64Ctx* c) { ret0(c, 0x0409); }
 void shim_KERNEL32_GetSystemDefaultLCID(X64Ctx* c) { ret0(c, 0x0409); }
-void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
-    uint32_t n = (uint32_t)arg0(c);
-    ret0(c, n == (uint32_t)-10 ? 0x101 : (n == (uint32_t)-11 ? 0x102 : 0x103));
-}
-void shim_KERNEL32_GetFileType(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_SetHandleCount(X64Ctx* c) { ret0(c, (uint32_t)arg0(c)); }
-void shim_KERNEL32_RtlUnwind(X64Ctx* c) { (void)c; }
-
-// ---------------- 补充：库加载与错误 ----------------
-void shim_KERNEL32_GetModuleHandleExW(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_KERNEL32_FreeLibraryAndExitThread(X64Ctx* c) { std::exit(0); }
-void shim_KERNEL32_RaiseException(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] RaiseException code=0x%x\n", (unsigned)arg0(c));
-    ret0(c, 0);
-}
 void shim_KERNEL32_GetSystemTimePreciseAsFileTime(X64Ctx* c) { shim_KERNEL32_GetSystemTimeAsFileTime(c); }
 void shim_KERNEL32_OutputDebugStringW(X64Ctx* c) {
     std::fprintf(stderr, "[game] %s\n", guest_wstr(c, arg0(c)).c_str());
     ret0(c, 0);
-}
-void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_FreeEnvironmentStringsW(X64Ctx* c) { ret0(c, 1); }
-
-// ---------------- 临界区/事件/线程补充 ----------------
-void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
-    shim_KERNEL32_InitializeCriticalSection(c);
-    ret0(c, 1);
 }
 void shim_KERNEL32_TryEnterCriticalSection(X64Ctx* c) {
     shim_KERNEL32_EnterCriticalSection(c);
@@ -450,6 +410,16 @@ RecompFn lookup_api(const char* name) {
         {"RtlLookupFunctionEntry", shim_KERNEL32_RtlLookupFunctionEntry},
         {"RtlVirtualUnwind", shim_KERNEL32_RtlVirtualUnwind},
         {"RtlPcToFileHeader", shim_KERNEL32_RtlPcToFileHeader},
+        {"AppPolicyGetProcessTerminationMethod", shim_KERNEL32_AppPolicyGetProcessTerminationMethod},
+        {"EncodePointer", shim_KERNEL32_EncodePointer},
+        {"DecodePointer", shim_KERNEL32_DecodePointer},
+        {"GetCommandLineA", shim_KERNEL32_GetCommandLineA},
+        {"GetCommandLineW", shim_KERNEL32_GetCommandLineW},
+        {"GetEnvironmentStringsW", shim_KERNEL32_GetEnvironmentStringsW},
+        {"GetStartupInfoW", shim_KERNEL32_GetStartupInfoW},
+        {"IsProcessorFeaturePresent", shim_KERNEL32_IsProcessorFeaturePresent},
+        {"GetStdHandle", shim_KERNEL32_GetStdHandle},
+        {"GetFileType", shim_KERNEL32_GetFileType},
         {"GetSystemInfo", shim_KERNEL32_GetSystemInfo},
         {"InitializeSListHead", shim_KERNEL32_InitializeSListHead},
         {"SetUnhandledExceptionFilter", shim_KERNEL32_SetUnhandledExceptionFilter},
@@ -550,3 +520,85 @@ void shim_KERNEL32_GetFileInformationByHandle(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_DeviceIoControl(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_GetVolumeInformationW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_GetDriveTypeW(X64Ctx* c) { ret0(c, 2); }
+
+// ---------------- CRT P0：必须返回有效值的 9 个 API ----------------
+namespace {
+uint64_t g_cmdline_a = 0;
+uint64_t g_cmdline_w = 0;
+uint64_t g_env_w = 0;
+}
+
+void shim_KERNEL32_GetCommandLineA(X64Ctx* c) {
+    if (!g_cmdline_a) {
+        g_cmdline_a = guest_alloc(c, 64);
+        std::memcpy(guest_ptr_from_ctx(c, g_cmdline_a), "Mewgenics.exe", 14);
+    }
+    ret0(c, g_cmdline_a);
+}
+
+void shim_KERNEL32_GetCommandLineW(X64Ctx* c) {
+    if (!g_cmdline_w) {
+        g_cmdline_w = guest_alloc(c, 128);
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_cmdline_w);
+        const char* s = "Mewgenics.exe";
+        size_t i = 0;
+        for (; s[i]; ++i) p[i] = (uint16_t)s[i];
+        p[i] = 0;
+    }
+    ret0(c, g_cmdline_w);
+}
+
+void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
+    if (!g_env_w) {
+        g_env_w = guest_alloc(c, 256);
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_env_w);
+        std::memset(p, 0, 256);
+        const char* s = "PATH=C:\\";
+        size_t i = 0;
+        for (; s[i]; ++i) p[i] = (uint16_t)s[i];
+        p[i] = 0;      // 第一个字符串结束
+        p[i + 1] = 0;  // 块结束（双 NUL）
+    }
+    ret0(c, g_env_w);
+}
+
+void shim_KERNEL32_GetStartupInfoW(X64Ctx* c) {
+    MEW_TRACE_API(c, "KERNEL32!GetStartupInfoW");
+    if (arg0(c)) {
+        uint8_t* p = (uint8_t*)guest_ptr_from_ctx(c, arg0(c));
+        std::memset(p, 0, 104);
+        *(uint32_t*)(p + 0) = 104;  // cb = sizeof(STARTUPINFOW)
+    }
+    ret0(c, 0);
+}
+
+void shim_KERNEL32_EncodePointer(X64Ctx* c) { ret0(c, arg0(c)); }
+void shim_KERNEL32_DecodePointer(X64Ctx* c) { ret0(c, arg0(c)); }
+void shim_KERNEL32_EncodeSystemPointer(X64Ctx* c) { ret0(c, arg0(c)); }
+void shim_KERNEL32_DecodeSystemPointer(X64Ctx* c) { ret0(c, arg0(c)); }
+
+void shim_KERNEL32_AppPolicyGetProcessTerminationMethod(X64Ctx* c) {
+    if (arg1(c)) mem_write<uint32_t>(c, arg1(c), 0);  // 0 = ExitProcess
+    ret0(c, 0);  // ERROR_SUCCESS
+}
+
+void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) {
+    uint32_t f = (uint32_t)arg0(c);
+    // 6=SSE, 10=SSE2, 23=FASTFAIL ; 这些必须为 1 否则 CRT 直接 __fastfail
+    if (f == 6 || f == 10 || f == 23 || f == 12 || f == 13) { ret0(c, 1); return; }
+    ret0(c, 0);
+}
+
+void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
+    uint32_t n = (uint32_t)arg0(c);
+    if (n == (uint32_t)-10) { ret0(c, 0x1000); return; }
+    if (n == (uint32_t)-11) { ret0(c, 0x1001); return; }
+    if (n == (uint32_t)-12) { ret0(c, 0x1002); return; }
+    ret0(c, (uint64_t)-1);
+}
+
+void shim_KERNEL32_GetFileType(X64Ctx* c) {
+    uint64_t h = arg0(c);
+    if (h == 0x1000 || h == 0x1001 || h == 0x1002) { ret0(c, 2); return; }  // FILE_TYPE_CHAR
+    ret0(c, 0);
+}
