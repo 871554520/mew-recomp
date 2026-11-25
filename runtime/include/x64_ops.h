@@ -63,6 +63,20 @@ static inline uint64_t x64_rdtsc() {
 #endif
 }
 
+static inline uint64_t x64_ctz(uint64_t v, int bits) {
+    if (!v) return (uint64_t)bits;
+    return (uint64_t)__builtin_ctzll(v);
+}
+static inline uint64_t x64_clz(uint64_t v, int bits) {
+    if (!v) return (uint64_t)bits;
+    if (bits == 64) return (uint64_t)__builtin_clzll(v);
+    return (uint64_t)(__builtin_clzll(v) - (64 - bits));
+}
+static inline uint64_t x64_popcnt(uint64_t v, int bits) {
+    (void)bits;
+    return (uint64_t)__builtin_popcountll(v);
+}
+
 static inline void write_reg(X64Ctx* c, int regid, uint64_t v, int width) {
     uint64_t* preg = nullptr;
     switch (regid) {
