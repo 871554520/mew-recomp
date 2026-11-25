@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <unordered_set>
+#include <unordered_map>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -144,39 +146,85 @@ std::string host_path_from_guest(X64Ctx* c, uint64_t wpath) {
 }  // namespace
 
 // ---------------- 内存 ----------------
+// VirtualAlloc/VirtualFree 同理：只 munmap 自己映射过的区间。
+// 若 guest 拿 malloc 出来的地址调 VirtualFree，munmap 会把 glibc 堆整块抹掉，
+// 之后任何 free 都会崩，现场极难定位。
+std::mutex g_virt_mu;
+std::unordered_map<void*, size_t> g_virt_ranges;
+
 void shim_KERNEL32_VirtualAlloc(X64Ctx* c) {
     uint64_t size = arg1(c);
     uint32_t prot = (uint32_t)arg3(c);
+    size_t n = size ? (size_t)size : 0x1000;
     int flags = MAP_PRIVATE | MAP_ANON;
     int p = (prot & 0x40) ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_WRITE);
-    void* m = mmap(nullptr, size ? size : 0x1000, p, flags, -1, 0);
+    void* m = mmap(nullptr, n, p, flags, -1, 0);
     if (m == MAP_FAILED) { ret0(c, 0); return; }
+    {
+        std::lock_guard<std::mutex> lk(g_virt_mu);
+        g_virt_ranges[m] = n;
+    }
     uint64_t g = (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias);
-    register_guest_range(g, size ? size : 0x1000);
+    register_guest_range(g, n);
     ret0(c, g);
 }
 
 void shim_KERNEL32_VirtualFree(X64Ctx* c) {
     uint64_t addr = arg0(c);
-    uint64_t size = arg1(c);
-    if (addr) munmap((void*)(uintptr_t)((int64_t)addr + c->mem_bias), size ? size : 0x1000);
-    ret0(c, 1);
+    void* p = (void*)(uintptr_t)((int64_t)addr + c->mem_bias);
+    if (!p) { ret0(c, 1); return; }
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_virt_mu);
+        auto it = g_virt_ranges.find(p);
+        if (it != g_virt_ranges.end()) { n = it->second; g_virt_ranges.erase(it); }
+    }
+    if (n) {
+        munmap(p, n);
+        ret0(c, 1);
+    } else {
+        std::fprintf(stderr, "[shim] VirtualFree(0x%llx) ignored: not a range we mapped\n",
+                     (unsigned long long)addr);
+        ret0(c, 0);
+    }
 }
 
 void shim_KERNEL32_VirtualProtect(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_GetProcessHeap(X64Ctx* c) { ret0(c, 1); }
 
+// 自己分配的块登记表：guest 只会释放它拿到的块，但被转译的 CRT 在异常路径上
+// 可能释放「不是我们 malloc 出来的地址」或重复释放，直接 free() 会让 glibc 段错误
+// （实测崩溃点：__libc_free ← shim_KERNEL32_HeapFree ← sub_140d6d140）。
+std::mutex g_heap_mu;
+std::unordered_set<void*> g_heap_blocks;
+
 void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
-    void* p = std::malloc((size_t)arg2(c));
-    std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", (size_t)arg2(c), p);
+    size_t n = (size_t)arg2(c);
+    void* p = std::malloc(n ? n : 1);
+    if (p) { std::lock_guard<std::mutex> lk(g_heap_mu); g_heap_blocks.insert(p); }
+    std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", n, p);
     uint64_t g = p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0;
-    if (g) register_guest_range(g, (size_t)arg2(c));
+    if (g) register_guest_range(g, n ? n : 1);
     ret0(c, g);
 }
 
 void shim_KERNEL32_HeapFree(X64Ctx* c) {
-    if (arg2(c)) std::free((void*)(uintptr_t)((int64_t)arg2(c) + c->mem_bias));
-    ret0(c, 1);
+    void* p = (void*)(uintptr_t)((int64_t)arg2(c) + c->mem_bias);
+    if (!p) { ret0(c, 1); return; }
+    bool known = false;
+    {
+        std::lock_guard<std::mutex> lk(g_heap_mu);
+        auto it = g_heap_blocks.find(p);
+        if (it != g_heap_blocks.end()) { g_heap_blocks.erase(it); known = true; }
+    }
+    if (known) {
+        std::free(p);
+        ret0(c, 1);
+    } else {
+        std::fprintf(stderr, "[shim] HeapFree(0x%llx) ignored: not a block we allocated\n",
+                     (unsigned long long)arg2(c));
+        ret0(c, 0);
+    }
 }
 
 // ---------------- 文件 ----------------
