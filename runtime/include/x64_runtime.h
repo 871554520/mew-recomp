@@ -309,8 +309,14 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
                  (unsigned long long)near_lo,
                  (long long)((int64_t)target_va - (int64_t)near_lo),
                  (unsigned long long)cur_fn_va());
-    // guard-dispatch 蹦床：槽里不是有效代码指针时，真正目标通常在 rax
-    if (ctx && ctx->rax && ctx->rax != target_va) {
+    // guard-dispatch 蹦床：槽里不是有效代码指针时，真正目标通常在 rax。
+    // 但这个回退会自杀式递归（rax 常常就是调用者本身，实测 0x140d3e654 -> 0x140d6adc8
+    // 无限循环到超时），因此默认关闭，只在显式要求时启用。
+    static const bool allow_rax_fallback = [] {
+        const char* e = std::getenv("MEW_GUARD_RAX_FALLBACK");
+        return e && e[0] == '1';
+    }();
+    if (allow_rax_fallback && ctx && ctx->rax && ctx->rax != target_va) {
         auto it3 = tbl.find(ctx->rax);
         if (it3 != tbl.end()) {
             std::fprintf(stderr, "[shim] guard-dispatch fallback slot=0x%llx -> rax=0x%llx\n",
@@ -320,7 +326,8 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
         }
     }
     record_missing_entry(target_va, cur_fn_va());
-    call_trace().dump("dispatch miss");
+    static int miss_logged = 0;
+    if (miss_logged++ < 3) call_trace().dump("dispatch miss");
     if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
 }
