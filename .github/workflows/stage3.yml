@@ -178,6 +178,23 @@ jobs:
           grep -c '\[UNIMPL API\]' generated/runner.err
           grep -c '\[UNIMPL FUNC\]' generated/runner.err
 
+      - name: Stage 5 - gpak direct call
+        run: |
+          set +e
+          python3 - <<'PYEOF'
+          import struct, os
+          # 造一个最小 gpak 头（64 KB），仅用于验证读取路径
+          data = b'GPAK' + struct.pack('<II', 1, 0) + b'\0' * (65536 - 12)
+          open('resources.gpak', 'wb').write(data)
+          print('dummy gpak', os.path.getsize('resources.gpak'))
+          PYEOF
+          MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 60 ./build-stage3/mew_runner Mewgenics.exe --call 0x1409b5380 \
+            > generated/gpak_call.out 2> generated/gpak_call.err
+          echo "gpak call rc=$?" | tee -a generated/gpak_call.out
+          tail -20 generated/gpak_call.out
+          echo '--- shim log ---'
+          grep -E '\[shim\]|\[game\]|\[FATAL\]|\[SAFE\]|CRASH' generated/gpak_call.err | head -60 | tee generated/gpak_call.log
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -201,4 +218,6 @@ jobs:
             generated/runner_api.log
             generated/hot_functions.txt
             generated/gpak_xref.txt
+            generated/gpak_call.out
+            generated/gpak_call.log
           if-no-files-found: warn
