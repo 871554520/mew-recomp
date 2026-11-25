@@ -100,11 +100,14 @@ jobs:
                   if base+b <= probe < base+e: hit.append((base+b,base+e))
               print('probe=0x%x in=%s' % (probe, ['0x%x-0x%x'%h for h in hit] or 'none'))
           PYEOF
-      - name: Lift the abort-ish function
+      - name: Lift __scrt_common_main and friends
         run: |
           set +e
-          ./build/mew_lifter --lift 0x140d3e8ac --exe Mewgenics.exe --out generated/lift_entry.cpp 2>&1 | tail -6
-          echo "--- entry lift ---"; sed -n 1,80p generated/lift_entry.cpp 2>/dev/null
+          for T in 0x140d3e738 0x140d3f148 0x140d3e354 0x140d3e920 0x140d3e8ac; do
+            echo "===== lift $T ====="
+            ./build/mew_lifter --lift "$T" --exe Mewgenics.exe --out generated/lift_$(echo $T | sed 's/0x//').cpp 2>&1 | tail -4
+            sed -n 1,140p generated/lift_$(echo $T | sed 's/0x//').cpp 2>/dev/null
+          done | tee generated/lift_scrt.txt
       - name: Lift the fastfail function
         run: |
           set +e
