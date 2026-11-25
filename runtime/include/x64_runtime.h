@@ -58,3 +58,27 @@ template <typename T>
 inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
     std::memcpy(reinterpret_cast<void*>(guest_addr + ctx->mem_bias), &val, sizeof(T));
 }
+
+// ---------------- 阶段 3 占位与日志 ----------------
+#define UNIMPL_INSN(RIP, MNEM)                                                   \
+    do {                                                                         \
+        std::fprintf(stderr, "[UNIMPL INSN] rip=0x%llx mnemonic=%s\n",           \
+                     (unsigned long long)(RIP), (MNEM));                         \
+        std::abort();                                                            \
+    } while (0)
+
+#define UNIMPL_API(NAME)                                                         \
+    do {                                                                         \
+        std::fprintf(stderr, "[UNIMPL API] %s\n", (NAME));                       \
+        std::abort();                                                            \
+    } while (0)
+
+#define UNIMPL_FUNC(VA)                                                          \
+    do {                                                                         \
+        std::fprintf(stderr, "[UNIMPL FUNC] va=0x%llx\n",                        \
+                     (unsigned long long)(VA));                                  \
+        std::abort();                                                            \
+    } while (0)
+
+// 由生成的 dispatch_table.cpp 提供
+void init_dispatch_table(const char* extra_url = nullptr, void* extra = nullptr);
