@@ -96,6 +96,7 @@ bool load_pe_image(const char* exe_path, GuestImage* out, std::string* err) {
         (void)rva;
     }
 
+    register_guest_range(imageBase, sizeOfImage);
     out->orig_image_base = imageBase;
     out->host_base = (uint8_t*)mem;
     out->image_size = sizeOfImage;
@@ -124,6 +125,8 @@ void init_guest_thread_ctx(X64Ctx* ctx, const GuestImage& img) {
     if (teb == MAP_FAILED) std::abort();
     std::memset(teb, 0, 4096);
     ctx->gs_base = (uint64_t)((int64_t)(uintptr_t)teb - img.mem_bias);
+    register_guest_range(ctx->gs_base, 4096);
+    register_guest_range((uint64_t)((int64_t)(uintptr_t)stack - img.mem_bias), kStack);
     ctx->fs_base = ctx->gs_base;
     ctx->rbx = 0; ctx->rbp = 0; ctx->rsi = 0; ctx->rdi = 0;
     ctx->r12 = ctx->r13 = ctx->r14 = ctx->r15 = 0;
