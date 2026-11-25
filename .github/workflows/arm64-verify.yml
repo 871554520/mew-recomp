@@ -53,7 +53,9 @@ jobs:
             qemu-aarch64 ./build/native_harness_arm64 0 $ARGS | tee -a generated/arm64_stage2.txt
           done
           echo "expected: rax=0 hash=9509283584686752643"
-          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage2.txt)
+          echo '--- arm64 stage2 raw output ---'
+          cat generated/arm64_stage2.txt
+          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage2.txt || true)
           echo "arm64 stage2 matches=$PASS/4"
           test "$PASS" -eq 4
 
@@ -73,7 +75,9 @@ jobs:
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
             qemu-aarch64 ./build/native_nested_arm64 0 $ARGS | tee -a generated/arm64_stage4.txt
           done
-          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage4.txt)
+          echo '--- arm64 stage4 raw output ---'
+          cat generated/arm64_stage4.txt
+          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage4.txt || true)
           echo "arm64 stage4 matches=$PASS/4"
           test "$PASS" -eq 4
 
@@ -124,7 +128,9 @@ jobs:
             ./build/native_harness 0 $ARGS | tee -a generated/arm64_stage2.txt
           done
           echo "expected: rax=0 hash=9509283584686752643"
-          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage2.txt)
+          echo '--- arm64 stage2 raw output ---'
+          cat generated/arm64_stage2.txt
+          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage2.txt || true)
           echo "arm64 stage2 matches=$PASS/4"
           test "$PASS" -eq 4
 
@@ -146,7 +152,9 @@ jobs:
             ./build/native_nested 0 $ARGS | tee -a generated/arm64_stage4.txt
           done
           echo "expected: rax=0 hash=9509283584686752643"
-          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage4.txt)
+          echo '--- arm64 stage4 raw output ---'
+          cat generated/arm64_stage4.txt
+          PASS=$(grep -c '"rax": 0, "h": 9509283584686752643' generated/arm64_stage4.txt || true)
           echo "arm64 stage4 matches=$PASS/4"
           test "$PASS" -eq 4
 
