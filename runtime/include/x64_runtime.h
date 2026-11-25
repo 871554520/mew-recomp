@@ -25,6 +25,7 @@ struct TraceEntry {
     uint64_t va;
     const char* tag;   // 普通函数为 nullptr，垫片传 API 名
     uint64_t rcx;
+    uint64_t ret;      // 调用点（函数入口时的返回地址），用于定位是谁调的这一层
 };
 
 struct CallRingTrace {
@@ -32,8 +33,8 @@ struct CallRingTrace {
     TraceEntry buf[N]{};
     size_t idx = 0;
 
-    void push(uint64_t va, const char* tag, uint64_t rcx) {
-        buf[idx & (N - 1)] = TraceEntry{va, tag, rcx};
+    void push(uint64_t va, const char* tag, uint64_t rcx, uint64_t ret = 0) {
+        buf[idx & (N - 1)] = TraceEntry{va, tag, rcx, ret};
         idx++;
     }
 
@@ -43,11 +44,12 @@ struct CallRingTrace {
         for (size_t i = start; i < idx; ++i) {
             const auto& e = buf[i & (N - 1)];
             if (e.tag)
-                std::fprintf(stderr, "  [%zu] API  %s (rcx=0x%llx)\n", i, e.tag,
-                             (unsigned long long)e.rcx);
+                std::fprintf(stderr, "  [%zu] API  %s (rcx=0x%llx ret=0x%llx)\n", i, e.tag,
+                             (unsigned long long)e.rcx, (unsigned long long)e.ret);
             else
-                std::fprintf(stderr, "  [%zu] FUNC sub_0x%llx (rcx=0x%llx)\n", i,
-                             (unsigned long long)e.va, (unsigned long long)e.rcx);
+                std::fprintf(stderr, "  [%zu] FUNC sub_0x%llx (rcx=0x%llx ret=0x%llx)\n", i,
+                             (unsigned long long)e.va, (unsigned long long)e.rcx,
+                             (unsigned long long)e.ret);
         }
         std::fprintf(stderr, "====================================\n");
     }
@@ -68,11 +70,18 @@ inline uint64_t& cur_fn_va() {
     return v;
 }
 
-#define MEW_SET_CUR_FN(CTX, VA) \
-    do {                                                                     \
-        cur_ctx_ptr() = (CTX);                                                \
-        cur_fn_va() = (uint64_t)(VA);                                         \
-        call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx);               \
+#define MEW_SET_CUR_FN(CTX, VA)                                                   \
+    do {                                                                          \
+        cur_ctx_ptr() = (CTX);                                                    \
+        cur_fn_va() = (uint64_t)(VA);                                             \
+        uint64_t _mew_ret = 0;                                                    \
+        if ((CTX)->rsp > 0x10000ULL && (CTX)->rsp < 0x7fffffff0000ULL &&          \
+            guest_mapped((CTX)->rsp, 8)) {                                        \
+            std::memcpy(&_mew_ret,                                                \
+                        reinterpret_cast<const void*>((uintptr_t)((CTX)->rsp + (CTX)->mem_bias)), \
+                        sizeof(_mew_ret));                                        \
+        }                                                                         \
+        call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, _mew_ret);         \
     } while (0)
 #define MEW_TRACE_API(CTX, NAME) call_trace().push(0, (NAME), (CTX)->rcx)
 
