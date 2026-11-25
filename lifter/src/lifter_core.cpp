@@ -260,6 +260,8 @@ std::string valExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const 
     }
 }
 
+std::string hexStr(uint64_t v);
+
 void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst,
                const std::string& val, uint64_t next_rip, int bytes, Emit& e) {
     (void)in;
@@ -268,6 +270,11 @@ void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const Zydis
         if (id >= 0) { e.out << "  write_reg(ctx," << id << "," << val << "," << bytes << ");\n"; return; }
         int xi = xmmId(dst.reg.value);
         if (xi >= 0) { e.out << "  xmm_set_u64(ctx," << xi << "," << val << ");\n"; return; }
+        if (e.flags & LIFT_STUB_UNKNOWN) {
+            e.stubbed = true;
+            e.out << "  UNIMPL_INSN(0x" << hexStr(next_rip) << "ULL, \"reg-store\");\n";
+            return;
+        }
         e.unsupported.push_back("reg-store");
         return;
     }
@@ -279,40 +286,56 @@ void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const Zydis
     e.unsupported.push_back("store");
 }
 
-std::string ccExpr(const std::string& mn) {
-    if (mn == "jz" || mn == "je") return "ctx->zf";
-    if (mn == "jnz" || mn == "jne") return "!ctx->zf";
-    if (mn == "js") return "ctx->sf";
-    if (mn == "jns") return "!ctx->sf";
-    if (mn == "jc" || mn == "jb") return "ctx->cf";
-    if (mn == "jnc" || mn == "jae") return "!ctx->cf";
-    if (mn == "jbe") return "(ctx->cf || ctx->zf)";
-    if (mn == "ja") return "(!ctx->cf && !ctx->zf)";
-    if (mn == "jl") return "(ctx->sf != ctx->of)";
-    if (mn == "jge") return "(ctx->sf == ctx->of)";
-    if (mn == "jle") return "(ctx->zf || (ctx->sf != ctx->of))";
-    if (mn == "jg") return "(!ctx->zf && (ctx->sf == ctx->of))";
+std::string canonCC(const std::string& suf) {
+    if (suf == "e" || suf == "z") return "z";
+    if (suf == "ne" || suf == "nz") return "nz";
+    if (suf == "s") return "s";
+    if (suf == "ns") return "ns";
+    if (suf == "c" || suf == "b" || suf == "nae") return "b";
+    if (suf == "nc" || suf == "ae" || suf == "nb") return "ae";
+    if (suf == "be" || suf == "na") return "be";
+    if (suf == "a" || suf == "nbe") return "a";
+    if (suf == "l" || suf == "nge") return "l";
+    if (suf == "ge" || suf == "nl") return "ge";
+    if (suf == "le" || suf == "ng") return "le";
+    if (suf == "g" || suf == "nle") return "g";
+    if (suf == "o") return "o";
+    if (suf == "no") return "no";
+    if (suf == "p" || suf == "pe") return "p";
+    if (suf == "np" || suf == "po") return "np";
     return "";
+}
+
+std::string ccByCanon(const std::string& c) {
+    if (c == "z") return "ctx->zf";
+    if (c == "nz") return "!ctx->zf";
+    if (c == "s") return "ctx->sf";
+    if (c == "ns") return "!ctx->sf";
+    if (c == "b") return "ctx->cf";
+    if (c == "ae") return "!ctx->cf";
+    if (c == "be") return "(ctx->cf || ctx->zf)";
+    if (c == "a") return "(!ctx->cf && !ctx->zf)";
+    if (c == "l") return "(ctx->sf != ctx->of)";
+    if (c == "ge") return "(ctx->sf == ctx->of)";
+    if (c == "le") return "(ctx->zf || (ctx->sf != ctx->of))";
+    if (c == "g") return "(!ctx->zf && (ctx->sf == ctx->of))";
+    if (c == "o") return "ctx->of";
+    if (c == "no") return "!ctx->of";
+    if (c == "p") return "ctx->pf";
+    if (c == "np") return "!ctx->pf";
+    return "";
+}
+
+std::string ccExpr(const std::string& mn) {
+    if (mn.size() < 2 || mn[0] != 'j') return "";
+    return ccByCanon(canonCC(mn.substr(1)));
 }
 
 // setcc / cmovcc 后缀 → 条件表达式
 std::string ccSuffix(const std::string& mn, const char* prefix) {
     size_t n = std::strlen(prefix);
     if (mn.rfind(prefix, 0) != 0) return "";
-    std::string suf = mn.substr(n);
-    if (suf == "z" || suf == "e") return "ctx->zf";
-    if (suf == "nz" || suf == "ne") return "!ctx->zf";
-    if (suf == "s") return "ctx->sf";
-    if (suf == "ns") return "!ctx->sf";
-    if (suf == "c" || suf == "b") return "ctx->cf";
-    if (suf == "nc" || suf == "ae") return "!ctx->cf";
-    if (suf == "be") return "(ctx->cf || ctx->zf)";
-    if (suf == "a") return "(!ctx->cf && !ctx->zf)";
-    if (suf == "l") return "(ctx->sf != ctx->of)";
-    if (suf == "ge") return "(ctx->sf == ctx->of)";
-    if (suf == "le") return "(ctx->zf || (ctx->sf != ctx->of))";
-    if (suf == "g") return "(!ctx->zf && (ctx->sf == ctx->of))";
-    return "";
+    return ccByCanon(canonCC(mn.substr(n)));
 }
 
 std::string hexStr(uint64_t v) { std::ostringstream o; o << std::hex << v; return o.str(); }
@@ -926,7 +949,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         if (!ri.ok || !ri.rip || ri.ind) continue;
         ++nRip;
         if (ri.iat) continue;
-        if (ri.direct < 2 || ri.direct > 40) continue;
+        if (ri.direct < 3 || ri.direct > 40) continue;
         ++nDirect;
         if (nears.size() < 8) ++tried;
 
@@ -957,7 +980,8 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         if (nears.size() < 8) nears.push_back({fn.first, ri.direct, seen.size(), stubbed, hasIat, hasInd});
         if (!ok) continue;
         if (hasIat || hasInd || stubbed > 0) continue;
-        if (seen.size() > 96) continue;
+        if (seen.size() > 96 || seen.size() < 4) continue;
+        if (ri.size < 128) continue;
 
         NestedCand c;
         c.va = fn.first;
