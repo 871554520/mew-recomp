@@ -50,6 +50,12 @@ inline void init_dispatch_diag() {
     std::sort(v.begin(), v.end());
 }
 
+static inline bool mew_unimpl_continue() {
+    static int cached = -1;
+    if (cached < 0) { const char* v = std::getenv("MEW_UNIMPL_CONTINUE"); cached = (v && v[0] == '1') ? 1 : 0; }
+    return cached == 1;
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
@@ -104,12 +110,6 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 
 // ---------------- 阶段 3 占位与日志 ----------------
 // MEW_UNIMPL_CONTINUE=1 时只记录并返回（用于批量收集缺失项），否则中止
-static inline bool mew_unimpl_continue() {
-    static int cached = -1;
-    if (cached < 0) { const char* v = std::getenv("MEW_UNIMPL_CONTINUE"); cached = (v && v[0] == '1') ? 1 : 0; }
-    return cached == 1;
-}
-
 #define UNIMPL_INSN(RIP, MNEM)                                                   \
     do {                                                                         \
         std::fprintf(stderr, "[UNIMPL INSN] rip=0x%llx mnemonic=%s\n",           \
