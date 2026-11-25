@@ -289,7 +289,7 @@ jobs:
 
       - name: Stage 5b - reflow runtime-missed entries (second build)
         run: |
-          set +e
+          set -euo pipefail
           if [ ! -s discovered_entries.txt ]; then
             echo "no runtime-missed entries recorded"; exit 0
           fi
@@ -308,6 +308,7 @@ jobs:
               print('0x%x' % va)
           PYEOF
           echo "runtime seeds: $(wc -l < generated/runtime_seeds.txt)"
+          test -s generated/runtime_seeds.txt || echo "WARN: no runtime seeds this round (nothing discovered)"
           cat generated/extra_seeds.txt generated/runtime_seeds.txt | sort -u > generated/all_seeds.txt
           echo "all seeds: $(wc -l < generated/all_seeds.txt)"
           mkdir -p generated/stage3b
