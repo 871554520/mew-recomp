@@ -1315,3 +1315,48 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
     std::fprintf(stderr, "[shards] total=%zu ok=%zu stubbed=%zu failed=%zu shards=%zu imports=%zu\n",
                  st.total, st.ok, st.stubbed, st.failed, st.shards, pe.imports.size());
 }
+
+// ---------------- 数据段函数指针补登 ----------------
+size_t expandFunctionListByDataPointers(PeImage& pe) {
+    const Section* text = nullptr;
+    for (const auto& s2 : pe.sections) if (s2.name == ".text") { text = &s2; break; }
+    if (!text) return 0;
+    const uint64_t text_lo = pe.image_base + text->va;
+    const uint64_t text_hi = text_lo + std::max(text->vsize, text->rawsize);
+
+    std::vector<uint64_t> extra;
+    for (const auto& sec : pe.sections) {
+        if (sec.name == ".text" || sec.exec) continue;
+        if (sec.rawsize < 8) continue;
+        const uint8_t* p = pe.data.data() + sec.raw;
+        for (uint32_t off = 0; off + 8 <= sec.rawsize; off += 8) {
+            uint64_t v = 0;
+            std::memcpy(&v, p + off, 8);
+            if (v < text_lo || v >= text_hi) continue;
+            if (pe.hasFunction(v)) continue;
+            extra.push_back(v);
+        }
+    }
+    std::sort(extra.begin(), extra.end());
+    extra.erase(std::unique(extra.begin(), extra.end()), extra.end());
+
+    size_t added = 0;
+    for (uint64_t v : extra) {
+        // 长度取到“包含它的函数末尾”
+        uint64_t base = 0; uint32_t fsize = 0;
+        for (const auto& f : pe.functions)
+            if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
+        uint32_t len = 0;
+        if (base && base + fsize > v) len = (uint32_t)(base + fsize - v);
+        else len = std::min<uint32_t>(maxlen, 256);
+        if (!len) continue;
+        LiftResult r = liftFunctionEx(pe, v, len, LIFT_ALLOW_CALL | LIFT_TAIL_JUMP);
+        bool ok = r.ok && !r.stubbed;
+        if (!ok) continue;
+        pe.functions.emplace_back(v, len);
+        ++added;
+    }
+    std::sort(pe.functions.begin(), pe.functions.end());
+    std::fprintf(stderr, "[expand] data pointers -> extra entries=%zu (candidates=%zu)\n", added, extra.size());
+    return added;
+}
