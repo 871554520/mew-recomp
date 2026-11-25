@@ -719,7 +719,7 @@ bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
         if (mn == "call") {
             e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, 0x"
                   << hexStr(next_rip) << "ULL);\n";
-            e.out << "  dispatch_indirect(ctx->rax, ctx);\n";
+            e.out << "  dispatch_indirect(ctx->rax, ctx, true);\n";
         } else {
             e.out << "  dispatch_indirect(ctx->rax, ctx);\n  return;\n";
         }
@@ -1376,7 +1376,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
                     } else {
                         e.indirectCall = true;
-                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx);\n";
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx, true);\n";
                     }
                 } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
                            ops[0].mem.base == ZYDIS_REGISTER_RIP) {
@@ -1387,12 +1387,12 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
                     } else {
                         e.indirectCall = true;
-                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx);\n";
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx, true);\n";
                     }
                 } else {
                     pushRet();
                     e.indirectCall = true;
-                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx);\n";
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
                 }
             }
         } else if (flags & LIFT_STUB_UNKNOWN) {
@@ -2569,7 +2569,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
                     } else {
                         e.indirectCall = true;
-                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx);\n";
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx, true);\n";
                     }
                 } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
                            ops[0].mem.base == ZYDIS_REGISTER_RIP) {
@@ -2580,12 +2580,12 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
                     } else {
                         e.indirectCall = true;
-                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx);\n";
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx, true);\n";
                     }
                 } else {
                     pushRet();
                     e.indirectCall = true;
-                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx);\n";
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
                 }
             }
         } else if (flags & LIFT_STUB_UNKNOWN) {
