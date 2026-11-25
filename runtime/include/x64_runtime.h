@@ -230,7 +230,37 @@ inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, ui
 // is_call=true 表示这是 call（调用方已经 push 了模拟返回地址）；
 // 目标若是合成地址上的垫片，垫片不会执行 ret，必须由这里补一次 rsp += 8，
 // 否则返回地址永久留在栈上，调用方的 add rsp,0x20 / pop rbx 全部错位。
+// 观测某个调用方发出的每一次间接调用（用于看清初始化器循环的完整顺序）
+inline uint64_t mew_trace_caller() {
+    static uint64_t v = [] {
+        const char* e = std::getenv("MEW_TRACE_CALLER");
+        return e ? (uint64_t)std::strtoull(e, nullptr, 0) : 0ULL;
+    }();
+    return v;
+}
+
+inline bool tracer_note(bool on, uint64_t target, bool is_call, uint64_t rsp0, uint64_t rbx0) {
+    static int n = 0;
+    if (!on || n >= 40) return false;
+    std::fprintf(stderr, "[disp#%02d] target=0x%llx is_call=%d rsp_in=0x%llx rbx_in=0x%llx\n",
+                 n + 1, (unsigned long long)target, (int)is_call,
+                 (unsigned long long)rsp0, (unsigned long long)rbx0);
+    ++n;
+    return true;
+}
+inline void tracer_done(bool on, uint64_t target, X64Ctx* c) {
+    if (!on || !c) return;
+    std::fprintf(stderr, "        -> done target=0x%llx rsp_out=0x%llx rbx_out=0x%llx\n",
+                 (unsigned long long)target, (unsigned long long)c->rsp,
+                 (unsigned long long)c->rbx);
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
+    const bool trace_this = mew_trace_caller() && cur_fn_va() == mew_trace_caller();
+    const uint64_t t_rsp0 = ctx ? ctx->rsp : 0;
+    const uint64_t t_rbx0 = ctx ? ctx->rbx : 0;
+    const bool t_hit = tracer_note(trace_this, target_va, is_call, t_rsp0, t_rbx0);
+    (void)t_hit;
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
     if (it != tbl.end()) {
@@ -243,10 +273,12 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
             if (guard) abi_check(ctx, snap, target_va, caller);
             if (api_trace_hook()) api_trace_hook()(target_va, ctx, 1);
             if (is_call) ctx->rsp += 8;   // 垫片没有 ret，补弹返回地址
+            tracer_done(trace_this, target_va, ctx);
             return;
         }
         it->second(ctx);
         if (guard) abi_check(ctx, snap, target_va, caller);
+        tracer_done(trace_this, target_va, ctx);
         return;
     }
     // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
