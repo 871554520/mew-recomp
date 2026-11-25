@@ -372,6 +372,14 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- 128 位搬运与位运算 ----
     if (mn == "movaps" || mn == "movups" || mn == "movdqa" || mn == "movdqu") {
+        if (dx < 0 && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            // 存储方向：movaps [mem], xmm
+            std::string addr = addrExpr(pe, ops[0], next_rip, e);
+            int sx = xmmId(ops[1].reg.value);
+            e.out << "  g_st64(" << addr << ", ctx->xmm[" << sx << "].u64[0]);\n"
+                  << "  g_st64(" << addr << " + 8ULL, ctx->xmm[" << sx << "].u64[1]);\n";
+            return true;
+        }
         if (is_xmm_reg(ops[1])) {
             e.out << "  " << dst() << ".u64[0] = ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[0];\n"
                   << "  " << dst() << ".u64[1] = ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[1];\n";
