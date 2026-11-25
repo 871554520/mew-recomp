@@ -191,6 +191,10 @@ jobs:
           grep -c '\[UNIMPL INSN\]' generated/runner.err
           grep -c '\[UNIMPL API\]' generated/runner.err
           grep -c '\[UNIMPL FUNC\]' generated/runner.err || true
+          echo '--- runner.err tail 40 (print ring trace) ---'
+          tail -40 generated/runner.err
+          echo '--- trace blocks ---'
+          grep -n 'CALL RING TRACE' generated/runner.err | head -5 || true
           exit 0
 
       - name: Stage 5 - walk up call chain to gpak open
