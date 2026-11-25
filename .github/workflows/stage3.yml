@@ -183,22 +183,32 @@ jobs:
           grep -c '\[UNIMPL FUNC\]' generated/runner.err || true
           exit 0
 
-      - name: Stage 5 - gpak direct call
+      - name: Stage 5 - walk up call chain to gpak open
         run: |
           set +e
-          python3 - <<'PYEOF'
-          import struct, os
-          # 造一个最小 gpak 头（64 KB），仅用于验证读取路径
-          data = b'GPAK' + struct.pack('<II', 1, 0) + b'\0' * (65536 - 12)
-          open('resources.gpak', 'wb').write(data)
-          print('dummy gpak', os.path.getsize('resources.gpak'))
-          PYEOF
-          MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 60 ./build-stage3/mew_runner Mewgenics.exe --call 0x1409b5380 \
-            > generated/gpak_call.out 2> generated/gpak_call.err
-          echo "gpak call rc=$?" | tee -a generated/gpak_call.out
-          tail -20 generated/gpak_call.out
-          echo '--- shim log ---'
-          grep -E '\[shim\]|\[game\]|\[FATAL\]|\[SAFE\]|CRASH' generated/gpak_call.err | head -60 | tee generated/gpak_call.log
+          python3 -c "import struct;open('resources.gpak','wb').write(b'GPAK'+struct.pack('<II',1,0)+b'\0'*(65536-12))"
+          ls -l resources.gpak
+          : > generated/gpak_call.log
+          VA=0x1409b9970
+          for LEVEL in 1 2 3 4 5; do
+            echo "=== level $LEVEL call 0x$VA ===" | tee -a generated/gpak_call.log
+            MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 45 ./build-stage3/mew_runner Mewgenics.exe \
+              --call "$VA" > generated/gpak_call_$LEVEL.out 2> generated/gpak_call_$LEVEL.err
+            echo "rc=$?" | tee -a generated/gpak_call.log
+            grep -E '\[shim\] (CreateFileW|ReadFile|HeapAlloc)|resources\.gpak' generated/gpak_call_$LEVEL.err | head -12 | tee -a generated/gpak_call.log
+            if grep -q 'resources.gpak' generated/gpak_call_$LEVEL.err; then
+              echo "GPAK OPENED at level $LEVEL va=$VA" | tee -a generated/gpak_call.log
+              break
+            fi
+            NEXT=$(./build/mew_lifter --find-callers "$VA" --exe Mewgenics.exe 2>/dev/null | awk '/caller=/{gsub("caller=","");gsub("->.*","");print $2}' | head -1)
+            if [ -z "$NEXT" ] || [ "$NEXT" = "$VA" ]; then
+              echo "no caller beyond $VA" | tee -a generated/gpak_call.log
+              break
+            fi
+            VA=$NEXT
+          done
+          echo "--- tail of last err ---"
+          tail -25 generated/gpak_call_$LEVEL.err | tee -a generated/gpak_call.log
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -223,6 +233,7 @@ jobs:
             generated/runner_api.log
             generated/hot_functions.txt
             generated/gpak_xref.txt
-            generated/gpak_call.out
             generated/gpak_call.log
+            generated/gpak_call_*.out
+            generated/gpak_call_*.err
           if-no-files-found: warn
