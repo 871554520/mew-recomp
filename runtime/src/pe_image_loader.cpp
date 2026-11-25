@@ -7,6 +7,10 @@
 #include <string>
 #include <sys/mman.h>
 
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+
 namespace {
 
 uint32_t rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
@@ -35,8 +39,16 @@ bool load_pe_image(const char* exe_path, GuestImage* out, std::string* err) {
     const uint32_t sizeOfImage = rd32(opt + 56);
     const size_t secTab = peOff + 24 + optSize;
 
-    void* mem = mmap(nullptr, sizeOfImage, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANON, -1, 0);
+    // 优先映射到原始基址：bias=0 时镜像内所有绝对指针天然有效，无需 .reloc 修正
+    void* want = (void*)(uintptr_t)imageBase;
+    void* mem = mmap(want, sizeOfImage, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE, -1, 0);
+    bool pinned = (mem != MAP_FAILED && mem == want);
+    if (!pinned) {
+        if (mem != MAP_FAILED) munmap(mem, sizeOfImage);
+        mem = mmap(nullptr, sizeOfImage, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    }
     if (mem == MAP_FAILED) { if (err) *err = "mmap failed"; return false; }
     std::memset(mem, 0, sizeOfImage);
 
@@ -58,9 +70,10 @@ bool load_pe_image(const char* exe_path, GuestImage* out, std::string* err) {
     }
 
     int64_t bias = (int64_t)(uintptr_t)mem - (int64_t)imageBase;
+    std::fprintf(stderr, "[loader] pinned_at_base=%d bias=%lld\n", (int)pinned, (long long)bias);
 
-    // ---- .reloc：把镜像内绝对地址加上 bias ----
-    for (uint16_t i = 0; i < nsec; ++i) {
+    // ---- .reloc：仅在没能钉在原始基址时才需要 ----
+    for (uint16_t i = 0; i < nsec && bias != 0; ++i) {
         const uint8_t* p = file.data() + secTab + i * 40;
         char name[9] = {0};
         std::memcpy(name, p, 8);
