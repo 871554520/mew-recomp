@@ -70,11 +70,30 @@ inline uint64_t& cur_fn_va() {
     return v;
 }
 
+// 入口观测：MEW_TRACE_FN=0x<va> 时，每次进入该函数打印一次寄存器快照（前 40 次）。
+inline uint64_t mew_trace_fn() {
+    static uint64_t v = [] {
+        const char* e = std::getenv("MEW_TRACE_FN");
+        return e ? (uint64_t)std::strtoull(e, nullptr, 0) : 0ULL;
+    }();
+    return v;
+}
+
 #define MEW_SET_CUR_FN(CTX, VA)                                                   \
     do {                                                                          \
         cur_ctx_ptr() = (CTX);                                                    \
         cur_fn_va() = (uint64_t)(VA);                                             \
         call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, mew_guest_ret(CTX)); \
+        if (mew_trace_fn() == (uint64_t)(VA)) {                                   \
+            static int _mew_tn = 0;                                               \
+            if (_mew_tn++ < 40)                                                   \
+                std::fprintf(stderr,                                               \
+                    "[fn] 0x%llx rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx rax=0x%llx\n", \
+                    (unsigned long long)(VA), (unsigned long long)(CTX)->rcx,      \
+                    (unsigned long long)(CTX)->rdx, (unsigned long long)(CTX)->r8, \
+                    (unsigned long long)(CTX)->r9, (unsigned long long)(CTX)->rsp, \
+                    (unsigned long long)(CTX)->rax);                              \
+        }                                                                         \
     } while (0)
 #define MEW_TRACE_API(CTX, NAME) \
     call_trace().push(0, (NAME), (CTX)->rcx, mew_guest_ret(CTX))
