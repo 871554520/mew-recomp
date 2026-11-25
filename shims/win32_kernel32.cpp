@@ -204,25 +204,6 @@ void shim_KERNEL32_SetLastError(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_GetModuleHandleW(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleHandleA(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleFileNameW(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_GetProcAddress(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] GetProcAddress(%s)\n", guest_wstr(c, arg1(c)).c_str());
-    ret0(c, 0);
-}
-void shim_KERNEL32_LoadLibraryW(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] LoadLibraryW(%s)\n", guest_wstr(c, arg0(c)).c_str());
-    ret0(c, 0);
-}
-void shim_KERNEL32_LoadLibraryA(X64Ctx* c) {
-    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
-    std::fprintf(stderr, "[shim] LoadLibraryA(%s)\n", p ? p : "(null)");
-    ret0(c, 0);
-}
-void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
-    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
-    std::fprintf(stderr, "[game] %s\n", p ? p : "");
-    ret0(c, 0);
-}
 void shim_KERNEL32_IsDebuggerPresent(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_GetCurrentProcessId(X64Ctx* c) { ret0(c, (uint64_t)getpid()); }
 void shim_KERNEL32_GetCurrentThreadId(X64Ctx* c) { ret0(c, (uint64_t)(uintptr_t)pthread_self()); }
@@ -314,11 +295,6 @@ void shim_KERNEL32_SetHandleCount(X64Ctx* c) { ret0(c, (uint32_t)arg0(c)); }
 void shim_KERNEL32_RtlUnwind(X64Ctx* c) { (void)c; }
 
 // ---------------- 补充：库加载与错误 ----------------
-void shim_KERNEL32_LoadLibraryExW(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] LoadLibraryExW(ptr=0x%llx, \"%s\")\n",
-                 (unsigned long long)arg0(c), guest_wstr(c, arg0(c)).c_str());
-    ret0(c, 0);
-}
 void shim_KERNEL32_GetModuleHandleExW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_FreeLibraryAndExitThread(X64Ctx* c) { std::exit(0); }
 void shim_KERNEL32_RaiseException(X64Ctx* c) {
@@ -382,3 +358,129 @@ void shim_WINMM_timeGetTime(X64Ctx* c) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     ret0(c, (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000ull));
 }
+
+// ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
+namespace {
+
+struct DynApi { const char* name; RecompFn fn; };
+
+uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
+
+uint64_t synth_va_for(const char* name);
+
+// 映射表：引擎/CRT 会 GetProcAddress 的常见入口
+RecompFn lookup_api(const char* name) {
+    static const DynApi kApis[] = {
+        {"InitializeCriticalSectionAndSpinCount", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
+        {"InitializeCriticalSectionEx", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
+        {"EnterCriticalSection", shim_KERNEL32_EnterCriticalSection},
+        {"LeaveCriticalSection", shim_KERNEL32_LeaveCriticalSection},
+        {"DeleteCriticalSection", shim_KERNEL32_DeleteCriticalSection},
+        {"TryEnterCriticalSection", shim_KERNEL32_TryEnterCriticalSection},
+        {"GetSystemTimeAsFileTime", shim_KERNEL32_GetSystemTimeAsFileTime},
+        {"GetSystemTimePreciseAsFileTime", shim_KERNEL32_GetSystemTimePreciseAsFileTime},
+        {"QueryPerformanceCounter", shim_KERNEL32_QueryPerformanceCounter},
+        {"QueryPerformanceFrequency", shim_KERNEL32_QueryPerformanceFrequency},
+        {"GetCurrentThreadId", shim_KERNEL32_GetCurrentThreadId},
+        {"GetCurrentProcessId", shim_KERNEL32_GetCurrentProcessId},
+        {"GetCurrentThread", shim_KERNEL32_GetCurrentThread},
+        {"GetCurrentProcess", shim_KERNEL32_GetCurrentProcess},
+        {"Sleep", shim_KERNEL32_Sleep},
+        {"SleepEx", shim_KERNEL32_Sleep},
+        {"GetTickCount", shim_KERNEL32_GetTickCount},
+        {"GetTickCount64", shim_KERNEL32_GetTickCount64},
+        {"CreateEventW", shim_KERNEL32_CreateEventW},
+        {"SetEvent", shim_KERNEL32_SetEvent},
+        {"ResetEvent", shim_KERNEL32_ResetEvent},
+        {"WaitForSingleObject", shim_KERNEL32_WaitForSingleObject},
+        {"WaitForMultipleObjects", shim_KERNEL32_WaitForMultipleObjects},
+        {"CreateThread", shim_KERNEL32_CreateThread},
+        {"TlsAlloc", shim_KERNEL32_TlsAlloc},
+        {"TlsFree", shim_KERNEL32_TlsFree},
+        {"TlsGetValue", shim_KERNEL32_TlsGetValue},
+        {"TlsSetValue", shim_KERNEL32_TlsSetValue},
+        {"VirtualAlloc", shim_KERNEL32_VirtualAlloc},
+        {"VirtualFree", shim_KERNEL32_VirtualFree},
+        {"VirtualProtect", shim_KERNEL32_VirtualProtect},
+        {"HeapAlloc", shim_KERNEL32_HeapAlloc},
+        {"HeapFree", shim_KERNEL32_HeapFree},
+        {"GetProcessHeap", shim_KERNEL32_GetProcessHeap},
+        {"CloseHandle", shim_KERNEL32_CloseHandle},
+        {"ReadFile", shim_KERNEL32_ReadFile},
+        {"WriteFile", shim_KERNEL32_WriteFile},
+        {"SetFilePointerEx", shim_KERNEL32_SetFilePointerEx},
+        {"GetFileSizeEx", shim_KERNEL32_GetFileSizeEx},
+        {"GetFileSize", shim_KERNEL32_GetFileSize},
+        {"GetFileType", shim_KERNEL32_GetFileType},
+        {"FlushFileBuffers", shim_KERNEL32_FlushFileBuffers},
+        {"CreateFileW", shim_KERNEL32_CreateFileW},
+        {"GetFileAttributesW", shim_KERNEL32_GetFileAttributesW},
+        {"SetEndOfFile", shim_KERNEL32_SetEndOfFile},
+        {"GetModuleHandleW", shim_KERNEL32_GetModuleHandleW},
+        {"GetModuleHandleA", shim_KERNEL32_GetModuleHandleA},
+        {"GetModuleFileNameW", shim_KERNEL32_GetModuleFileNameW},
+        {"OutputDebugStringA", shim_KERNEL32_OutputDebugStringA},
+        {"OutputDebugStringW", shim_KERNEL32_OutputDebugStringW},
+        {"IsDebuggerPresent", shim_KERNEL32_IsDebuggerPresent},
+        {"RaiseException", shim_KERNEL32_RaiseException},
+        {"RtlUnwind", shim_KERNEL32_RtlUnwind},
+        {"GetSystemInfo", shim_KERNEL32_GetSystemInfo},
+        {"InitializeSListHead", shim_KERNEL32_InitializeSListHead},
+        {"SetUnhandledExceptionFilter", shim_KERNEL32_SetUnhandledExceptionFilter},
+        {"UnhandledExceptionFilter", shim_KERNEL32_UnhandledExceptionFilter},
+        {"IsProcessorFeaturePresent", shim_KERNEL32_IsProcessorFeaturePresent},
+        {"ExitProcess", shim_KERNEL32_ExitProcess},
+        {"GetLastError", shim_KERNEL32_GetLastError},
+        {"SetLastError", shim_KERNEL32_SetLastError},
+        {"SwitchToThread", shim_KERNEL32_SwitchToThread},
+        {"SetThreadPriority", shim_KERNEL32_SetThreadPriority},
+        {"GetACP", shim_KERNEL32_GetACP},
+        {"GetOEMCP", shim_KERNEL32_GetOEMCP},
+        {"GetCPInfo", shim_KERNEL32_GetCPInfo},
+        {"GetStringTypeW", shim_KERNEL32_GetStringTypeW},
+        {"LCMapStringW", shim_KERNEL32_LCMapStringW},
+        {"IsValidCodePage", shim_KERNEL32_IsValidCodePage},
+        {"IsValidLocale", shim_KERNEL32_IsValidLocale},
+        {"WideCharToMultiByte", shim_KERNEL32_WideCharToMultiByte},
+        {"MultiByteToWideChar", shim_KERNEL32_MultiByteToWideChar},
+    };
+    for (const auto& e : kApis)
+        if (std::strcmp(e.name, name) == 0) return e.fn;
+    return nullptr;
+}
+
+}  // namespace
+
+uint64_t shim_KERNEL32_LookupSynthetic(const char* name) {
+    static std::unordered_map<std::string, uint64_t> cache;
+    auto it = cache.find(name);
+    if (it != cache.end()) return it->second;
+    RecompFn fn = lookup_api(name);
+    if (!fn) return 0;
+    uint64_t va = 0x500000000ULL + 0x10 * (uint64_t)(cache.size() + 1);
+    register_recomp_fn(va, fn);
+    cache[name] = va;
+    return va;
+}
+
+void shim_KERNEL32_LoadLibraryW(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] LoadLibraryW(\"%s\") -> fake module\n", guest_wstr(c, arg0(c)).c_str());
+    ret0(c, fake_module_handle());
+}
+void shim_KERNEL32_LoadLibraryA(X64Ctx* c) {
+    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+    std::fprintf(stderr, "[shim] LoadLibraryA(\"%s\") -> fake module\n", p ? p : "");
+    ret0(c, fake_module_handle());
+}
+void shim_KERNEL32_LoadLibraryExW(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] LoadLibraryExW(\"%s\") -> fake module\n", guest_wstr(c, arg0(c)).c_str());
+    ret0(c, fake_module_handle());
+}
+void shim_KERNEL32_GetProcAddress(X64Ctx* c) {
+    std::string name = guest_wstr(c, arg1(c));
+    uint64_t va = shim_KERNEL32_LookupSynthetic(name.c_str());
+    std::fprintf(stderr, "[shim] GetProcAddress(\"%s\") -> 0x%llx%s\n", name.c_str(),
+                 (unsigned long long)va, va ? "" : " (unmapped)");
+    ret0(c, va);
+}
+void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
