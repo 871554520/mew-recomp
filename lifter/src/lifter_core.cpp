@@ -1350,13 +1350,15 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
         if (base && base + fsize > v) len = (uint32_t)(base + fsize - v);
         else len = 0;
         if (!len) continue;
-        LiftResult r = liftFunctionEx(pe, v, len, LIFT_ALLOW_CALL | LIFT_TAIL_JUMP);
-        bool ok = r.ok && !r.stubbed;
+        LiftResult r = liftFunctionEx(pe, v, len,
+                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP | LIFT_STUB_UNKNOWN);
+        bool ok = r.ok;  // 允许占位：先进分发表，运行时撞到再补
         if (!ok) continue;
         pe.functions.emplace_back(v, len);
         ++added;
     }
     std::sort(pe.functions.begin(), pe.functions.end());
-    std::fprintf(stderr, "[expand] data pointers -> extra entries=%zu (candidates=%zu)\n", added, extra.size());
+    std::fprintf(stderr, "[expand] data pointers -> extra entries=%zu (candidates=%zu, functions=%zu)\n",
+                 added, extra.size(), pe.functions.size());
     return added;
 }
