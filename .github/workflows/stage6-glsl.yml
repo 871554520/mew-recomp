@@ -1,0 +1,24 @@
+name: Stage 6 GLSL->ES3 rewriter test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'shims/glsl_es3_rewriter.*'
+      - 'tests/stage6/**'
+      - '.github/workflows/stage6-glsl.yml'
+
+jobs:
+  glsl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & run rewriter test
+        run: |
+          set -e
+          mkdir -p build-glsl
+          g++ -std=c++17 -O2 -I shims \
+              tests/stage6/glsl_rewrite_test.cpp shims/glsl_es3_rewriter.cpp \
+              -o build-glsl/glsl_test
+          ./build-glsl/glsl_test
