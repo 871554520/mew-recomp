@@ -9,16 +9,33 @@ struct Section {
     bool exec;
 };
 
+struct ImportSlot {
+    uint64_t slot_va = 0;   // IAT 槽位虚拟地址
+    std::string dll;        // 例如 KERNEL32
+    std::string name;       // 例如 QueryPerformanceCounter
+};
+
 struct PeImage {
     std::vector<uint8_t> data;
     uint64_t image_base = 0;
     uint32_t entry_rva = 0;
+    uint32_t size_of_image = 0;
     std::vector<Section> sections;
     std::vector<std::pair<uint64_t, uint32_t>> functions;  // va, size
+    std::vector<ImportSlot> imports;                       // IAT 表
     const Section* byRva(uint32_t rva) const;
+    const ImportSlot* importBySlot(uint64_t slot_va) const;
+    bool hasFunction(uint64_t va) const;
 };
 
 bool loadPe(const char* path, PeImage& out, std::string* err);
+
+// 转译选项
+enum LiftFlags : uint32_t {
+    LIFT_ALLOW_CALL   = 1u << 0,  // 三路 call 路由
+    LIFT_STUB_UNKNOWN = 1u << 1,  // 未实现助记符 -> UNIMPL_INSN 占位（保证全量可编译）
+    LIFT_TAIL_JUMP    = 1u << 2,  // jmp rel32 视为尾调用
+};
 
 struct LiftResult {
     bool ok = false;
@@ -27,25 +44,47 @@ struct LiftResult {
     int insnCount = 0;
     bool usesRipData = false;
     bool hasCall = false;
-    bool usesMemory = false;   // 任何内存操作数
-    bool writesMemory = false; // 写内存
-    bool hasPrologue = false;  // 首条是 push reg / sub rsp 之类
-    bool usesNonStackMem = false; // 访问非栈内存（全局/绝对地址），阶段 2 需要排除
-    bool fallsOffEnd = false;     // 末尾不是 ret/jmp，执行会流出函数
-    uint32_t ptrArgMask = 0;      // 哪些参数寄存器被当作内存基址（bit0=rcx bit1=rdx bit2=r8 bit3=r9）
-    bool badMemBase = false;      // 内存基址来自非参数寄存器（静态不可判）
-    std::string lastMnemonic;     // 最后一条解码出的助记符（诊断用）
-
+    bool usesMemory = false;
+    bool writesMemory = false;
+    bool hasPrologue = false;
+    bool usesNonStackMem = false;
+    bool fallsOffEnd = false;
+    uint32_t ptrArgMask = 0;
+    bool badMemBase = false;
+    std::string lastMnemonic;
+    int directCalls = 0;    // call rel32 且目标在函数表内
+    bool indirectCall = false;
+    bool iatCall = false;
+    bool stubbed = false;   // 含 UNIMPL_INSN 占位
 };
 
-// 把某个函数转译成 C++（方案书阶段 3 的单函数形态）
+// 阶段 2 的严格形态（不改语义）
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size);
+// 阶段 3 的放行形态
+LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags);
 
-// 找「纯算法」候选函数：无 call、无 RIP 相对数据引用、全部指令都支持
 bool registerInputsOk(const PeImage& pe, uint64_t va, uint32_t size);
-
 bool controlFlowClosed(const PeImage& pe, uint64_t va, uint32_t size);
 
 bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
                       std::vector<std::pair<uint64_t, uint32_t>>& out,
                       std::vector<uint32_t>* masks = nullptr);
+
+// 阶段 4 中型候选：5–20 个直接调用、读 .rdata、调用闭包可完整转译且不含 IAT/间接调用
+struct NestedCand {
+    uint64_t va = 0;
+    uint32_t size = 0;
+    int directCalls = 0;
+    size_t closure = 0;
+};
+bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
+                         std::vector<std::pair<uint64_t, uint32_t>>* closure);
+
+// 阶段 3：分片生成
+struct ShardStats {
+    size_t total = 0, ok = 0, stubbed = 0, failed = 0;
+    size_t shards = 0;
+};
+void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
+                  const std::vector<std::pair<uint64_t, uint32_t>>* only,
+                  ShardStats* stats);
