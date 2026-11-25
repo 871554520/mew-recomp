@@ -359,6 +359,29 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
         std::abort();                                                            \
     } while (0)
 
+// 整函数占位：打印缺失的助记符，并保持调用约定平衡。
+// 被 call 进来时栈顶是模拟返回地址（call 前由调用方 push），返回前必须弹掉，
+// 否则调用方 rsp 偏移 8 字节；被尾跳（jmp）进来时栈顶不是返回地址，不能弹。
+inline bool mew_pop_if_retaddr(X64Ctx* c) {
+    if (!c) return false;
+    if (!guest_mapped(c->rsp, 8)) return false;
+    uint64_t v = 0;
+    std::memcpy(&v, reinterpret_cast<const void*>((uintptr_t)(c->rsp + c->mem_bias)), 8);
+    if (v >= 0x140000000ULL && v < 0x141400000ULL) { c->rsp += 8; return true; }
+    return false;
+}
+
+#define UNIMPL_FUNC_M(VA, MNEMS)                                                 \
+    do {                                                                         \
+        std::fprintf(stderr, "[UNIMPL FUNC] va=0x%llx missing=%s\n",             \
+                     (unsigned long long)(VA), (MNEMS));                         \
+        if (mew_unimpl_continue()) {                                             \
+            mew_pop_if_retaddr(cur_ctx_ptr());                                   \
+            return;                                                              \
+        }                                                                        \
+        std::abort();                                                            \
+    } while (0)
+
 // int N（N != 3）：x64 上 int 0x29 = __fastfail，int 0x2c = 断言。
 // 旧实现把它当未知占位跳过，导致 CRT 致命路径被静默吞掉、后续空指针崩溃。
 inline void mew_dump_guest_str(const char* tag, uint64_t va) {
