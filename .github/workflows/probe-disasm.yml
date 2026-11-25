@@ -34,7 +34,7 @@ jobs:
           mkdir -p generated
           python3 tools/hexdump_va.py Mewgenics.exe \
             0x140d3eec0 0x140d3eefc 0x140d3ef24 0x140d57880 0x140d578c0 0x140d578c8 \
-            0x140d3e820 0x140d3e889 0x140d3e894 0x140d3e8ac 0x1409b9970 0x140bc5e04 2>&1 | tee generated/probe.txt
+            0x140d67690 0x140d676b4 0x140d676d2 0x140d6f0b4 0x1413bb180 2>&1 | tee generated/probe.txt
           echo "=== pdata table around these ===" >> generated/probe.txt
           python3 - <<'PY' >> generated/probe.txt
           import struct
@@ -81,7 +81,7 @@ jobs:
       - name: Lift __scrt_common_main and friends
         run: |
           set +e
-          for T in 0x140d3e738 0x140d3f148 0x140d3e354 0x140d3e920 0x140d3e8ac; do
+          for T in 0x140d67690 0x140d676d2 0x140d6f0b4; do
             echo "===== lift $T ====="
             ./build/mew_lifter --lift "$T" --exe Mewgenics.exe --out generated/lift_$(echo $T | sed 's/0x//').cpp 2>&1 | tail -4
             sed -n 1,140p generated/lift_$(echo $T | sed 's/0x//').cpp 2>/dev/null
