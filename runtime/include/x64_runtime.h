@@ -74,16 +74,10 @@ inline uint64_t& cur_fn_va() {
     do {                                                                          \
         cur_ctx_ptr() = (CTX);                                                    \
         cur_fn_va() = (uint64_t)(VA);                                             \
-        uint64_t _mew_ret = 0;                                                    \
-        if ((CTX)->rsp > 0x10000ULL && (CTX)->rsp < 0x7fffffff0000ULL &&          \
-            guest_mapped((CTX)->rsp, 8)) {                                        \
-            std::memcpy(&_mew_ret,                                                \
-                        reinterpret_cast<const void*>((uintptr_t)((CTX)->rsp + (CTX)->mem_bias)), \
-                        sizeof(_mew_ret));                                        \
-        }                                                                         \
-        call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, _mew_ret);         \
+        call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, mew_guest_ret(CTX)); \
     } while (0)
-#define MEW_TRACE_API(CTX, NAME) call_trace().push(0, (NAME), (CTX)->rcx)
+#define MEW_TRACE_API(CTX, NAME) \
+    call_trace().push(0, (NAME), (CTX)->rcx, mew_guest_ret(CTX))
 
 struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
@@ -190,6 +184,16 @@ inline bool guest_mapped(uint64_t addr, size_t n = 1) {
     for (const auto& r : guest_mem_ranges())
         if (addr >= r.lo && addr + n <= r.hi) return true;
     return false;
+}
+
+// 函数/垫片入口处的返回地址（= guest 栈顶）。用来在调用环里定位"是谁调的这一层"。
+inline uint64_t mew_guest_ret(X64Ctx* ctx) {
+    if (!ctx) return 0;
+    if (ctx->rsp <= 0x10000ULL || ctx->rsp >= 0x7fffffff0000ULL) return 0;
+    if (!guest_mapped(ctx->rsp, 8)) return 0;
+    uint64_t ret = 0;
+    std::memcpy(&ret, reinterpret_cast<const void*>((uintptr_t)(ctx->rsp + ctx->mem_bias)), sizeof(ret));
+    return ret;
 }
 
 template <typename T>
