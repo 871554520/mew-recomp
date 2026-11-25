@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
 
 struct Section {
     std::string name;
@@ -84,6 +85,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
 struct ShardStats {
     size_t total = 0, ok = 0, stubbed = 0, failed = 0;
     size_t shards = 0;
+    std::map<std::string, size_t> failReasons;
 };
 void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
                   const std::vector<std::pair<uint64_t, uint32_t>>* only,
