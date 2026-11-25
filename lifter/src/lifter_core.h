@@ -99,6 +99,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe);
 
 // 追加额外入口（来自 .reloc/GFIDS 挖掘或运行期发现）
 size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds);
+size_t addExtraEntriesAllowInside(PeImage& pe, const std::vector<uint64_t>& seeds);
 
 // 统计占位助记符频次
 void stubHistogram(const PeImage& pe, std::map<std::string, size_t>& out,
