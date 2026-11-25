@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <algorithm>
 #include <vector>
 
 struct alignas(16) XmmReg {
@@ -34,8 +35,19 @@ inline std::unordered_map<uint64_t, RecompFn>& g_dispatch_table() {
     return tbl;
 }
 
+inline std::vector<uint64_t>& dispatch_vas() {
+    static std::vector<uint64_t> v;
+    return v;
+}
+
 inline void register_recomp_fn(uint64_t guest_va, RecompFn fn) {
     g_dispatch_table()[guest_va] = fn;
+    dispatch_vas().push_back(guest_va);
+}
+
+inline void init_dispatch_diag() {
+    auto& v = dispatch_vas();
+    std::sort(v.begin(), v.end());
 }
 
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
@@ -45,8 +57,15 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
         it->second(ctx);
         return;
     }
-    std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx\n",
-                 static_cast<unsigned long long>(target_va));
+    // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
+    auto& v = dispatch_vas();
+    auto it2 = std::lower_bound(v.begin(), v.end(), target_va);
+    uint64_t near_lo = 0;
+    if (it2 != v.begin()) near_lo = *(it2 - 1);
+    std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx (nearest_lo=0x%llx delta=%lld)\n",
+                 static_cast<unsigned long long>(target_va),
+                 (unsigned long long)near_lo,
+                 (long long)((int64_t)target_va - (int64_t)near_lo));
     std::abort();
 }
 
