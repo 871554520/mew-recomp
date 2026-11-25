@@ -874,15 +874,18 @@ std::string hexva(uint64_t v) { std::ostringstream o; o << std::hex << v; return
 
 bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure) {
-    // 先为所有函数建立“可转译性 + 调用形态”索引
-    struct Info { bool ok; int direct; bool ind; bool iat; bool rip; uint32_t size; };
+    struct Info { bool ok; bool okNoStub; int direct; bool ind; bool iat; bool rip; uint32_t size; };
     std::unordered_map<uint64_t, Info> infos;
     infos.reserve(pe.functions.size() * 2);
+    std::unordered_map<uint64_t, uint32_t> sizes;
+    for (const auto& fn : pe.functions) sizes[fn.first] = fn.second;
+
     for (const auto& fn : pe.functions) {
         LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
                                       LIFT_ALLOW_CALL | LIFT_TAIL_JUMP);
         Info i;
-        i.ok = r.ok && !r.stubbed;
+        i.okNoStub = r.ok && !r.stubbed;
+        i.ok = r.ok;
         i.direct = r.directCalls;
         i.ind = r.indirectCall;
         i.iat = r.iatCall;
@@ -891,7 +894,6 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         infos[fn.first] = i;
     }
 
-    // 收集每个函数的直接调用目标（不解码整段，只看 call rel32）
     auto collectTargets = [&](uint64_t va, uint32_t size, std::vector<uint64_t>& tgts) {
         const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
         if (!sec) return;
@@ -912,38 +914,50 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         }
     };
 
+    size_t nRoot = 0, nRip = 0, nDirect = 0, tried = 0;
+    struct Near { uint64_t va; int direct; size_t closure; size_t stubbed; bool iat, ind; };
+    std::vector<Near> nears;
+
     for (const auto& fn : pe.functions) {
         auto it = infos.find(fn.first);
         if (it == infos.end()) continue;
         const Info& ri = it->second;
-        if (!ri.ok || ri.ind || ri.iat || !ri.rip) continue;
-        if (ri.direct < 5 || ri.direct > 20) continue;
-        if (fn.second < 64 || fn.second > 6000) continue;
+        ++nRoot;
+        if (!ri.ok || !ri.rip || ri.ind) continue;
+        ++nRip;
+        if (ri.iat) continue;
+        if (ri.direct < 2 || ri.direct > 40) continue;
+        ++nDirect;
+        if (nears.size() < 8) ++tried;
 
-        // BFS 闭包
         std::vector<uint64_t> work{fn.first}, seen{fn.first};
-        bool ok = true;
+        size_t stubbed = 0;
+        bool ok = true, hasIat = false, hasInd = false;
         while (!work.empty() && ok) {
             uint64_t cur = work.back(); work.pop_back();
             auto ci = infos.find(cur);
-            if (ci == infos.end()) continue;
-            const Info& ii = ci->second;
-            if (!ii.ok || ii.ind || ii.iat) { ok = false; break; }
+            if (ci == infos.end()) { ok = false; break; }
+            if (!ci->second.ok) { ok = false; break; }
+            if (!ci->second.okNoStub) ++stubbed;
+            if (ci->second.iat) hasIat = true;
+            if (ci->second.ind) hasInd = true;
+            auto sz = sizes.find(cur);
+            if (sz == sizes.end()) { ok = false; break; }
             std::vector<uint64_t> tgts;
-            auto fsize = pe.functions.size();
-            (void)fsize;
-            uint32_t sz = 0;
-            for (const auto& f : pe.functions) if (f.first == cur) { sz = f.second; break; }
-            if (!sz) { ok = false; break; }
-            collectTargets(cur, sz, tgts);
+            collectTargets(cur, sz->second, tgts);
             for (uint64_t t : tgts) {
                 bool dup = false;
                 for (uint64_t v : seen) if (v == t) { dup = true; break; }
-                if (!dup) { seen.push_back(t); work.push_back(t); }
-                if (seen.size() > 48) { ok = false; break; }
+                if (!dup) {
+                    seen.push_back(t); work.push_back(t);
+                    if (seen.size() > 96) { ok = false; break; }
+                }
             }
         }
-        if (!ok || seen.size() < 3) continue;
+        if (nears.size() < 8) nears.push_back({fn.first, ri.direct, seen.size(), stubbed, hasIat, hasInd});
+        if (!ok) continue;
+        if (hasIat || hasInd || stubbed > 0) continue;
+        if (seen.size() > 96) continue;
 
         NestedCand c;
         c.va = fn.first;
@@ -953,13 +967,20 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         if (out) *out = c;
         if (closure) {
             closure->clear();
-            for (uint64_t v : seen) {
+            for (uint64_t v : seen)
                 for (const auto& f : pe.functions) if (f.first == v) { closure->push_back(f); break; }
-            }
             std::sort(closure->begin(), closure->end());
         }
+        std::fprintf(stderr, "[nested] picked va=0x%llx direct=%d closure=%zu\n",
+                     (unsigned long long)c.va, c.directCalls, c.closure);
         return true;
     }
+    std::fprintf(stderr, "[nested] none. scanned=%zu ok+rip=%zu direct-range=%zu\n",
+                 nRoot, nRip, nDirect);
+    for (const auto& n : nears)
+        std::fprintf(stderr, "[nested] near va=0x%llx direct=%d closure=%zu stubbed=%zu iat=%d ind=%d\n",
+                     (unsigned long long)n.va, n.direct, n.closure, n.stubbed,
+                     (int)n.iat, (int)n.ind);
     return false;
 }
 
@@ -983,7 +1004,7 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
     {
         std::ofstream o(outDir + "/all_decls.h");
         o << "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n"
-             "#include \"x64_runtime.h\"\n\n";
+             "#include \"x64_runtime.h\"\n#include \"x64_ops.h\"\n\n";
         for (const auto& fn : list)
             o << "void sub_" << hexva(fn.first) << "(X64Ctx* ctx);\n";
         o << "\n// IAT 垫片\n";
@@ -1012,6 +1033,8 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
                 o << "\nvoid sub_" << hexva(fn.first) << "(X64Ctx* ctx) {\n"
                      "  UNIMPL_FUNC(0x" << hexva(fn.first) << "ULL);\n}\n\n";
                 ++st.failed;
+                std::string reason = r.unsupported.empty() ? "unknown" : r.unsupported[0];
+                st.failReasons[reason]++;
             }
         }
     }
@@ -1050,6 +1073,12 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
                 o << "0x" << hexva(fn.first) << "\t" << fn.second << "\t" << si << "\n";
     }
 
+    if (!st.failReasons.empty()) {
+        std::fprintf(stderr, "[fail] reasons:");
+        for (const auto& kv : st.failReasons)
+            std::fprintf(stderr, " %s=%zu", kv.first.c_str(), kv.second);
+        std::fprintf(stderr, "\n");
+    }
     if (stats) *stats = st;
     std::fprintf(stderr, "[shards] total=%zu ok=%zu stubbed=%zu failed=%zu shards=%zu imports=%zu\n",
                  st.total, st.ok, st.stubbed, st.failed, st.shards, pe.imports.size());
