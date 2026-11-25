@@ -18,6 +18,9 @@ endif()
 add_library(x64_runtime INTERFACE)
 target_include_directories(x64_runtime INTERFACE runtime/include)
 
+add_library(mew_runtime STATIC runtime/src/pe_image_loader.cpp)
+target_include_directories(mew_runtime PUBLIC runtime/include)
+
 add_executable(mew_lifter lifter/src/main.cpp lifter/src/lifter_core.cpp)
 target_link_libraries(mew_lifter PRIVATE x64_runtime)
 if (ZYDIS_INCLUDE_DIR AND ZYDIS_LIBRARY)
