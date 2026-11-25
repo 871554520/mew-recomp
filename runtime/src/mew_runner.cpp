@@ -10,6 +10,13 @@
 #include "pe_image.h"
 
 namespace {
+void timeout_handler(int) {
+    std::fprintf(stderr, "\n[TIMEOUT] terminated by watchdog\n");
+    call_trace().dump("timeout");
+    std::fflush(stderr);
+    _exit(124);
+}
+
 void crash_handler(int sig, siginfo_t* si, void*) {
     void* bt[64];
     int n = backtrace(bt, 64);
@@ -31,6 +38,12 @@ void install_crash_handler() {
     sigaction(SIGILL, &sa, nullptr);
     sigaction(SIGFPE, &sa, nullptr);
     sigaction(SIGABRT, &sa, nullptr);
+    struct sigaction ta;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = timeout_handler;
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGALRM, &sa, nullptr);
 }
 }  // namespace
 
