@@ -70,33 +70,6 @@ inline uint64_t& cur_fn_va() {
     return v;
 }
 
-// 函数入口帧快照：占位指令（UNIMPL_INSN）让函数"提前 return"时，
-// 会把 epilogue 整段跳过 —— rsp 不平、rbx/rbp/rsi/rdi/r12-r15 停在被改写后的值。
-// 实测代价：__acrt_initialize_locks 清空 rbx 后撞到占位直接返回，
-// 调用方 __acrt_execute_initializers 的 `add rbx,0x10; mov rax,[rbx]` 就读到 [0x10] 崩掉。
-// 因此占位返回前必须把入口帧原样恢复，保证 ABI 干净。
-struct FnEntryFrame {
-    uint64_t rsp, rbx, rbp, rsi, rdi, r12, r13, r14, r15;
-    bool valid;
-};
-inline FnEntryFrame& fn_entry_frame() {
-    static thread_local FnEntryFrame f{};
-    return f;
-}
-inline void restore_entry_frame(X64Ctx* c) {
-    const FnEntryFrame& f = fn_entry_frame();
-    if (!f.valid || !c) return;
-    c->rsp = f.rsp;
-    c->rbx = f.rbx;
-    c->rbp = f.rbp;
-    c->rsi = f.rsi;
-    c->rdi = f.rdi;
-    c->r12 = f.r12;
-    c->r13 = f.r13;
-    c->r14 = f.r14;
-    c->r15 = f.r15;
-}
-
 // 入口观测：MEW_TRACE_FN=0x<va> 时，每次进入该函数打印一次寄存器快照（前 40 次）。
 inline uint64_t mew_trace_fn() {
     static uint64_t v = [] {
@@ -141,6 +114,34 @@ struct X64Ctx {
     uint64_t gs_base;   // 伪 TEB 的 guest 地址（gs:[disp] 路由到这里）
     uint64_t fs_base;
 };
+
+// 函数入口帧快照：占位指令（UNIMPL_INSN）让函数"提前 return"时，
+// 会把 epilogue 整段跳过 —— rsp 不平、rbx/rbp/rsi/rdi/r12-r15 停在被改写后的值。
+// 实测代价：__acrt_initialize_locks 清空 rbx 后撞到占位直接返回，
+// 调用方 __acrt_execute_initializers 的 `add rbx,0x10; mov rax,[rbx]` 就读到 [0x10] 崩掉。
+// 因此占位返回前必须把入口帧原样恢复，保证 ABI 干净。
+struct FnEntryFrame {
+    uint64_t rsp, rbx, rbp, rsi, rdi, r12, r13, r14, r15;
+    bool valid;
+};
+inline FnEntryFrame& fn_entry_frame() {
+    static thread_local FnEntryFrame f{};
+    return f;
+}
+inline void restore_entry_frame(X64Ctx* c) {
+    const FnEntryFrame& f = fn_entry_frame();
+    if (!f.valid || !c) return;
+    c->rsp = f.rsp;
+    c->rbx = f.rbx;
+    c->rbp = f.rbp;
+    c->rsi = f.rsi;
+    c->rdi = f.rdi;
+    c->r12 = f.r12;
+    c->r13 = f.r13;
+    c->r14 = f.r14;
+    c->r15 = f.r15;
+}
+
 
 using RecompFn = void (*)(X64Ctx*);
 
