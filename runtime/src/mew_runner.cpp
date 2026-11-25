@@ -16,6 +16,8 @@ void crash_handler(int sig, siginfo_t* si, void*) {
     std::fprintf(stderr, "\n[CRASH] signal=%d fault=0x%llx frames=%d\n", sig,
                  (unsigned long long)(uintptr_t)si->si_addr, n);
     backtrace_symbols_fd(bt, n, 2);
+    // 崩溃时把最近 64 层调用环打出来：哪个 guest 函数、rcx 是什么、谁调的
+    call_trace().dump("crash");
     std::fflush(stderr);
     _exit(139);
 }
