@@ -133,6 +133,13 @@ inline void record_missing_entry(uint64_t target_va, uint64_t caller_fn) {
     }
 }
 
+// 合成地址（0x5000000xx）调用追踪钩子：post=0 调用前，post=1 调用后。
+using ApiTraceHook = void (*)(uint64_t, X64Ctx*, int);
+inline ApiTraceHook& api_trace_hook() {
+    static ApiTraceHook h = nullptr;
+    return h;
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
@@ -308,13 +315,6 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
         std::fflush(stderr);                                                     \
         std::_Exit(3);                                                           \
     } while (0)
-
-// 合成地址（0x5000000xx）调用追踪钩子：post=0 调用前，post=1 调用后。
-using ApiTraceHook = void (*)(uint64_t, X64Ctx*, int);
-inline ApiTraceHook& api_trace_hook() {
-    static ApiTraceHook h = nullptr;
-    return h;
-}
 
 // 由生成的 dispatch_table.cpp 提供
 void init_dispatch_table(const char* extra_url = nullptr, void* extra = nullptr);
