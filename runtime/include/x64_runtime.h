@@ -241,5 +241,17 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
         std::abort();                                                            \
     } while (0)
 
+// int N（N != 3）：x64 上 int 0x29 = __fastfail，int 0x2c = 断言。
+// 旧实现把它当未知占位跳过，导致 CRT 致命路径被静默吞掉、后续空指针崩溃。
+#define MEW_FASTFAIL(RIP, CODE)                                                  \
+    do {                                                                         \
+        std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x in_fn=0x%llx\n",     \
+                     (unsigned long long)(RIP), (unsigned)(CODE),                \
+                     (unsigned long long)cur_fn_va());                           \
+        call_trace().dump("fastfail");                                           \
+        if (mew_unimpl_continue()) return;                                       \
+        std::abort();                                                            \
+    } while (0)
+
 // 由生成的 dispatch_table.cpp 提供
 void init_dispatch_table(const char* extra_url = nullptr, void* extra = nullptr);
