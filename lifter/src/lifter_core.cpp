@@ -1434,7 +1434,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             work.pop_back();
             if (!visited.insert(v).second) continue;
             if (pe.hasFunction(v)) continue;
-            if (pe.functions.size() > 90000) return;
+            if (pe.functions.size() > 140000) return;
 
             uint64_t base = 0; uint32_t fsize = 0;
             for (const auto& f : pe.functions)
@@ -1472,8 +1472,8 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
         }
     };
 
-    process(work_code, 20000);
-    process(work_data, 4000);
+    process(work_code, 40000);
+    process(work_data, 12000);
 
     std::sort(pe.functions.begin(), pe.functions.end());
     pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
