@@ -59,8 +59,9 @@ jobs:
             tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
             -o build/native_harness_arm64
           : > generated/arm64_stage2.txt
+          # 0x1401657b0 的 ptr_mask=0xb（rcx/rdx/r8 是缓冲区指针），必须与 x86 侧一致
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_harness_arm64 0 $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err || true
+            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_harness_arm64 0xb $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err || true
             echo "harness rc=$?" >> generated/arm64_stage2.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage2.err || true
@@ -84,8 +85,10 @@ jobs:
             runtime/src/pe_image_loader.cpp generated/nested_wrap.cpp \
             -o build/native_nested_arm64
           : > generated/arm64_stage4.txt
+          MASK=$(awk '/^# root/{for(i=1;i<=NF;i++) if($i ~ /^mask=/) print substr($i,6)}' generated/nested.txt)
+          echo "nested mask=$MASK"
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_nested_arm64 0 $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err || true
+            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_nested_arm64 "${MASK:-15}" $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err || true
             echo "nested rc=$?" >> generated/arm64_stage4.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage4.err || true
