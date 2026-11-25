@@ -38,9 +38,14 @@ int main(int argc, char** argv) {
     install_crash_handler();
     const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
     uint64_t call_va = 0;
+    size_t   call_obj_size = 0;
     unsigned long long cargs[4] = {0, 0, 0, 0};
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--call") == 0 && i + 1 < argc) call_va = std::strtoull(argv[++i], nullptr, 0);
+        else if (std::strcmp(argv[i], "--call-obj") == 0 && i + 2 < argc) {
+            call_va = std::strtoull(argv[++i], nullptr, 0);
+            call_obj_size = (size_t)std::strtoull(argv[++i], nullptr, 0);
+        }
         else if (std::strcmp(argv[i], "--arg") == 0 && i + 1 < argc) {
             const char* p = argv[++i];
             int k = 0;
@@ -89,6 +94,12 @@ int main(int argc, char** argv) {
         ctx.r8 = 0;    // lpCmdLine
         ctx.r9 = 1;    // nCmdShow
     } else {
+        if (call_obj_size) {
+            uint64_t obj = g_guest_heap.alloc(call_obj_size, true);
+            std::fprintf(stderr, "runner: --call-obj allocated 0x%llx (%zu bytes, zeroed)\n",
+                         (unsigned long long)obj, call_obj_size);
+            cargs[0] = obj;
+        }
         ctx.rcx = cargs[0];
         ctx.rdx = cargs[1];
         ctx.r8 = cargs[2];
