@@ -245,6 +245,17 @@ jobs:
           grep -n 'CALL RING TRACE' generated/runner.err | head -5 || true
           exit 0
 
+      - name: Stage 5 alt - run WITHOUT safe-mem (native backtrace of the real crash)
+        run: |
+          set +e
+          MEW_UNIMPL_CONTINUE=1 timeout 120 ./build-stage3/mew_runner Mewgenics.exe \
+            > generated/runner_nosafe.out 2> generated/runner_nosafe.err
+          echo "nosafe rc=$?"
+          echo '--- crash backtrace ---'
+          grep -A30 '\[CRASH\]' generated/runner_nosafe.err | head -40
+          echo '--- last shim/api lines ---'
+          grep -E '\[api\]|\[shim\] (Fls|InitializeCritical|HeapAlloc|CreateFile)' generated/runner_nosafe.err | tail -15
+
       - name: Stage 5 - walk up call chain to gpak open
         run: |
           set +e
@@ -350,6 +361,8 @@ jobs:
             generated/all_seeds.txt
             generated/runner_b.out
             generated/runner_b.err
+            generated/runner_nosafe.out
+            generated/runner_nosafe.err
             generated/stage3b/manifest.tsv
             discovered_entries.txt
           if-no-files-found: warn
