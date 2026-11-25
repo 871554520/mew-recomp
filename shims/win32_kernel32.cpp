@@ -1,32 +1,281 @@
-// 方案书 5：Win64 ABI → iOS POSIX 垫片示例
+// 阶段 5 P0：KERNEL32 启动链与文件 I/O 垫片（Linux/macOS 宿主）
+// 约定：所有指针参数是 guest 地址，转宿主指针用 guest_ptr_from_ctx（加到 mem_bias）
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <ctime>
+#include <string>
+#include <vector>
+#include <mutex>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "x64_runtime.h"
+#include "win32_common.h"
 
-#ifndef __APPLE__
-#include <unistd.h>
-static uint64_t fake_ticks() { return 0; }
-#else
-#include <mach/mach_time.h>
-#include <unistd.h>
-static uint64_t fake_ticks() { return mach_absolute_time(); }
-#endif
+namespace {
+thread_local uint64_t g_tls[1024];
+bool g_tls_used[1024] = {false};
+std::mutex g_tls_mu;
+FILE* g_stdout_file = nullptr;
 
-void shim_KERNEL32_QueryPerformanceCounter(X64Ctx* ctx) {
-    uint64_t out_ptr = ctx->rcx;
-    mem_write<uint64_t>(ctx, out_ptr, fake_ticks());
-    ctx->rax = 1;
-    ctx->rsp += 8;
+FILE* file_from_handle(uint64_t h) { return (FILE*)(uintptr_t)HandleTable::instance().get(h); }
+
+std::string host_path_from_guest(X64Ctx* c, uint64_t wpath) {
+    std::string s = guest_wstr(c, wpath);
+    for (char& ch : s) if (ch == '\\') ch = '/';
+    return s;
+}
+}  // namespace
+
+// ---------------- 内存 ----------------
+extern "C" void shim_KERNEL32_VirtualAlloc(X64Ctx* c) {
+    uint64_t size = arg1(c);
+    uint32_t prot = (uint32_t)arg3(c);
+    int flags = MAP_PRIVATE | MAP_ANON;
+    int p = (prot & 0x40) ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_WRITE);
+    void* m = mmap(nullptr, size ? size : 0x1000, p, flags, -1, 0);
+    if (m == MAP_FAILED) { ret0(c, 0); return; }
+    ret0(c, (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias));
 }
 
-void shim_KERNEL32_Sleep(X64Ctx* ctx) {
-    uint32_t ms = static_cast<uint32_t>(ctx->rcx);
-    usleep(static_cast<useconds_t>(ms) * 1000U);
-    ctx->rsp += 8;
+extern "C" void shim_KERNEL32_VirtualFree(X64Ctx* c) {
+    uint64_t addr = arg0(c);
+    uint64_t size = arg1(c);
+    if (addr) munmap((void*)(uintptr_t)((int64_t)addr + c->mem_bias), size ? size : 0x1000);
+    ret0(c, 1);
 }
 
-#define STUB_API(DLL, NAME)                                                    \
-    void shim_##DLL##_##NAME(X64Ctx* ctx) {                                    \
-        std::fprintf(stderr, "[UNIMP API] %s!%s (rcx=0x%llx rdx=0x%llx)\n",    \
-                     #DLL, #NAME, (unsigned long long)ctx->rcx,                \
-                     (unsigned long long)ctx->rdx);                            \
-        std::abort();                                                          \
+extern "C" void shim_KERNEL32_VirtualProtect(X64Ctx* c) { (void)c; ret0(c, 1); }
+extern "C" void shim_KERNEL32_GetProcessHeap(X64Ctx* c) { ret0(c, 1); }
+
+extern "C" void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
+    void* p = std::malloc((size_t)arg2(c));
+    std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", (size_t)arg2(c), p);
+    ret0(c, p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0);
+}
+
+extern "C" void shim_KERNEL32_HeapFree(X64Ctx* c) {
+    if (arg2(c)) std::free((void*)(uintptr_t)((int64_t)arg2(c) + c->mem_bias));
+    ret0(c, 1);
+}
+
+// ---------------- 文件 ----------------
+extern "C" void shim_KERNEL32_CreateFileW(X64Ctx* c) {
+    std::string path = host_path_from_guest(c, arg0(c));
+    uint32_t access = (uint32_t)arg1(c);
+    const char* mode = (access & 0x40000000u) ? "wb+" : ((access & 0x80000000u) ? "rb" : "rb");
+    FILE* f = std::fopen(path.c_str(), mode);
+    std::fprintf(stderr, "[shim] CreateFileW(\"%s\", 0x%x) = %p\n", path.c_str(), access, (void*)f);
+    if (!f) { ret0(c, (uint64_t)-1); return; }
+    ret0(c, HandleTable::instance().add(f));
+}
+
+extern "C" void shim_KERNEL32_ReadFile(X64Ctx* c) {
+    FILE* f = file_from_handle(arg0(c));
+    uint64_t buf = arg1(c);
+    uint32_t want = (uint32_t)arg2(c);
+    uint64_t got_ptr = arg3(c);
+    size_t got = 0;
+    if (f && buf && want) {
+        got = std::fread(guest_ptr_from_ctx(c, buf), 1, want, f);
     }
+    if (got_ptr) mem_write<uint32_t>(c, got_ptr, (uint32_t)got);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_WriteFile(X64Ctx* c) {
+    FILE* f = file_from_handle(arg0(c));
+    uint64_t buf = arg1(c);
+    uint32_t want = (uint32_t)arg2(c);
+    uint64_t got_ptr = arg3(c);
+    size_t got = 0;
+    if (f && buf && want) got = std::fwrite(guest_ptr_from_ctx(c, buf), 1, want, f);
+    if (got_ptr) mem_write<uint32_t>(c, got_ptr, (uint32_t)got);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_SetFilePointerEx(X64Ctx* c) {
+    FILE* f = file_from_handle(arg0(c));
+    int64_t dist = (int64_t)arg1(c);
+    uint32_t method = (uint32_t)arg3(c);
+    int whence = method == 1 ? SEEK_CUR : (method == 2 ? SEEK_END : SEEK_SET);
+    int rc = f ? fseek(f, (long)dist, whence) : -1;
+    ret0(c, rc == 0 ? 1 : 0);
+}
+
+extern "C" void shim_KERNEL32_GetFileSizeEx(X64Ctx* c) {
+    FILE* f = file_from_handle(arg0(c));
+    long cur = f ? ftell(f) : 0;
+    long size = 0;
+    if (f) { fseek(f, 0, SEEK_END); size = ftell(f); fseek(f, cur, SEEK_SET); }
+    if (arg1(c)) mem_write<int64_t>(c, arg1(c), (int64_t)size);
+    ret0(c, f ? 1 : 0);
+}
+
+extern "C" void shim_KERNEL32_CloseHandle(X64Ctx* c) {
+    uint64_t h = arg0(c);
+    FILE* f = file_from_handle(h);
+    if (f) std::fclose(f);
+    HandleTable::instance().erase(h);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_FlushFileBuffers(X64Ctx* c) {
+    FILE* f = file_from_handle(arg0(c));
+    if (f) std::fflush(f);
+    ret0(c, 1);
+}
+
+// ---------------- 线程/TLS/同步 ----------------
+extern "C" void shim_KERNEL32_TlsAlloc(X64Ctx* c) {
+    std::lock_guard<std::mutex> lk(g_tls_mu);
+    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) { g_tls_used[i] = true; ret0(c, i); return; }
+    ret0(c, (uint64_t)-1);
+}
+
+extern "C" void shim_KERNEL32_TlsFree(X64Ctx* c) {
+    uint32_t i = (uint32_t)arg0(c);
+    if (i < 1024) g_tls_used[i] = false;
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_TlsGetValue(X64Ctx* c) { ret0(c, g_tls[(uint32_t)arg0(c) & 1023]); }
+extern "C" void shim_KERNEL32_TlsSetValue(X64Ctx* c) {
+    g_tls[(uint32_t)arg0(c) & 1023] = arg1(c);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_InitializeCriticalSection(X64Ctx* c) {
+    pthread_mutex_t* m = new pthread_mutex_t;
+    pthread_mutex_init(m, nullptr);
+    if (arg0(c)) mem_write<uint64_t>(c, arg0(c), (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias));
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
+    uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    if (m) pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
+    uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    if (m) pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_DeleteCriticalSection(X64Ctx* c) { (void)c; ret0(c, 1); }
+
+// ---------------- 时间 ----------------
+extern "C" void shim_KERNEL32_QueryPerformanceCounter(X64Ctx* c) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    int64_t v = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    if (arg0(c)) mem_write<int64_t>(c, arg0(c), v);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_QueryPerformanceFrequency(X64Ctx* c) {
+    if (arg0(c)) mem_write<int64_t>(c, arg0(c), 1000000000LL);
+    ret0(c, 1);
+}
+
+extern "C" void shim_KERNEL32_Sleep(X64Ctx* c) { usleep((useconds_t)((uint32_t)arg0(c) * 1000u)); ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetTickCount(X64Ctx* c) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    ret0(c, (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000ull));
+}
+extern "C" void shim_KERNEL32_GetTickCount64(X64Ctx* c) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    ret0(c, (uint64_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000ull));
+}
+
+// ---------------- 模块/调试/杂项 ----------------
+extern "C" void shim_KERNEL32_GetLastError(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_SetLastError(X64Ctx* c) { (void)c; ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetModuleHandleW(X64Ctx* c) { ret0(c, 0x140000000ULL); }
+extern "C" void shim_KERNEL32_GetModuleHandleA(X64Ctx* c) { ret0(c, 0x140000000ULL); }
+extern "C" void shim_KERNEL32_GetModuleFileNameW(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetProcAddress(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] GetProcAddress(%s)\n", guest_wstr(c, arg1(c)).c_str());
+    ret0(c, 0);
+}
+extern "C" void shim_KERNEL32_LoadLibraryW(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] LoadLibraryW(%s)\n", guest_wstr(c, arg0(c)).c_str());
+    ret0(c, 0);
+}
+extern "C" void shim_KERNEL32_LoadLibraryA(X64Ctx* c) {
+    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+    std::fprintf(stderr, "[shim] LoadLibraryA(%s)\n", p ? p : "(null)");
+    ret0(c, 0);
+}
+extern "C" void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
+    const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+    std::fprintf(stderr, "[game] %s\n", p ? p : "");
+    ret0(c, 0);
+}
+extern "C" void shim_KERNEL32_IsDebuggerPresent(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetCurrentProcessId(X64Ctx* c) { ret0(c, (uint64_t)getpid()); }
+extern "C" void shim_KERNEL32_GetCurrentThreadId(X64Ctx* c) { ret0(c, (uint64_t)(uintptr_t)pthread_self()); }
+extern "C" void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
+    if (arg0(c)) {
+        uint8_t* p = (uint8_t*)guest_ptr_from_ctx(c, arg0(c));
+        std::memset(p, 0, 48);
+        *(uint32_t*)(p + 0) = 0;       // 架构 x86
+        *(uint32_t*)(p + 20) = 4096;   // 页大小
+        *(uint32_t*)(p + 24) = 0x10000;
+        *(uint32_t*)(p + 32) = 4;      // 处理器数
+    }
+    ret0(c, 0);
+}
+extern "C" void shim_KERNEL32_InitializeSListHead(X64Ctx* c) { if (arg0(c)) mem_write<uint64_t>(c, arg0(c), 0); ret0(c, 0); }
+extern "C" void shim_KERNEL32_SetUnhandledExceptionFilter(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_UnhandledExceptionFilter(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_ExitProcess(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
+    std::exit((int)arg0(c));
+}
+extern "C" void shim_KERNEL32_GetCommandLineW(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetCommandLineA(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetStartupInfoW(X64Ctx* c) { if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 104); ret0(c, 0); }
+
+extern "C" void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
+    uint32_t cp = (uint32_t)arg0(c);
+    uint64_t src = arg2(c);
+    int srclen = (int)arg3(c);
+    uint64_t dst = 0, dstlen = 0;
+    // 后两个参数在栈上（Win64 第 5/6 参数）
+    (void)cp;
+    if (srclen < 0) {
+        size_t n = 0;
+        const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, src);
+        while (p[n]) ++n;
+        srclen = (int)n;
+    }
+    std::string s = utf16_to_utf8((const uint16_t*)guest_ptr_from_ctx(c, src), (size_t)srclen);
+    (void)dst; (void)dstlen;
+    ret0(c, (uint64_t)s.size());
+}
+
+extern "C" void shim_KERNEL32_MultiByteToWideChar(X64Ctx* c) { (void)c; ret0(c, 0); }
+extern "C" void shim_KERNEL32_lstrlenW(X64Ctx* c) {
+    const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, arg0(c));
+    size_t n = 0;
+    while (p && p[n]) ++n;
+    ret0(c, (uint64_t)n);
+}
+
+// ---------------- USER32（最小） ----------------
+extern "C" void shim_USER32_MessageBoxW(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] MessageBoxW: %s\n", guest_wstr(c, arg1(c)).c_str());
+    ret0(c, 1);
+}
+extern "C" void shim_USER32_GetSystemMetrics(X64Ctx* c) { ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
+extern "C" void shim_USER32_GetDesktopWindow(X64Ctx* c) { ret0(c, 1); }
