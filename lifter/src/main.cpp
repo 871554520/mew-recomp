@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
         else if (a == "--lift" && i + 1 < argc) { mode = "lift"; va = std::strtoull(argv[++i], nullptr, 0); }
         else if (a == "--funcs") mode = "funcs";
         else if (a == "--find-string" && i + 1 < argc) { mode = "find-string"; needle = argv[++i]; }
+        else if (a == "--find-callers" && i + 1 < argc) { mode = "find-callers"; va = std::strtoull(argv[++i], nullptr, 0); }
     }
     if (exe.empty()) { std::fprintf(stderr, "need --exe\n"); return 2; }
 
@@ -141,6 +142,14 @@ int main(int argc, char** argv) {
             std::printf("  str=0x%llx referenced_by=0x%llx\n",
                         (unsigned long long)r.first, (unsigned long long)r.second);
         return refs.empty() ? 1 : 0;
+    }
+
+    if (mode == "find-callers") {
+        auto callers = findCallers(pe, va);
+        std::printf("callers=%zu\n", callers.size());
+        for (auto c : callers)
+            std::printf("  caller=0x%llx -> 0x%llx\n", (unsigned long long)c, (unsigned long long)va);
+        return callers.empty() ? 1 : 0;
     }
 
     if (mode == "funcs") {
