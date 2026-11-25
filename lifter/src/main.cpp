@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
         else if (a == "--lift" && i + 1 < argc) { mode = "lift"; va = std::strtoull(argv[++i], nullptr, 0); }
         else if (a == "--funcs") mode = "funcs";
         else if (a == "--find-string" && i + 1 < argc) { mode = "find-string"; needle = argv[++i]; }
+        else if (a == "--stub-hist") mode = "stub-hist";
         else if (a == "--find-callers" && i + 1 < argc) { mode = "find-callers"; va = std::strtoull(argv[++i], nullptr, 0); }
     }
     if (exe.empty()) { std::fprintf(stderr, "need --exe\n"); return 2; }
@@ -154,6 +155,23 @@ int main(int argc, char** argv) {
             std::printf("  str=0x%llx referenced_by=0x%llx\n",
                         (unsigned long long)r.first, (unsigned long long)r.second);
         return refs.empty() ? 1 : 0;
+    }
+
+    if (mode == "stub-hist") {
+        std::map<std::string, size_t> hist;
+        size_t stubFns = 0, total = 0;
+        expandFunctionListByDataPointers(pe);
+        stubHistogram(pe, hist, &stubFns, &total);
+        std::vector<std::pair<std::string, size_t>> v(hist.begin(), hist.end());
+        std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::printf("total_functions=%zu stubbed_functions=%zu distinct_stub_mnemonics=%zu\n",
+                    total, stubFns, v.size());
+        int shown = 0;
+        for (const auto& kv : v) {
+            if (shown++ >= 40) break;
+            std::printf("  %-14s %zu\n", kv.first.c_str(), kv.second);
+        }
+        return 0;
     }
 
     if (mode == "find-callers") {
