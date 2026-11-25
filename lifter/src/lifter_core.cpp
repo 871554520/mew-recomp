@@ -226,6 +226,8 @@ struct Emit {
     bool stubbed = false;
 };
 
+std::string hexStr(uint64_t v);
+
 bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
                 const ZydisDecodedOperand& op0, uint64_t next_rip) {
     if (op0.type != ZYDIS_OPERAND_TYPE_MEMORY || op0.mem.base != ZYDIS_REGISTER_RIP) return false;
@@ -332,9 +334,6 @@ std::string valExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const 
 
 std::string hexStr(uint64_t v);
 
-// CFG（Control Flow Guard）静态消解：命中 GuardCFCheck/Dispatch 槽位时直接改写
-static bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
-                       const ZydisDecodedOperand& op0, uint64_t next_rip);
 
 // 片段模式下发现的额外入口（跳转目标）
 std::unordered_set<uint64_t>* g_needed_entries = nullptr;
