@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "x64_runtime.h"
 #include "x64_ops.h"
@@ -22,7 +25,29 @@ unsigned long long fnv1a(const unsigned char* p, size_t n) {
 }
 }  // namespace
 
+namespace {
+void crash_handler(int sig, siginfo_t* si, void*) {
+    void* bt[32];
+    int n = backtrace(bt, 32);
+    std::fprintf(stderr, "[ARM64-CRASH] sig=%d fault=0x%llx frames=%d\n", sig,
+                 (unsigned long long)(uintptr_t)si->si_addr, n);
+    backtrace_symbols_fd(bt, n, 2);
+    std::fflush(stderr);
+    _exit(139);
+}
+void install_crash_handler() {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGILL, &sa, nullptr);
+}
+}  // namespace
+
 int main(int argc, char** argv) {
+    install_crash_handler();
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_harness <ptr_mask_hex> [a0 a1 a2 a3]\n");
         return 2;
@@ -49,6 +74,9 @@ int main(int argc, char** argv) {
     ctx.r9 = a[3];
     ctx.rsp = (unsigned long long)(uintptr_t)(stack_mem + kStackSize - 64);
 
+    std::fprintf(stderr, "[harness] ctx=%p rsp=0x%llx rcx=0x%llx buf=%p\n",
+                 (void*)&ctx, (unsigned long long)ctx.rsp, (unsigned long long)ctx.rcx, (void*)buf);
+    std::fflush(stderr);
     lifted_entry(&ctx);
 
     std::printf("{\"rax\": %llu, \"h\": %llu}\n",
