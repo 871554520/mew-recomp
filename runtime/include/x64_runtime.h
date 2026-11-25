@@ -85,6 +85,16 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
                  (unsigned long long)near_lo,
                  (long long)((int64_t)target_va - (int64_t)near_lo),
                  (unsigned long long)cur_fn_va());
+    // guard-dispatch 蹦床：槽里不是有效代码指针时，真正目标通常在 rax
+    if (ctx && ctx->rax && ctx->rax != target_va) {
+        auto it3 = tbl.find(ctx->rax);
+        if (it3 != tbl.end()) {
+            std::fprintf(stderr, "[shim] guard-dispatch fallback slot=0x%llx -> rax=0x%llx\n",
+                         (unsigned long long)target_va, (unsigned long long)ctx->rax);
+            it3->second(ctx);
+            return;
+        }
+    }
     if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
 }
