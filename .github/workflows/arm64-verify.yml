@@ -50,7 +50,7 @@ jobs:
             -o build/native_harness_arm64
           : > generated/arm64_stage2.txt
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 ./build/native_harness_arm64 0 $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err
+            qemu-aarch64 ./build/native_harness_arm64 0 $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err || true
             echo "harness rc=$?" >> generated/arm64_stage2.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage2.err || true
@@ -75,7 +75,7 @@ jobs:
             -o build/native_nested_arm64
           : > generated/arm64_stage4.txt
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 ./build/native_nested_arm64 0 $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err
+            qemu-aarch64 ./build/native_nested_arm64 0 $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err || true
             echo "nested rc=$?" >> generated/arm64_stage4.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage4.err || true
@@ -91,7 +91,9 @@ jobs:
           name: arm64-qemu-out
           path: |
             generated/arm64_stage2.txt
+            generated/arm64_stage2.err
             generated/arm64_stage4.txt
+            generated/arm64_stage4.err
           if-no-files-found: warn
 
   arm64-macos:
@@ -178,6 +180,8 @@ jobs:
           name: arm64-verify-out
           path: |
             generated/arm64_stage2.txt
+            generated/arm64_stage2.err
             generated/arm64_stage4.txt
+            generated/arm64_stage4.err
             generated/nested.txt
           if-no-files-found: warn
