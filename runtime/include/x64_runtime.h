@@ -287,7 +287,10 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
             it->second(ctx);
             if (guard) abi_check(ctx, snap, target_va, caller);
             if (api_trace_hook()) api_trace_hook()(target_va, ctx, 1);
-            if (is_call) ctx->rsp += 8;   // 垫片没有 ret，补弹返回地址
+            // 垫片替代了目标函数体，目标函数本该用 ret 弹一次返回地址；
+            // 无论外层是 call 还是尾跳（含 CFG 蹦床 jmp rax），都必须由这里补弹。
+            (void)is_call;
+            ctx->rsp += 8;
             tracer_done(trace_this, target_va, ctx);
             return;
         }
