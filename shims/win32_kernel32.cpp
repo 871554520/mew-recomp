@@ -297,7 +297,7 @@ void shim_KERNEL32_FlushFileBuffers(X64Ctx* c) {
 // ---------------- 线程/TLS/同步 ----------------
 void shim_KERNEL32_TlsAlloc(X64Ctx* c) {
     std::lock_guard<std::mutex> lk(g_tls_mu);
-    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) { g_tls_used[i] = true; ret0(c, i); return; }
+    for (int i = 1; i < 1024; ++i) if (!g_tls_used[i]) { g_tls_used[i] = true; ret0(c, i); return; }
     ret0(c, (uint64_t)-1);
 }
 
@@ -587,6 +587,38 @@ RecompFn lookup_api(const char* name) {
 
 }  // namespace
 
+// 合成地址反查表（0x5000000xx 是哪个 API）+ 追踪开关。
+// 打开后，每一次经合成地址进入的垫片都会打印 (名称, rcx, rdx, r8 -> rax)。
+std::unordered_map<uint64_t, std::string>& g_synth_names() {
+    static std::unordered_map<uint64_t, std::string> m;
+    return m;
+}
+bool& g_api_trace() { static bool on = false; return on; }
+
+void mew_api_trace_impl(uint64_t va, X64Ctx* c, int post) {
+    const std::string* nm = nullptr;
+    auto& m = g_synth_names();
+    auto it = m.find(va);
+    if (it != m.end()) nm = &it->second;
+    if (!nm) return;
+    bool fls = nm->rfind("Fls", 0) == 0;
+    if (!post) {
+        if (!fls && !g_api_trace()) return;
+        std::fprintf(stderr, "[api] -> %s(rcx=0x%llx rdx=0x%llx r8=0x%llx)\n",
+                     nm->c_str(), (unsigned long long)c->rcx,
+                     (unsigned long long)c->rdx, (unsigned long long)c->r8);
+    } else {
+        if (!fls && !g_api_trace()) return;
+        std::fprintf(stderr, "[api] <- %s rax=0x%llx\n", nm->c_str(),
+                     (unsigned long long)c->rax);
+    }
+}
+
+struct ApiTraceInstaller {
+    ApiTraceInstaller() { api_trace_hook() = &mew_api_trace_impl; }
+};
+ApiTraceInstaller g_api_trace_installer;
+
 uint64_t shim_KERNEL32_LookupSynthetic(const char* name) {
     static std::unordered_map<std::string, uint64_t> cache;
     auto it = cache.find(name);
@@ -596,6 +628,7 @@ uint64_t shim_KERNEL32_LookupSynthetic(const char* name) {
     uint64_t va = 0x500000000ULL + 0x10 * (uint64_t)(cache.size() + 1);
     register_recomp_fn(va, fn);
     cache[name] = va;
+    g_synth_names()[va] = name;
     return va;
 }
 
@@ -629,7 +662,7 @@ void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
 // ---------------- FLs(纤程局部存储) / 异常上下文 / 其它启动 API ----------------
 void shim_KERNEL32_FlsAlloc(X64Ctx* c) {
     std::lock_guard<std::mutex> lk(g_tls_mu);
-    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) {
+    for (int i = 1; i < 1024; ++i) if (!g_tls_used[i]) {   // 从 1 起：0 留给"未分配"
         g_tls_used[i] = true;
         std::fprintf(stderr, "[shim] FlsAlloc()=%d\n", i);
         ret0(c, i);
@@ -658,6 +691,7 @@ void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
     static int logged = 0;
     if (logged++ < 20)
         std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx)\n", i, (unsigned long long)arg1(c));
+    g_api_trace() = true;   // 从这里开始逐 API 打印，直到 fastfail 现场
     if (i < 1024) g_tls[i] = arg1(c);
     ret0(c, 1);
 }
