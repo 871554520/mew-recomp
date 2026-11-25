@@ -1999,6 +1999,17 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             if (!visited.insert(v).second) continue;
             if (pe.hasFunction(v)) continue;
             if (pe.functions.size() > 140000) return;
+            // 与 addExtraEntries 同理：函数体内部的地址不能当独立入口。
+            {
+                auto it2 = std::upper_bound(pe.functions.begin(), pe.functions.end(), v,
+                                            [](uint64_t val, const std::pair<uint64_t, uint32_t>& f) {
+                                                return val < f.first;
+                                            });
+                if (it2 != pe.functions.begin()) {
+                    --it2;
+                    if (v >= it2->first && v < (it2->first + (uint64_t)it2->second)) continue;
+                }
+            }
 
             uint64_t base = 0; uint32_t fsize = 0;
             for (const auto& f : pe.functions)
@@ -2685,8 +2696,25 @@ std::vector<uint64_t> findCallers(const PeImage& pe, uint64_t target_va) {
 
 size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
     size_t added = 0;
+    size_t skipped_inside = 0;
+    // 种子可能落在某个已知函数体内部（典型：DIR64 槽指向函数尾巴/共享尾声）。
+    // 把这种地址当独立入口会从函数中间进入，跳过 prologue，栈立刻错位——
+    // 实测 0x140d676d2 就是 0x140d67690 的 "add rsp,0x20; pop rbx; ret"，
+    // 被当成函数执行后 pop 出 0x10 地址、随后 __fastfail(7)。
+    // 所以：落在任何 .pdata 区间内的种子一律丢弃（片段由 LIFT_FRAGMENT 在所属函数内处理）。
+    auto inside_known = [&](uint64_t v) -> bool {
+        if (pe.functions.empty()) return false;
+        auto it = std::upper_bound(pe.functions.begin(), pe.functions.end(), v,
+                                   [](uint64_t val, const std::pair<uint64_t, uint32_t>& f) {
+                                       return val < f.first;
+                                   });
+        if (it == pe.functions.begin()) return false;
+        --it;
+        return v >= it->first && v < (it->first + (uint64_t)it->second);
+    };
     for (uint64_t v : seeds) {
         if (pe.hasFunction(v)) continue;
+        if (inside_known(v)) { ++skipped_inside; continue; }
         const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
         if (!sec || !sec->exec) continue;
         uint32_t len = 0;
@@ -2705,7 +2733,8 @@ size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
     }
     std::sort(pe.functions.begin(), pe.functions.end());
     pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
-    std::fprintf(stderr, "[seeds] added=%zu total=%zu\n", added, pe.functions.size());
+    std::fprintf(stderr, "[seeds] added=%zu skipped_inside_func=%zu total=%zu\n",
+                 added, skipped_inside, pe.functions.size());
     return added;
 }
 
