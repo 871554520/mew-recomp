@@ -1,0 +1,144 @@
+name: Stage 3 full translate + Stage 4 nested PoC
+
+on:
+  push:
+    paths:
+      - '.stage3-trigger'
+  workflow_dispatch:
+
+jobs:
+  full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            cmake ninja-build g++ clang python3-pip git \
+            gcc-mingw-w64-x86-64 wine64 xvfb
+          python3 -m pip install --quiet lief
+          nproc; g++ --version | head -1
+
+      - name: Install Zydis
+        run: |
+          set -e
+          if ! sudo apt-get install -y -qq libzydis-dev; then
+            git clone --depth 1 --branch v4.1.0 https://github.com/zyantific/zydis.git /tmp/zydis
+            cmake -S /tmp/zydis -B /tmp/zydis/build -G Ninja -DZYDIS_BUILD_TESTS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release > /dev/null
+            cmake --build /tmp/zydis/build -j"$(nproc)" > /dev/null
+            sudo cmake --install /tmp/zydis/build > /dev/null
+            sudo ldconfig
+          fi
+          ls /usr/include/Zydis/Zydis.h
+
+      - name: Fetch exe
+        run: |
+          curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
+          ls -l Mewgenics.exe
+
+      - name: Build lifter
+        run: |
+          mkdir -p generated
+          set +e
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > generated/build.log 2>&1
+          cmake --build build -j"$(nproc)" >> generated/build.log 2>&1
+          rc=$?
+          tail -40 generated/build.log
+          exit $rc
+
+      - name: ISA histogram + Top50 report
+        run: |
+          ./build/isa_histogram Mewgenics.exe generated/isa_histogram.json
+          python3 tools/summarize_isa.py generated/isa_histogram.json generated/isa_freq.tsv | tee generated/isa_report.txt
+
+      - name: Generate 64 shards + dispatch table + shims
+        run: |
+          mkdir -p generated/stage3
+          ./build/mew_lifter --shards 64 --out-dir generated/stage3 --exe Mewgenics.exe 2>&1 | tee generated/shards.log
+          du -sh generated/stage3
+          ls generated/stage3 | head
+          head -3 generated/stage3/manifest.tsv
+          wc -l generated/stage3/all_decls.h generated/stage3/dispatch_table.cpp
+
+      - name: Compile all shards -> libmew_recomp.a
+        run: |
+          python3 tools/build_stage3.py \
+            --src-dir generated/stage3 --obj-dir build-stage3 \
+            --archive build-stage3/libmew_recomp.a --jobs "$(nproc)" 2>&1 | tee generated/compile.log
+
+      - name: Gate 3 - link probe
+        run: |
+          FIRST=$(awk 'NR==2{print $1}' generated/stage3/manifest.tsv)
+          SYM="sub_${FIRST#0x}"
+          echo "probe symbol: $SYM"
+          g++ -std=c++17 -O1 -I runtime/include -I generated/stage3 \
+              -DPROBE_SYM="$SYM" tests/stage3/link_probe.cpp \
+              build-stage3/libmew_recomp.a -o build-stage3/link_probe 2>&1 | tee generated/link.log
+          ./build-stage3/link_probe | tee -a generated/link.log
+
+      - name: Stage 4 - pick nested candidate
+        run: |
+          ./build/mew_lifter --pick-nested --exe Mewgenics.exe --out generated/nested.txt 2>&1 | tee generated/nested.log
+          cat generated/nested.txt
+
+      - name: Stage 4 - build native harness
+        run: |
+          ROOT=$(awk '/^# root/{print $4}' generated/nested.txt | sed 's/0x//')
+          echo "root=$ROOT"
+          mkdir -p generated/stage4
+          ./build/mew_lifter --shards 1 --only generated/nested.txt \
+            --out-dir generated/stage4 --exe Mewgenics.exe 2>&1 | tee -a generated/nested.log
+          python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap.cpp
+          g++ -std=c++17 -O1 -I runtime/include -I generated/stage4 \
+            tests/stage4/native_nested.cpp generated/stage4/shard_000.cpp \
+            generated/stage4/dispatch_table.cpp generated/stage4/shims_auto.cpp \
+            runtime/src/pe_image_loader.cpp generated/nested_wrap.cpp \
+            -o build-stage3/native_nested 2>&1 | tee generated/native4_build.log
+
+      - name: Stage 4 - build guest harness
+        run: |
+          x86_64-w64-mingw32-gcc -O1 -o build-stage3/guest_nested.exe tests/stage4/guest_nested.c 2>&1 | tee generated/guest4_build.log
+
+      - name: Stage 4 - byte-level compare
+        run: |
+          set -uo pipefail
+          export WINEPREFIX=$HOME/.wine
+          export WINEDEBUG=err+all
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
+          timeout 120 wineboot -q > /dev/null 2>&1 || true
+          sleep 2
+          ROOT=$(awk '/^# root/{print $4}' generated/nested.txt | sed 's/0x//')
+          : > generated/verify4.log
+          for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
+            echo "== args: $ARGS" | tee -a generated/verify4.log
+            ./build-stage3/native_nested 0 $ARGS > generated/native4.out 2> generated/native4.err || echo "native failed" | tee -a generated/verify4.log
+            timeout 90 wine build-stage3/guest_nested.exe Mewgenics.exe 0x$ROOT 0 $ARGS \
+              > generated/guest4.out 2> generated/guest4.err
+            echo "guest rc=$?" | tee -a generated/verify4.log
+            tail -3 generated/guest4.err | tee -a generated/verify4.log
+            python3 tools/stage2_compare.py generated/guest4.out generated/native4.out | tee -a generated/verify4.log
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-out
+          path: |
+            generated/isa_report.txt
+            generated/isa_freq.tsv
+            generated/shards.log
+            generated/compile.log
+            generated/link.log
+            generated/nested.log
+            generated/nested.txt
+            generated/verify4.log
+            generated/*4*.out
+            generated/*4*.err
+            generated/*4_build.log
+            generated/stage3/*.tsv
+          if-no-files-found: warn
