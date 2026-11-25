@@ -65,6 +65,35 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
         s.exec = (*(uint32_t*)(p + 36) & 0x20000000) != 0;
         pe.sections.push_back(s);
     }
+    // ---- Load Config：CFG 检查/分发槽位 + GFIDS 合法间接目标表 ----
+    if (!pe.sections.empty()) {
+        const uint32_t ddOff = 112 + 8 * 10;   // DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG]
+        const uint32_t lcRva = *(uint32_t*)(opt + ddOff);
+        const uint32_t lcSize = *(uint32_t*)(opt + ddOff + 4);
+        const Section* lsec = lcRva ? pe.byRva(lcRva) : nullptr;
+        if (lsec && lcSize >= 0x80) {
+            const uint8_t* lc = pe.data.data() + lsec->raw + (lcRva - lsec->va);
+            pe.guard_check_va = *(uint64_t*)(lc + 0x70);
+            pe.guard_dispatch_va = *(uint64_t*)(lc + 0x78);
+            if (lcSize >= 0x90) {
+                uint64_t tblVa = *(uint64_t*)(lc + 0x80);
+                uint64_t cnt = *(uint64_t*)(lc + 0x88);
+                const Section* tsec = tblVa ? pe.byRva((uint32_t)(tblVa - pe.image_base)) : nullptr;
+                if (tsec && cnt && cnt < 200000) {
+                    uint32_t off = tsec->raw + (uint32_t)(tblVa - pe.image_base - tsec->va);
+                    for (uint64_t i = 0; i < cnt; ++i) {
+                        if (off + i * 4 + 4 > tsec->raw + tsec->rawsize) break;
+                        uint32_t rva = *(uint32_t*)(pe.data.data() + off + i * 4);
+                        if (rva) pe.gfids.push_back(pe.image_base + rva);
+                    }
+                }
+            }
+            std::fprintf(stderr, "[cfg] check=0x%llx dispatch=0x%llx gfids=%zu\n",
+                         (unsigned long long)pe.guard_check_va,
+                         (unsigned long long)pe.guard_dispatch_va, pe.gfids.size());
+        }
+    }
+
     // ---- 导入表（IAT 槽位 -> DLL!API）----
     {
         const uint32_t impRva = *(uint32_t*)(opt + 120);
@@ -197,6 +226,27 @@ struct Emit {
     bool stubbed = false;
 };
 
+bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
+                const ZydisDecodedOperand& op0, uint64_t next_rip) {
+    if (op0.type != ZYDIS_OPERAND_TYPE_MEMORY || op0.mem.base != ZYDIS_REGISTER_RIP) return false;
+    uint64_t slot_va = next_rip + (int64_t)op0.mem.disp.value;
+    if (pe.guard_check_va && slot_va == pe.guard_check_va) {
+        e.out << "  /* CFG guard_check_icall_fptr bypassed (NOP) */\n";
+        return true;
+    }
+    if (pe.guard_dispatch_va && slot_va == pe.guard_dispatch_va) {
+        if (mn == "call") {
+            e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, 0x"
+                  << hexStr(next_rip) << "ULL);\n";
+            e.out << "  dispatch_indirect(ctx->rax, ctx);\n";
+        } else {
+            e.out << "  dispatch_indirect(ctx->rax, ctx);\n  return;\n";
+        }
+        return true;
+    }
+    return false;
+}
+
 std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
     if (op.mem.base == ZYDIS_REGISTER_RIP) {
         int64_t d = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
@@ -281,6 +331,10 @@ std::string valExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const 
 }
 
 std::string hexStr(uint64_t v);
+
+// CFG（Control Flow Guard）静态消解：命中 GuardCFCheck/Dispatch 槽位时直接改写
+static bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
+                       const ZydisDecodedOperand& op0, uint64_t next_rip);
 
 // 片段模式下发现的额外入口（跳转目标）
 std::unordered_set<uint64_t>* g_needed_entries = nullptr;
@@ -430,7 +484,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
     Emit e;
     e.flags = flags;
     e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n"
-          << "  MEW_SET_CUR_FN(0x" << hexStr(va) << "ULL);\n";
+          << "  MEW_SET_CUR_FN(ctx, 0x" << hexStr(va) << "ULL);\n";
 
     size_t off = 0;
     ZydisDecodedInstruction insn;
@@ -669,7 +723,9 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             std::string a = valExpr(pe, insn, ops[0], next_rip, e);
             e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",bswap64(" << a << "),8);\n";
         } else if (mn == "jmp") {
-            if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+            if (tryEmitCfg(e, pe, mn, ops[0], next_rip)) {
+                /* CFG dispatch 已处理 */
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
                 if (t >= va && t < va + effSize) {
                     if (labelSet.count(t)) {
@@ -810,7 +866,9 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             storeExpr(pe, insn, ops[0], "((" + cmovcc + ") ? " + b + " : " + a + ")", next_rip, ops[0].size / 8, e);
         } else if (mn == "call") {
             e.hasCall = true;
-            if (!(flags & LIFT_ALLOW_CALL)) {
+            if (tryEmitCfg(e, pe, mn, ops[0], next_rip)) {
+                /* CFG dispatch 已处理 */
+            } else if (!(flags & LIFT_ALLOW_CALL)) {
                 e.unsupported.push_back("call");
             } else {
                 const auto pushRet = [&]() {
@@ -1583,7 +1641,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
     e.flags = flags;
     std::string lastMn;
     e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n"
-          << "  MEW_SET_CUR_FN(0x" << hexStr(va) << "ULL);\n";
+          << "  MEW_SET_CUR_FN(ctx, 0x" << hexStr(va) << "ULL);\n";
 
     for (const auto& kv : blocks) {
         const uint64_t rip = kv.first;
@@ -1812,7 +1870,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             std::string a = valExpr(pe, insn, ops[0], next_rip, e);
             e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",bswap64(" << a << "),8);\n";
         } else if (mn == "jmp") {
-            if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+            if (tryEmitCfg(e, pe, mn, ops[0], next_rip)) {
+                /* CFG dispatch 已处理 */
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
                 if (t >= va && t < va + effSize) {
                     if (labelSet.count(t)) {
@@ -1950,7 +2010,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             storeExpr(pe, insn, ops[0], "((" + cmovcc + ") ? " + b + " : " + a + ")", next_rip, ops[0].size / 8, e);
         } else if (mn == "call") {
             e.hasCall = true;
-            if (!(flags & LIFT_ALLOW_CALL)) {
+            if (tryEmitCfg(e, pe, mn, ops[0], next_rip)) {
+                /* CFG dispatch 已处理 */
+            } else if (!(flags & LIFT_ALLOW_CALL)) {
                 e.unsupported.push_back("call");
             } else {
                 const auto pushRet = [&]() {
