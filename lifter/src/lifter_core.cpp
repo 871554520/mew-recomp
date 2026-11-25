@@ -1824,6 +1824,21 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
     std::vector<std::pair<uint64_t, uint32_t>> list =
         only ? *only : pe.functions;
     std::sort(list.begin(), list.end());
+    // 同一 VA 可能同时以「.pdata 登记长度」和「种子/片段长度」出现两次，
+    // 直接生成会出现 sub_xxx 重复定义（shard_060/061 曾因此编译失败）。
+    // 按 VA 去重，长度取较大者（片段覆盖不到尾巴时仍是完整函数）。
+    {
+        std::vector<std::pair<uint64_t, uint32_t>> uniq;
+        uniq.reserve(list.size());
+        for (const auto& p2 : list) {
+            if (!uniq.empty() && uniq.back().first == p2.first) {
+                if (p2.second > uniq.back().second) uniq.back().second = p2.second;
+            } else {
+                uniq.push_back(p2);
+            }
+        }
+        list.swap(uniq);
+    }
     if (shards < 1) shards = 1;
 
     std::vector<std::vector<std::pair<uint64_t, uint32_t>>> buckets((size_t)shards);
