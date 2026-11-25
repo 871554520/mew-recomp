@@ -256,11 +256,43 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 
 // int N（N != 3）：x64 上 int 0x29 = __fastfail，int 0x2c = 断言。
 // 旧实现把它当未知占位跳过，导致 CRT 致命路径被静默吞掉、后续空指针崩溃。
-#define MEW_FASTFAIL(RIP, CODE)                                                  \
+inline void mew_dump_guest_str(const char* tag, uint64_t va) {
+    if (va < 0x140000000ULL || va >= 0x141400000ULL) return;
+    if (!guest_mapped(va, 1)) return;
+    const char* p = reinterpret_cast<const char*>((uintptr_t)(va + cur_ctx_ptr()->mem_bias));
+    char buf[160];
+    size_t n = 0;
+    for (; n + 1 < sizeof(buf); ++n) {
+        char c = p[n];
+        if (!c) break;
+        buf[n] = (c >= 0x20 && c < 0x7f) ? c : '.';
+    }
+    buf[n] = 0;
+    if (n >= 2) std::fprintf(stderr, "    %s=0x%llx \"%s\"\n", tag,
+                             (unsigned long long)va, buf);
+}
+
+#define MEW_FASTFAIL(CTX, RIP, CODE)                                             \
     do {                                                                         \
         std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x in_fn=0x%llx\n",     \
                      (unsigned long long)(RIP), (unsigned)(CODE),                \
                      (unsigned long long)cur_fn_va());                           \
+        std::fprintf(stderr, "    rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx\n", \
+                     (unsigned long long)(CTX)->rcx, (unsigned long long)(CTX)->rdx,     \
+                     (unsigned long long)(CTX)->r8, (unsigned long long)(CTX)->r9,       \
+                     (unsigned long long)(CTX)->rsp);                            \
+        mew_dump_guest_str("rcx_str", (CTX)->rcx);                               \
+        mew_dump_guest_str("rdx_str", (CTX)->rdx);                               \
+        mew_dump_guest_str("r8_str", (CTX)->r8);                                 \
+        mew_dump_guest_str("r9_str", (CTX)->r9);                                 \
+        for (int _i = 0; _i < 6; ++_i) {                                         \
+            uint64_t _a = (CTX)->rsp + (uint64_t)_i * 8;                          \
+            if (!guest_mapped(_a, 8)) break;                                      \
+            uint64_t _v = 0;                                                      \
+            std::memcpy(&_v, reinterpret_cast<const void*>((uintptr_t)(_a + (CTX)->mem_bias)), 8); \
+            std::fprintf(stderr, "    [rsp+0x%x]=0x%llx\n", _i * 8, (unsigned long long)_v);       \
+            mew_dump_guest_str("  str", _v);                                      \
+        }                                                                        \
         call_trace().dump("fastfail");                                           \
         if (mew_unimpl_continue()) return;                                       \
         std::abort();                                                            \
