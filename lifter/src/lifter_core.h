@@ -84,6 +84,9 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure,
                          size_t skip = 0);
 
+// 查找字符串及其在代码中的引用（返回 {字符串VA, 引用它的函数VA} 列表）
+std::vector<std::pair<uint64_t, uint64_t>> findStringRefs(const PeImage& pe, const char* needle);
+
 // 数据段里指向 .text 的函数指针补登为额外入口（处理 CRT 初始化表 / C++ 虚表 / 冷片段）
 size_t expandFunctionListByDataPointers(PeImage& pe);
 
