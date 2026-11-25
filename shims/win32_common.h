@@ -1,35 +1,35 @@
 #pragma once
-// 垫片公用设施：参数读取、句柄表、UTF-16 <-> UTF-8
+// 垫片公用设施：参数读取、句柄表、UTF-16 <-> UTF-8、guest 指针换算
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include <vector>
 #include <unordered_map>
 #include <mutex>
 
 #include "x64_runtime.h"
 
-// Win64 参数寄存器：rcx, rdx, r8, r9
+// guest 地址 -> 宿主指针（ctx 里带 mem_bias）
+static inline void* guest_ptr_from_ctx(X64Ctx* c, uint64_t guest_addr) {
+    return reinterpret_cast<void*>((int64_t)guest_addr + c->mem_bias);
+}
+
+// Win64 参数寄存器
 static inline uint64_t arg0(X64Ctx* c) { return c->rcx; }
 static inline uint64_t arg1(X64Ctx* c) { return c->rdx; }
 static inline uint64_t arg2(X64Ctx* c) { return c->r8; }
 static inline uint64_t arg3(X64Ctx* c) { return c->r9; }
 static inline void ret0(X64Ctx* c, uint64_t v) { c->rax = v; }
 
-// 读 guest 内存（沿 mem_bias）
 template <typename T>
-static inline T g_read(X64Ctx* c, uint64_t addr) {
-    return mem_read<T>(c, addr);
-}
+static inline T g_read(X64Ctx* c, uint64_t addr) { return mem_read<T>(c, addr); }
 
 static inline std::string utf16_to_utf8(const uint16_t* w, size_t maxUnits) {
     std::string out;
     size_t i = 0;
     while (i < maxUnits && w[i]) {
         uint32_t cp = w[i++];
-        if (cp >= 0xD800 && cp <= 0xDBFF && i < maxUnits && w[i] >= 0xDC00 && w[i] <= 0xDFFF) {
+        if (cp >= 0xD800 && cp <= 0xDBFF && i < maxUnits && w[i] >= 0xDC00 && w[i] <= 0xDFFF)
             cp = 0x10000 + ((cp - 0xD800) << 10) + (w[i++] - 0xDC00);
-        }
         if (cp < 0x80) out += (char)cp;
         else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
         else if (cp < 0x10000) {
@@ -52,11 +52,10 @@ static inline std::string guest_wstr(X64Ctx* c, uint64_t addr, size_t maxUnits =
     return utf16_to_utf8(p, maxUnits);
 }
 
-// 句柄表：把宿主指针/对象映射成 guest 侧句柄值
+// 句柄表：宿主对象 -> guest 句柄值
 class HandleTable {
 public:
     static HandleTable& instance() { static HandleTable t; return t; }
-
     uint64_t add(void* p) {
         std::lock_guard<std::mutex> lk(mu_);
         uint64_t h = next_++;
@@ -72,14 +71,8 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         return map_.erase(h) != 0;
     }
-
 private:
     std::mutex mu_;
     uint64_t next_ = 0x100;
     std::unordered_map<uint64_t, void*> map_;
 };
-
-// guest 内存访问：ctx 里带 mem_bias
-static inline void* guest_ptr_from_ctx(X64Ctx* c, uint64_t guest_addr) {
-    return reinterpret_cast<void*>((int64_t)guest_addr + c->mem_bias);
-}
