@@ -195,6 +195,17 @@ std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t 
         e.usesRipData = true;
         return std::to_string((unsigned long long)(next_rip + d)) + "ULL /*rip*/";
     }
+    // 段前缀：gs:[disp] / fs:[disp] 走伪 TEB
+    if (op.mem.segment == ZYDIS_REGISTER_GS || op.mem.segment == ZYDIS_REGISTER_FS) {
+        int64_t sd = op.mem.disp.has_displacement ? (int64_t)op.mem.disp.value : 0;
+        std::string base = (op.mem.segment == ZYDIS_REGISTER_GS) ? "ctx->gs_base" : "ctx->fs_base";
+        std::ostringstream ss;
+        ss << "(" << base;
+        if (sd >= 0) ss << " + (" << sd << "LL)";
+        else ss << " - (" << (-sd) << "LL)";
+        ss << ")";
+        return ss.str();
+    }
     // 内存基址性质分析：栈(rsp/rbp)、参数指针(rcx/rdx/r8/r9)、还是不可判定的寄存器
     {
         auto argIdxOf = [](ZydisRegister r) -> int {
@@ -943,7 +954,8 @@ std::string hexva(uint64_t v) { std::ostringstream o; o << std::hex << v; return
 bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure,
                          size_t skip) {
-    struct Info { bool ok; bool okNoStub; int direct; bool ind; bool iat; bool rip; uint32_t size; };
+    struct Info { bool ok; bool okNoStub; int direct; bool ind; bool iat; bool rip; uint32_t size;
+                  uint32_t ptrMask; bool nonStackMem; };
     std::unordered_map<uint64_t, Info> infos;
     infos.reserve(pe.functions.size() * 2);
     std::unordered_map<uint64_t, uint32_t> sizes;
@@ -960,6 +972,8 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         i.iat = r.iatCall;
         i.rip = r.usesRipData;
         i.size = fn.second;
+        i.ptrMask = r.ptrArgMask;
+        i.nonStackMem = r.usesNonStackMem;
         infos[fn.first] = i;
     }
 
@@ -995,11 +1009,14 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
     struct Near { uint64_t va; int direct; size_t closure; size_t stubbed; bool iat, ind; };
     std::vector<Near> nears;
 
+    for (int pass = 0; pass < 2; ++pass) {
+    const bool strict = (pass == 0);
     for (const auto& fn : pe.functions) {
         auto it = infos.find(fn.first);
         if (it == infos.end()) continue;
         const Info& ri = it->second;
         ++nRoot;
+        if (strict && (ri.ptrMask != 0 || ri.nonStackMem)) continue;
         if (!ri.ok || !ri.rip || ri.ind) continue;
         ++nRip;
         if (ri.iat) continue;
@@ -1018,6 +1035,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
             if (!ci->second.okNoStub) ++stubbed;
             if (ci->second.iat) hasIat = true;
             if (ci->second.ind) hasInd = true;
+            if (strict && (ci->second.ptrMask != 0 || ci->second.nonStackMem)) { ok = false; break; }
             auto sz = sizes.find(cur);
             if (sz == sizes.end()) { ok = false; break; }
             std::vector<uint64_t> tgts;
@@ -1053,6 +1071,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         std::fprintf(stderr, "[nested] picked va=0x%llx direct=%d closure=%zu\n",
                      (unsigned long long)c.va, c.directCalls, c.closure);
         return true;
+    }
     }
     std::fprintf(stderr, "[nested] none. scanned=%zu ok+rip=%zu direct-range=%zu\n",
                  nRoot, nRip, nDirect);
