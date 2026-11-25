@@ -239,6 +239,19 @@ inline uint64_t mew_trace_caller() {
     return v;
 }
 
+// 返回点观测：MEW_TRACE_FN 指定的函数在 ret 前打印 rbx/rsi/rdi/rsp
+inline void mew_ret_trace(X64Ctx* c) {
+    if (!c) return;
+    if (!mew_trace_fn() || cur_fn_va() != mew_trace_fn()) return;
+    static int n = 0;
+    if (n++ > 60) return;
+    std::fprintf(stderr, "[ret] fn=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rsp=0x%llx rax=0x%llx\n",
+                 (unsigned long long)cur_fn_va(), (unsigned long long)c->rbx,
+                 (unsigned long long)c->rsi, (unsigned long long)c->rdi,
+                 (unsigned long long)c->rsp, (unsigned long long)c->rax);
+}
+#define MEW_RET_TRACE(CTX) mew_ret_trace(CTX)
+
 inline bool tracer_note(bool on, uint64_t target, bool is_call, uint64_t rsp0, uint64_t rbx0) {
     static int n = 0;
     if (!on || n >= 40) return false;
@@ -250,9 +263,10 @@ inline bool tracer_note(bool on, uint64_t target, bool is_call, uint64_t rsp0, u
 }
 inline void tracer_done(bool on, uint64_t target, X64Ctx* c) {
     if (!on || !c) return;
-    std::fprintf(stderr, "        -> done target=0x%llx rsp_out=0x%llx rbx_out=0x%llx\n",
+    std::fprintf(stderr, "        -> done target=0x%llx rsp_out=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx\n",
                  (unsigned long long)target, (unsigned long long)c->rsp,
-                 (unsigned long long)c->rbx);
+                 (unsigned long long)c->rbx, (unsigned long long)c->rsi,
+                 (unsigned long long)c->rdi);
 }
 
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
