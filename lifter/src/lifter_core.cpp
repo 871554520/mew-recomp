@@ -331,7 +331,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
         e.out << "  { uint64_t t[" << lanes << "]; for(int i=0;i<" << lanes << ";++i) t[i]=(uint64_t)((int64_t)ctx->xmm["
               << dx << "]." << T << "[i] " << op << " (int64_t)" << src << "." << T
-              << "[i]); for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+              << "[i]); for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << CT << ")t[i]; }\n";
         return true;
     }
     if (mn == "pand" || mn == "por") {
