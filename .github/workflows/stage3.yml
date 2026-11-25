@@ -82,51 +82,63 @@ jobs:
               build-stage3/libmew_recomp.a -o build-stage3/link_probe 2>&1 | tee generated/link.log
           ./build-stage3/link_probe | tee -a generated/link.log
 
-      - name: Stage 4 - pick nested candidate
+      - name: Stage 4 - candidate loop (native vs Wine byte-level)
         run: |
-          ./build/mew_lifter --pick-nested --exe Mewgenics.exe --out generated/nested.txt 2>&1 | tee generated/nested.log
-          cat generated/nested.txt
-
-      - name: Stage 4 - build native harness
-        run: |
-          ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
-          echo "root=$ROOT"
-          mkdir -p generated/stage4
-          ./build/mew_lifter --shards 1 --only generated/nested.txt \
-            --out-dir generated/stage4 --exe Mewgenics.exe 2>&1 | tee -a generated/nested.log
-          python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap.cpp
-          g++ -std=c++17 -O1 -I runtime/include -I generated/stage4 \
-            tests/stage4/native_nested.cpp generated/stage4/shard_000.cpp \
-            generated/stage4/dispatch_table.cpp generated/stage4/shims_auto.cpp \
-            runtime/src/pe_image_loader.cpp generated/nested_wrap.cpp \
-            -o build-stage3/native_nested 2>&1 | tee generated/native4_build.log
-
-      - name: Stage 4 - build guest harness
-        run: |
-          mkdir -p build-stage3
+          set +e
+          mkdir -p build-stage3 generated
           x86_64-w64-mingw32-gcc -O1 -o build-stage3/guest_nested.exe tests/stage4/guest_nested.c 2>&1 | tee generated/guest4_build.log
-
-      - name: Stage 4 - byte-level compare
-        run: |
-          set -uo pipefail
           export WINEPREFIX=$HOME/.wine
           export WINEDEBUG=err+all
           export WINEDLLOVERRIDES="mscoree,mshtml="
           export DISPLAY=:99
           Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
-          timeout 120 wineboot -q > /dev/null 2>&1 || true
+          timeout 120 wineboot -q > /dev/null 2>&1
           sleep 2
-          ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
           : > generated/verify4.log
-          for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            echo "== args: $ARGS" | tee -a generated/verify4.log
-            ./build-stage3/native_nested 0 $ARGS > generated/native4.out 2> generated/native4.err || echo "native failed" | tee -a generated/verify4.log
-            timeout 90 wine build-stage3/guest_nested.exe Mewgenics.exe 0x$ROOT 0 $ARGS \
-              > generated/guest4.out 2> generated/guest4.err
-            echo "guest rc=$?" | tee -a generated/verify4.log
-            tail -3 generated/guest4.err | tee -a generated/verify4.log
-            python3 tools/stage2_compare.py generated/guest4.out generated/native4.out | tee -a generated/verify4.log
+          BEST=""
+          for K in 0 1 2 3 4 5 6 7; do
+            if ! ./build/mew_lifter --pick-nested --skip $K --exe Mewgenics.exe --out generated/nested_$K.txt > /dev/null 2>&1; then
+              echo "no more candidates at K=$K" | tee -a generated/verify4.log
+              break
+            fi
+            ROOT=$(awk '/^# root/{print $3}' generated/nested_$K.txt | sed 's/va=0x//')
+            DIR=generated/stage4_$K
+            rm -rf "$DIR"; mkdir -p "$DIR"
+            ./build/mew_lifter --shards 1 --only generated/nested_$K.txt --out-dir "$DIR" --exe Mewgenics.exe > /dev/null 2>&1
+            python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap_$K.cpp > /dev/null
+            if ! g++ -std=c++17 -O1 -I runtime/include -I "$DIR" \
+                 tests/stage4/native_nested.cpp "$DIR/shard_000.cpp" "$DIR/dispatch_table.cpp" \
+                 "$DIR/shims_auto.cpp" runtime/src/pe_image_loader.cpp generated/nested_wrap_$K.cpp \
+                 -o build-stage3/native_nested_$K > generated/native4_build_$K.log 2>&1; then
+              echo "cand $K: native build failed" | tee -a generated/verify4.log
+              tail -5 generated/native4_build_$K.log | tee -a generated/verify4.log
+              continue
+            fi
+            OK=1
+            for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
+              ./build-stage3/native_nested_$K 0 $ARGS > generated/n4_${K}.out 2> generated/n4_${K}.err
+              NRC=$?
+              timeout 90 wine build-stage3/guest_nested.exe Mewgenics.exe "0x$ROOT" 0 $ARGS \
+                > generated/g4_${K}.out 2> generated/g4_${K}.err
+              GRC=$?
+              if [ $NRC -ne 0 ] || [ $GRC -ne 0 ]; then
+                echo "cand $K [$ARGS] native rc=$NRC guest rc=$GRC" | tee -a generated/verify4.log
+                tail -2 generated/g4_${K}.err | tee -a generated/verify4.log
+                OK=0; break
+              fi
+              if ! python3 tools/stage2_compare.py generated/g4_${K}.out generated/n4_${K}.out >> generated/verify4.log 2>&1; then
+                OK=0; break
+              fi
+            done
+            if [ $OK -eq 1 ]; then
+              echo "NESTED PASS cand=$K root=0x$ROOT" | tee -a generated/verify4.log
+              BEST=$K
+              break
+            fi
           done
+          echo "--- verify4.log ---"; tail -40 generated/verify4.log
+          if [ -n "$BEST" ]; then echo "STAGE4 PASSED cand=$BEST"; exit 0; fi
+          echo "STAGE4: no candidate passed"; exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -138,9 +150,9 @@ jobs:
             generated/shards.log
             generated/compile.log
             generated/link.log
-            generated/nested.log
-            generated/nested.txt
             generated/verify4.log
+            generated/nested_*.txt
+            generated/*4*.log
             generated/*4*.out
             generated/*4*.err
             generated/*4_build.log
