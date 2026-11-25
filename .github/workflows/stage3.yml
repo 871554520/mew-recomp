@@ -90,7 +90,7 @@ jobs:
 
       - name: Dump hot functions (debug)
         run: |
-          for VA in 140d4a240 140dab670 140d67690 140d6f0b4; do
+          for VA in 140d6ca68 140d6cae8 140d6cb90 140d6cf58 140d6d0e0; do
             echo "===== sub_$VA ====="
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -200
           done | tee generated/hot_functions.txt
