@@ -268,6 +268,243 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     // 目标寄存器 id 用于写入
     auto dst = [&]() { return dx >= 0 ? ("ctx->xmm[" + std::to_string(dx) + "]") : std::string(); };
 
+    // ---- 整数乘除/借位 ----
+    if (mn == "mul" || mn == "div" || mn == "idiv") {
+        int w = ops[0].size / 8;
+        std::string src;
+        if (is_gpr_reg(ops[0])) src = "read_reg(ctx," + std::to_string(gprId(ops[0].reg.value)) + "," + std::to_string(w) + ")";
+        else src = "g_u64(" + addrExpr(pe, ops[0], next_rip, e) + ")";
+        if (mn == "mul") {
+            if (w == 8) {
+                e.out << "  { unsigned __int128 p = (unsigned __int128)ctx->rax * (unsigned __int128)(" << src
+                      << "); ctx->rax = (uint64_t)p; ctx->rdx = (uint64_t)(p >> 64); }\n";
+            } else {
+                unsigned mask = (w == 4) ? 0xFFFFFFFFu : (w == 2 ? 0xFFFFu : 0xFFu);
+                e.out << "  { uint64_t a = ctx->rax & " << mask << "ULL, b = (" << src << ") & " << mask
+                      << "ULL; uint64_t p = a * b; write_reg(ctx,0,p & " << mask << "ULL," << w
+                      << "); write_reg(ctx,2,(p >> " << (w * 8) << ") & " << mask << "ULL," << w << "); }\n";
+            }
+        } else if (mn == "div") {
+            if (w == 8) {
+                e.out << "  { unsigned __int128 n = ((unsigned __int128)ctx->rdx << 64) | ctx->rax; uint64_t d = "
+                      << src << "; ctx->rax = d ? (uint64_t)(n / d) : 0; ctx->rdx = d ? (uint64_t)(n % d) : 0; }\n";
+            } else {
+                e.out << "  { uint64_t d = (" << src << ") & 0xFFFFFFFFULL; uint64_t n = ((ctx->rdx & 0xFFFFFFFFULL) << 32) | (ctx->rax & 0xFFFFFFFFULL);"
+                         " write_reg(ctx,0, d ? (n / d) : 0, 4); write_reg(ctx,2, d ? (n % d) : 0, 4); }\n";
+            }
+        } else {
+            if (w == 8) {
+                e.out << "  { __int128 n = ((__int128)(int64_t)ctx->rdx << 64) | ctx->rax; int64_t d = (int64_t)("
+                      << src << "); ctx->rax = d ? (uint64_t)(n / d) : 0; ctx->rdx = d ? (uint64_t)(n % d) : 0; }\n";
+            } else {
+                e.out << "  { int64_t d = (int32_t)(uint32_t)(" << src << "); int64_t n = (int64_t)(int32_t)((ctx->rdx << 32) | (ctx->rax & 0xFFFFFFFFULL));"
+                         " write_reg(ctx,0, d ? (uint64_t)(n / d) : 0, 4); write_reg(ctx,2, d ? (uint64_t)(n % d) : 0, 4); }\n";
+            }
+        }
+        return true;
+    }
+    if (mn == "sbb") {
+        int w = ops[0].size / 8;
+        std::string a = valExpr(pe, insn, ops[0], next_rip, e);
+        std::string b = valExpr(pe, insn, ops[1], next_rip, e);
+        storeExpr(pe, insn, ops[0], "sbb_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")",
+                  next_rip, w, e);
+        return true;
+    }
+
+    // ---- 打包整数算术 ----
+    if (mn.size() == 5 && (mn.rfind("padd", 0) == 0 || mn.rfind("psub", 0) == 0)) {
+        char sz = mn[4];
+        const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : (sz == 'd') ? "u32" : "u64";
+        int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : (sz == 'd') ? 4 : 2;
+        char op = (mn[1] == 'a') ? '+' : '-';
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint64_t t[" << lanes << "]; for(int i=0;i<" << lanes << ";++i) t[i]=(uint64_t)((int64_t)ctx->xmm["
+              << dx << "]." << T << "[i] " << op << " (int64_t)" << src << "." << T
+              << "[i]); for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+        return true;
+    }
+    if (mn == "pand" || mn == "por") {
+        char opch = (mn == "pand") ? '&' : '|';
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        for (int lane = 0; lane < 2; ++lane)
+            e.out << "  ctx->xmm[" << dx << "].u64[" << lane << "] = ctx->xmm[" << dx << "].u64["
+                  << lane << "] " << opch << " " << src << ".u64[" << lane << "];\n";
+        return true;
+    }
+    // ---- 打包移位（立即数或 xmm 低 64 位计数）----
+    if (mn == "pslld" || mn == "psllq" || mn == "psrld" || mn == "psrlq" || mn == "psrad" || mn == "psraw") {
+        bool left = (mn[2] == 'l');
+        bool arith = (mn == "psrad" || mn == "psraw");
+        char sz = mn[4];
+        const char* T = (sz == 'd') ? "u32" : (sz == 'q') ? "u64" : "u16";
+        const char* ST = (sz == 'd') ? "int32_t" : (sz == 'q') ? "int64_t" : "int16_t";
+        int lanes = (sz == 'q') ? 2 : (sz == 'd') ? 4 : 8;
+        int bits = (sz == 'q') ? 64 : (sz == 'd') ? 32 : 16;
+        std::string cnt = is_gpr_reg(ops[1]) ? ("read_reg(ctx," + std::to_string(gprId(ops[1].reg.value)) + ",8)")
+                                             : std::to_string((unsigned long long)ops[1].imm.value.u);
+        e.out << "  { uint64_t sh=(" << cnt << ") & " << (bits - 1) << "ULL; uint64_t t[" << lanes << "];\n";
+        for (int i = 0; i < lanes; ++i) {
+            e.out << "    t[" << i << "]=";
+            if (left) e.out << "(uint64_t)ctx->xmm[" << dx << "]." << T << "[" << i << "] << sh";
+            else if (arith) e.out << "(uint64_t)((" << ST << ")ctx->xmm[" << dx << "]." << T << "[" << i << "] >> sh)";
+            else e.out << "(uint64_t)ctx->xmm[" << dx << "]." << T << "[" << i << "] >> sh";
+            e.out << ";\n";
+        }
+        e.out << "    for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+        return true;
+    }
+    if (mn == "psrldq" || mn == "pslldq") {
+        unsigned sh = (unsigned)ops[1].imm.value.u;
+        bool right = (mn == "psrldq");
+        e.out << "  { uint8_t t[16]; for(int i=0;i<16;++i){ int j="
+              << (right ? "i+(int)" : "i-(int)") << sh << "; t[i]=(j>=0&&j<16)? ctx->xmm[" << dx
+              << "].u8[j] : 0; } for(int i=0;i<16;++i) ctx->xmm[" << dx << "].u8[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "pshufd") {
+        unsigned imm = (unsigned)ops[1].imm.value.u;
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[0].reg.value)) + "]";
+        e.out << "  { uint32_t t[4]; ";
+        for (int i = 0; i < 4; ++i)
+            e.out << "t[" << i << "]=" << src << ".u32[" << ((imm >> (i * 2)) & 3) << "]; ";
+        e.out << "for(int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i]=t[i]; }\n";
+        return true;
+    }
+    // ---- 打包插值/打包/乘加/掩码 ----
+    if (mn == "punpcklbw" || mn == "punpcklwd" || mn == "punpckldq" ||
+        mn == "punpckhbw" || mn == "punpckhwd" || mn == "punpckhdq") {
+        bool hi = (mn[6] == 'h');
+        char sz = mn[8];
+        const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : "u32";
+        int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : 4;
+        int half = lanes / 2;
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint64_t t[" << lanes << "]; for(int i=0;i<" << half << ";++i){ int k="
+              << (hi ? "i+" + std::to_string(half) : "i") << ";"
+              << " t[2*i]=ctx->xmm[" << dx << "]." << T << "[k]; t[2*i+1]=" << src << "." << T << "[k]; }"
+              << " for(int i=0;i<" << lanes << ";++i) ctx->xmm[" << dx << "]." << T << "[i]=(" << T << ")t[i]; }\n";
+        return true;
+    }
+    if (mn == "packuswb") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint8_t t[16]; for(int i=0;i<8;++i){ int v=ctx->xmm[" << dx << "].u16[i]; t[i]=(uint8_t)(v<0?0:(v>255?255:v)); int w="
+              << src << ".u16[i]; t[i+8]=(uint8_t)(w<0?0:(w>255?255:w)); }"
+                 " for(int i=0;i<16;++i) ctx->xmm[" << dx << "].u8[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "pmullw") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { for(int i=0;i<8;++i) ctx->xmm[" << dx << "].u16[i]=(uint16_t)(ctx->xmm[" << dx
+              << "].u16[i] * " << src << ".u16[i]); }\n";
+        return true;
+    }
+    if (mn == "pmuludq") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint64_t t[2]; for(int i=0;i<2;++i) t[i]=(uint64_t)ctx->xmm[" << dx << "].u32[2*i] * (uint64_t)"
+              << src << ".u32[2*i]; for(int i=0;i<2;++i) ctx->xmm[" << dx << "].u64[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "pmovmskb" || mn == "movmskps" || mn == "movmskpd") {
+        int gd = gprId(ops[0].reg.value);
+        int sx = xmmId(ops[1].reg.value);
+        if (mn == "pmovmskb") {
+            e.out << "  { uint32_t m=0; for(int i=0;i<16;++i) m |= ((uint32_t)(ctx->xmm[" << sx
+                  << "].u8[i] >> 7) & 1u) << i; write_reg(ctx," << gd << ",m,4); }\n";
+        } else if (mn == "movmskps") {
+            e.out << "  { uint32_t m=0; for(int i=0;i<4;++i) m |= ((ctx->xmm[" << sx
+                  << "].u32[i] >> 31) & 1u) << i; write_reg(ctx," << gd << ",m,4); }\n";
+        } else {
+            e.out << "  { uint32_t m=0; for(int i=0;i<2;++i) m |= ((uint32_t)(ctx->xmm[" << sx
+                  << "].u64[i] >> 63) & 1u) << i; write_reg(ctx," << gd << ",m,4); }\n";
+        }
+        return true;
+    }
+    if (mn == "pcmpeqb" || mn == "pcmpeqw" || mn == "pcmpeqd" ||
+        mn == "pcmpgtb" || mn == "pcmpgtw" || mn == "pcmpgtd") {
+        char sz = mn[6];
+        const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : "u32";
+        const char* ST = (sz == 'b') ? "int8_t" : (sz == 'w') ? "int16_t" : "int32_t";
+        int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : 4;
+        bool eq = (mn.rfind("pcmpeq", 0) == 0);
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { for(int i=0;i<" << lanes << ";++i) { bool c = ";
+        if (eq) e.out << "ctx->xmm[" << dx << "]." << T << "[i] == " << src << "." << T << "[i]";
+        else e.out << "((" << ST << ")ctx->xmm[" << dx << "]." << T << "[i]) > ((" << ST << ")" << src << "." << T << "[i])";
+        e.out << "; ctx->xmm[" << dx << "]." << T << "[i] = c ? (" << T << ")~0 : 0; } }\n";
+        return true;
+    }
+    // ---- 打包整数 <-> 浮点转换 ----
+    if (mn == "cvtdq2ps") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { float t[4]; for(int i=0;i<4;++i) t[i]=(float)(int32_t)" << src
+              << ".u32[i]; for(int i=0;i<4;++i) ctx->xmm[" << dx << "].f32[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "cvtdq2pd") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { double t[2]; for(int i=0;i<2;++i) t[i]=(double)(int32_t)" << src
+              << ".u32[i]; for(int i=0;i<2;++i) ctx->xmm[" << dx << "].f64[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "cvtps2pd") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { double t[2]; for(int i=0;i<2;++i) t[i]=(double)" << src
+              << ".f32[i]; for(int i=0;i<2;++i) ctx->xmm[" << dx << "].f64[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "cvtpd2ps") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { float t[2]; for(int i=0;i<2;++i) t[i]=(float)" << src
+              << ".f64[i]; for(int i=0;i<2;++i) ctx->xmm[" << dx << "].f32[i]=t[i];\n"
+                 "    ctx->xmm[" << dx << "].u64[1]=0ULL; }\n";
+        return true;
+    }
+    if (mn == "cvtps2dq" || mn == "cvttps2dq") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  { uint32_t t[4]; for(int i=0;i<4;++i) t[i]=(uint32_t)sse::cvttss2si(" << src
+              << ".f32[i]); for(int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i]=t[i]; }\n";
+        return true;
+    }
+    if (mn == "mulpd" || mn == "addpd" || mn == "subpd" || mn == "divpd") {
+        char opch = (mn == "mulpd") ? '*' : (mn == "addpd") ? '+' : (mn == "subpd") ? '-' : '/';
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        for (int lane = 0; lane < 2; ++lane)
+            e.out << "  ctx->xmm[" << dx << "].f64[" << lane << "] = ctx->xmm[" << dx << "].f64["
+                  << lane << "] " << opch << " " << src << ".f64[" << lane << "];\n";
+        return true;
+    }
+    if (mn == "minsd" || mn == "maxsd") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  ctx->xmm[" << dx << "].f64[0] = std::" << (mn == "minsd" ? "fmin" : "fmax")
+              << "(ctx->xmm[" << dx << "].f64[0], " << src << ".f64[0]);\n";
+        return true;
+    }
+    if (mn == "movapd" || mn == "movupd") {
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        e.out << "  ctx->xmm[" << dx << "].u64[0]=" << src << ".u64[0]; ctx->xmm[" << dx
+              << "].u64[1]=" << src << ".u64[1];\n";
+        return true;
+    }
+    if (mn == "unpcklpd" || mn == "unpckhpd" || mn == "unpcklps" || mn == "unpckhps") {
+        bool pd = (mn.substr(mn.size() - 2) == "pd");
+        bool hi = (mn[5] == 'h');
+        std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+        if (pd) {
+            int k = hi ? 1 : 0;
+            e.out << "  { double a=ctx->xmm[" << dx << "].f64[" << k << "]; double b=" << src
+                  << ".f64[" << k << "]; ctx->xmm[" << dx << "].f64[0]=a; ctx->xmm[" << dx
+                  << "].f64[1]=b; }\n";
+        } else {
+            int k0 = hi ? 2 : 0, k1 = hi ? 3 : 1;
+            e.out << "  { float a0=ctx->xmm[" << dx << "].f32[" << k0 << "], a1=ctx->xmm[" << dx
+                  << "].f32[" << k1 << "]; float b0=" << src << ".f32[" << k0 << "], b1=" << src
+                  << ".f32[" << k1 << "]; ctx->xmm[" << dx << "].f32[0]=a0; ctx->xmm[" << dx
+                  << "].f32[1]=b0; ctx->xmm[" << dx << "].f32[2]=a1; ctx->xmm[" << dx
+                  << "].f32[3]=b1; }\n";
+        }
+        return true;
+    }
     // ---- 标量浮点 ----
     if (mn == "movss" || mn == "movsd") {
         int bytes = (mn == "movss") ? 4 : 8;
@@ -580,7 +817,10 @@ void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const Zydis
         if (xi >= 0) { e.out << "  xmm_set_u64(ctx," << xi << "," << val << ");\n"; return; }
         if (e.flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
-            if (g_stub_hist) (*g_stub_hist)["reg-store"]++;
+            if (g_stub_hist) {
+                const char* rn = ZydisRegisterGetString(dst.reg.value);
+                (*g_stub_hist)[std::string("reg-store:") + (rn ? rn : "?")]++;
+            }
             e.out << "  UNIMPL_INSN(0x" << hexStr(next_rip) << "ULL, \"reg-store\");\n";
             return;
         }
