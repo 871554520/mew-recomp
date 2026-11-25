@@ -483,7 +483,12 @@ void shim_KERNEL32_LoadLibraryExW(X64Ctx* c) {
     ret0(c, fake_module_handle());
 }
 void shim_KERNEL32_GetProcAddress(X64Ctx* c) {
-    std::string name = guest_wstr(c, arg1(c));
+    // 注意：GetProcAddress 第二个参数是窄字符 LPCSTR
+    std::string name;
+    if (arg1(c) && guest_mapped(arg1(c), 1)) {
+        const char* p = (const char*)guest_ptr_from_ctx(c, arg1(c));
+        name = p;
+    }
     uint64_t va = shim_KERNEL32_LookupSynthetic(name.c_str());
     std::fprintf(stderr, "[shim] GetProcAddress(\"%s\") -> 0x%llx%s\n", name.c_str(),
                  (unsigned long long)va, va ? "" : " (unmapped)");
