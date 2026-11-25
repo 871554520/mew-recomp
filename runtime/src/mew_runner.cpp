@@ -35,6 +35,22 @@ void install_crash_handler() {
 int main(int argc, char** argv) {
     install_crash_handler();
     const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
+    uint64_t call_va = 0;
+    unsigned long long cargs[4] = {0, 0, 0, 0};
+    for (int i = 2; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--call") == 0 && i + 1 < argc) call_va = std::strtoull(argv[++i], nullptr, 0);
+        else if (std::strcmp(argv[i], "--arg") == 0 && i + 1 < argc) {
+            const char* p = argv[++i];
+            int k = 0;
+            while (*p && k < 4) {
+                char* end = nullptr;
+                cargs[k++] = std::strtoull(p, &end, 0);
+                if (end == p) break;
+                p = end;
+                if (*p == ',') ++p;
+            }
+        }
+    }
     GuestImage img;
     std::string err;
     if (!load_pe_image(exe, &img, &err)) {
@@ -65,10 +81,20 @@ int main(int argc, char** argv) {
 
     X64Ctx ctx;
     init_guest_thread_ctx(&ctx, img);
-    ctx.rcx = 0;   // hInstance
-    ctx.rdx = 0;   // hPrevInstance
-    ctx.r8 = 0;    // lpCmdLine
-    ctx.r9 = 1;    // nCmdShow
+    if (!call_va) {
+        ctx.rcx = 0;   // hInstance
+        ctx.rdx = 0;   // hPrevInstance
+        ctx.r8 = 0;    // lpCmdLine
+        ctx.r9 = 1;    // nCmdShow
+    } else {
+        ctx.rcx = cargs[0];
+        ctx.rdx = cargs[1];
+        ctx.r8 = cargs[2];
+        ctx.r9 = cargs[3];
+        entry = call_va;
+        std::printf("runner: direct call 0x%llx args=%llu,%llu,%llu,%llu\n",
+                    (unsigned long long)entry, cargs[0], cargs[1], cargs[2], cargs[3]);
+    }
 
     std::printf("runner: calling entry...\n");
     std::fflush(stdout);
