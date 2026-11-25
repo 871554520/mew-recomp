@@ -386,6 +386,8 @@ static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
 
 }  // namespace
 
+LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags);
+
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     return liftLinearEx(pe, va, size, 0);
 }
@@ -1911,22 +1913,19 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                 } else {
                     e.unsupported.push_back("jump-missing");
                 }
-                off += insn.length;
-                continue;
+                    continue;
             }
             if (t < va || t >= va + effSize) {
                 if ((flags & LIFT_FRAGMENT) && !cond.empty()) {
                     if (g_needed_entries) g_needed_entries->insert(t);
                     e.out << "  if (" << cond << ") { dispatch_indirect(0x" << hexStr(t)
                           << "ULL, ctx); return; }\n";
-                    off += insn.length;
                     continue;
                 }
                 if ((flags & LIFT_TAIL_JUMP) && pe.hasFunction(t)) {
                     if (cond.empty()) { e.unsupported.push_back(mn); break; }
                     // 目标在另一块：cond 成立即尾跳进冷片段
                     e.out << "  if (" << cond << ") return sub_" << hexStr(t) << "(ctx);\n";
-                    off += insn.length;
                     continue;
                 }
                 e.unsupported.push_back("jump-out-of-func"); break;
