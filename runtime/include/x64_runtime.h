@@ -159,17 +159,55 @@ inline ApiTraceHook& api_trace_hook() {
     return h;
 }
 
+// ABI 守卫：Win64 规定 rbx/rbp/rsi/rdi/r12-r15 由被调方保存恢复。
+// 若某个转译函数或垫片没恢复，上层循环（例如 __acrt_execute_initializers 的
+// `mov rax,[rbx]` / `add rbx,0x10`）就会读到垃圾地址。
+inline bool mew_abi_guard_on() {
+    static int v = [] { const char* e = std::getenv("MEW_ABI_GUARD"); return (e && e[0] == '1') ? 1 : 0; }();
+    return v == 1;
+}
+
+struct AbiSnapshot {
+    uint64_t rbx, rbp, rsi, rdi, r12, r13, r14, r15, rsp;
+};
+inline AbiSnapshot abi_snap(const X64Ctx* c) {
+    return AbiSnapshot{c->rbx, c->rbp, c->rsi, c->rdi, c->r12, c->r13, c->r14, c->r15, c->rsp};
+}
+inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller) {
+    static int logged = 0;
+    if (logged > 40) return;
+    long long dsp = (long long)(c->rsp - s.rsp);
+    bool bad = c->rbx != s.rbx || c->rbp != s.rbp || c->rsi != s.rsi || c->rdi != s.rdi ||
+               c->r12 != s.r12 || c->r13 != s.r13 || c->r14 != s.r14 || c->r15 != s.r15 ||
+               (dsp != 0 && dsp != 8);
+    if (!bad) return;
+    ++logged;
+    std::fprintf(stderr,
+        "[ABI VIOLATION] target=0x%llx caller=0x%llx rbx:0x%llx->0x%llx rsi:0x%llx->0x%llx "
+        "rdi:0x%llx->0x%llx rbp:0x%llx->0x%llx rsp_delta=%lld\n",
+        (unsigned long long)target, (unsigned long long)caller,
+        (unsigned long long)s.rbx, (unsigned long long)c->rbx,
+        (unsigned long long)s.rsi, (unsigned long long)c->rsi,
+        (unsigned long long)s.rdi, (unsigned long long)c->rdi,
+        (unsigned long long)s.rbp, (unsigned long long)c->rbp, dsp);
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
     if (it != tbl.end()) {
+        const bool guard = mew_abi_guard_on();
+        const uint64_t caller = cur_fn_va();
+        AbiSnapshot snap = guard ? abi_snap(ctx) : AbiSnapshot{};
         if (target_va >= 0x500000000ULL && target_va < 0x500100000ULL && api_trace_hook()) {
             api_trace_hook()(target_va, ctx, 0);
             it->second(ctx);
+            if (guard) abi_check(ctx, snap, target_va, caller);
             api_trace_hook()(target_va, ctx, 1);
             return;
         }
         it->second(ctx);
+        if (guard) abi_check(ctx, snap, target_va, caller);
         return;
     }
     // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
