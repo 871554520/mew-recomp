@@ -227,18 +227,22 @@ inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, ui
         (unsigned long long)s.rbp, (unsigned long long)c->rbp, dsp);
 }
 
-inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
+// is_call=true 表示这是 call（调用方已经 push 了模拟返回地址）；
+// 目标若是合成地址上的垫片，垫片不会执行 ret，必须由这里补一次 rsp += 8，
+// 否则返回地址永久留在栈上，调用方的 add rsp,0x20 / pop rbx 全部错位。
+inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
     if (it != tbl.end()) {
         const bool guard = mew_abi_guard_on();
         const uint64_t caller = cur_fn_va();
         AbiSnapshot snap = guard ? abi_snap(ctx) : AbiSnapshot{};
-        if (target_va >= 0x500000000ULL && target_va < 0x500100000ULL && api_trace_hook()) {
-            api_trace_hook()(target_va, ctx, 0);
+        if (target_va >= 0x500000000ULL && target_va < 0x500100000ULL) {
+            if (api_trace_hook()) api_trace_hook()(target_va, ctx, 0);
             it->second(ctx);
             if (guard) abi_check(ctx, snap, target_va, caller);
-            api_trace_hook()(target_va, ctx, 1);
+            if (api_trace_hook()) api_trace_hook()(target_va, ctx, 1);
+            if (is_call) ctx->rsp += 8;   // 垫片没有 ret，补弹返回地址
             return;
         }
         it->second(ctx);
