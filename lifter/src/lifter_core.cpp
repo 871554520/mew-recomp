@@ -239,6 +239,7 @@ struct Emit {
     bool indirectCall = false;
     bool iatCall = false;
     bool stubbed = false;
+    std::vector<std::string> stubMnems;
 };
 
 
@@ -1397,6 +1398,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
             if (g_stub_hist) (*g_stub_hist)[mn]++;
+            e.stubMnems.push_back(mn);
             e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
         } else {
             e.unsupported.push_back(mn);
@@ -1435,6 +1437,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
     res.indirectCall = e.indirectCall;
     res.iatCall = e.iatCall;
     res.stubbed = e.stubbed;
+    res.stubMnems = e.stubMnems;
     return res;
 }
 
@@ -1884,8 +1887,10 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
             } else if (r.ok && r.stubbed) {
                 o << "// va=0x" << hexva(fn.first) << " size=" << fn.second
                   << " insns=" << r.insnCount << " STUBBED-FULL (no partial exec)\n";
+                std::string mn;
+                for (const auto& m : r.stubMnems) { if (!mn.empty()) mn += ","; mn += m; }
                 o << "void sub_" << hexva(fn.first) << "(X64Ctx* ctx) {\n"
-                     "  UNIMPL_FUNC(0x" << hexva(fn.first) << "ULL);\n}\n\n";
+                     "  UNIMPL_FUNC_M(0x" << hexva(fn.first) << "ULL, \"" << mn << "\");\n}\n\n";
                 ++st.stubbed;
             } else {
                 o << "// va=0x" << hexva(fn.first) << " LIFT-FAILED:";
@@ -2586,6 +2591,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
             if (g_stub_hist) (*g_stub_hist)[mn]++;
+            e.stubMnems.push_back(mn);
             e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
         } else {
             e.unsupported.push_back(mn);
@@ -2620,6 +2626,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
     res.indirectCall = e.indirectCall;
     res.iatCall = e.iatCall;
     res.stubbed = e.stubbed;
+    res.stubMnems = e.stubMnems;
     return res;
 }
 
