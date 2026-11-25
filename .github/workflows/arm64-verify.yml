@@ -2,10 +2,15 @@ name: ARM64 Semantic Verify & iOS Cross-Compile Probe
 
 on:
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: '也跑 macOS runner（配额受限，默认不跑）'
+        default: 'false'
+        required: false
   push:
     paths:
       - 'runtime/**'
-      - 'tests/**'
+      - 'tests/**' 
 
 jobs:
   # 主路径：Linux 交叉编译 aarch64 + QEMU 跑真 ARM64 指令（不依赖 macOS 配额）
@@ -119,7 +124,8 @@ jobs:
           if-no-files-found: warn
 
   arm64-macos:
-    # 备用：macOS runner（当前账号配额受限，失败不阻塞主流程）
+    # 备用：macOS runner（账号配额受限，默认不跑，避免平台取消把整条 run 染红）
+    if: ${{ inputs.run_macos == 'true' }}
     continue-on-error: true
     runs-on: macos-15
     timeout-minutes: 45
