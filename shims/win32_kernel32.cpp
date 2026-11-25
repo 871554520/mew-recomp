@@ -674,7 +674,7 @@ void shim_KERNEL32_FlsAlloc(X64Ctx* c) {
     std::lock_guard<std::mutex> lk(g_tls_mu);
     for (int i = 1; i < 1024; ++i) if (!g_tls_used[i]) {   // 从 1 起：0 留给"未分配"
         g_tls_used[i] = true;
-        std::fprintf(stderr, "[shim] FlsAlloc()=%d\n", i);
+        std::fprintf(stderr, "[shim] FlsAlloc()=%d caller=0x%llx\n", i, (unsigned long long)cur_fn_va());
         ret0(c, i);
         return;
     }
@@ -685,7 +685,7 @@ void shim_KERNEL32_FlsFree(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c);
     static int logged = 0;
     if (logged++ < 30)
-        std::fprintf(stderr, "[shim] FlsFree(%u)\n", i);
+        std::fprintf(stderr, "[shim] FlsFree(%u) caller=0x%llx\n", i, (unsigned long long)cur_fn_va());
     if (i < 1024) g_tls_used[i] = false;
     ret0(c, 1);
 }
@@ -700,7 +700,8 @@ void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c);
     static int logged = 0;
     if (logged++ < 20)
-        std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx)\n", i, (unsigned long long)arg1(c));
+        std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx) caller=0x%llx\n", i,
+                     (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
     g_api_trace() = true;   // 从这里开始逐 API 打印，直到 fastfail 现场
     if (i < 1024) g_tls[i] = arg1(c);
     ret0(c, 1);
