@@ -293,6 +293,7 @@ jobs:
           echo "runtime seeds: $(wc -l < generated/runtime_seeds.txt)"
           cat generated/extra_seeds.txt generated/runtime_seeds.txt | sort -u > generated/all_seeds.txt
           echo "all seeds: $(wc -l < generated/all_seeds.txt)"
+          mkdir -p generated/stage3b
           ./build/mew_lifter --shards 64 --out-dir generated/stage3b --seeds generated/all_seeds.txt \
               --exe Mewgenics.exe 2>&1 | tail -6
           python3 tools/build_stage3.py \
