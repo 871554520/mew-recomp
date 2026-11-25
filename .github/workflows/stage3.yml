@@ -67,7 +67,7 @@ jobs:
         run: |
           python3 tools/build_stage3.py \
             --src-dir generated/stage3 --obj-dir build-stage3 \
-            --archive build-stage3/libmew_recomp.a --jobs "$(nproc)" 2>&1 | tee generated/compile.log
+            --archive build-stage3/libmew_recomp.a --jobs "$(nproc)" --opt -O0 2>&1 | tee generated/compile.log
 
       - name: Gate 3 - link probe
         run: |
