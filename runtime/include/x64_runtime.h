@@ -13,6 +13,7 @@ struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
 struct alignas(16) XmmReg {
     union {
         uint8_t  u8[16];
+        uint16_t u16[8];
         uint32_t u32[4];
         uint64_t u64[2];
         float    f32[4];
