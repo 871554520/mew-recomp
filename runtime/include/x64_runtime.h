@@ -211,6 +211,8 @@ struct AbiSnapshot {
 inline AbiSnapshot abi_snap(const X64Ctx* c) {
     return AbiSnapshot{c->rbx, c->rbp, c->rsi, c->rdi, c->r12, c->r13, c->r14, c->r15, c->rsp};
 }
+inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller);
+
 // MEW_STACK_REPAIR=1：调用边界强制平衡模拟栈。
 // 实测存在 rsp 逐层漏 8 字节（-8/-24/-48/-64），会让 MSVC 的 stack cookie
 // （xor rsp）校验失败 → __fastfail(2)。修复前先用它把执行流推过去。
