@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <vector>
 
+struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
+
 struct alignas(16) XmmReg {
     union {
         uint8_t  u8[16];
