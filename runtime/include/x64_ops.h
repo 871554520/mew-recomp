@@ -249,3 +249,5 @@ static inline void x64_cmps(X64Ctx* c, int bytes, int rep, int repne) {
         if (repne && c->zf) break;
     }
 }
+
+#include "x64_sse_helpers.h"
