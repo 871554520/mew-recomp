@@ -1,0 +1,84 @@
+name: Disasm probe (fast)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake ninja-build g++ python3-pip
+          python3 -m pip install --quiet lief
+          if ! sudo apt-get install -y -qq libzydis-dev; then
+            git clone --depth 1 --branch v4.1.0 https://github.com/zyantific/zydis.git /tmp/zydis
+            cmake -S /tmp/zydis -B /tmp/zydis/build -G Ninja -DZYDIS_BUILD_TESTS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_TOOLS=OFF > /dev/null
+            cmake --build /tmp/zydis/build -j"$(nproc)" > /dev/null
+            sudo cmake --install /tmp/zydis/build > /dev/null
+            sudo ldconfig
+          fi
+      - name: Fetch exe
+        run: |
+          curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
+          ls -l Mewgenics.exe
+      - name: Build lifter
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /tmp/cfg.log 2>&1
+          cmake --build build --target mew_lifter -j"$(nproc)" 2>&1 | tail -20
+      - name: Dump bytes + pdata around hot VAs
+        run: |
+          mkdir -p generated
+          python3 tools/hexdump_va.py Mewgenics.exe \
+            0x140d3eec0 0x140d3eefc 0x140d3ef24 0x140d57880 0x140d578c0 0x140d578c8 \
+            0x1409b9970 0x140bc5e04 2>&1 | tee generated/probe.txt
+          echo "=== pdata table around these ===" >> generated/probe.txt
+          python3 - <<'PY' >> generated/probe.txt
+          import struct
+          d=open('Mewgenics.exe','rb').read()
+          pe=struct.unpack_from('<I',d,0x3c)[0]
+          nsec=struct.unpack_from('<H',d,pe+6)[0]
+          optsz=struct.unpack_from('<H',d,pe+20)[0]
+          opt=pe+24
+          base=struct.unpack_from('<Q',d,opt+24)[0]
+          secs=[]
+          st=opt+optsz
+          for i in range(nsec):
+              p=st+i*40
+              name=d[p:p+8].rstrip(b'\0').decode('latin1')
+              vs,va,rs,raw=struct.unpack_from('<IIII',d,p+8)
+              secs.append((name,va,vs,raw,rs))
+          def off(rva):
+              for n,va,vs,raw,rs in secs:
+                  if va<=rva<va+max(vs,rs): return raw+(rva-va)
+              return None
+          pd=[s for s in secs if s[0]=='.pdata']
+          if pd:
+              n,va,vs,raw,rs=pd[0]
+              cnt=(vs or rs)//12
+              ents=[]
+              for i in range(cnt):
+                  b,e,u=struct.unpack_from('<III',d,raw+i*12)
+                  ents.append((base+b,base+e))
+              ents.sort()
+              for probe in (0x140d3eec0,0x140d3eefc,0x140d3ef24,0x140d57880,0x140d578c0,0x1409b9970):
+                  hit=[x for x in ents if x[0]<=probe<x[1]]
+                  print('probe=0x%x pdata=%s'%(probe, [('0x%x-0x%x'%x) for x in hit] or 'none'))
+          PY
+          grep -E 'probe=|^0x' generated/probe.txt | head -40
+      - name: Lift the fastfail function
+        run: |
+          set +e
+          ./build/mew_lifter --lift 0x140d3eefc --exe Mewgenics.exe --out generated/lift_d3eefc.cpp 2>&1 | tail -20
+          echo "--- generated ---"
+          sed -n 1,120p generated/lift_d3eefc.cpp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disasm-probe
+          path: |
+            generated/probe.txt
+            generated/lift_d3eefc.cpp
