@@ -704,3 +704,43 @@ void shim_KERNEL32_GetModuleHandleExA(X64Ctx* c) {
     if (arg2(c)) mem_write<uint64_t>(c, arg2(c), 0x140000000ULL);
     ret0(c, 1);
 }
+
+// ---------------- 被误删的强定义（补回，避免弱占位顶替） ----------------
+void shim_KERNEL32_ExitProcess(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
+    call_trace().dump("ExitProcess");
+    std::exit((int)arg0(c));
+}
+
+void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
+    pthread_mutex_t* m = new pthread_mutex_t;
+    pthread_mutex_init(m, nullptr);
+    if (arg0(c)) mem_write<uint64_t>(c, arg0(c), (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias));
+    ret0(c, 1);
+}
+
+void shim_KERNEL32_RaiseException(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] RaiseException(code=0x%x, flags=0x%x)\n",
+                 (unsigned)arg0(c), (unsigned)arg2(c));
+    ret0(c, 0);
+}
+
+void shim_KERNEL32_RtlUnwind(X64Ctx* c) { (void)c; }
+
+void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
+    // (cp, dwFlags, lpWide, cchWide, lpMulti, cbMulti, lpDefault, pfUsed)
+    uint64_t src = arg2(c);
+    int cch = (int)arg3(c);
+    uint64_t dst = 0;
+    int cbMulti = 0;
+    if (cch < 0) {
+        const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, src);
+        size_t n = 0;
+        while (p && p[n]) ++n;
+        cch = (int)n;
+    }
+    std::string s = utf16_to_utf8((const uint16_t*)guest_ptr_from_ctx(c, src), (size_t)(cch < 0 ? 0 : cch));
+    // 第 5/6 个参数在栈上，这里简化：若目标指针为 0 只返回所需长度
+    (void)dst; (void)cbMulti;
+    ret0(c, (uint64_t)s.size() + 1);
+}
