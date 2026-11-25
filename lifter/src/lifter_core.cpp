@@ -4,12 +4,31 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <fstream>
+#include <unordered_map>
+#include <algorithm>
 
 // ---------------- PE ----------------
 const Section* PeImage::byRva(uint32_t rva) const {
     for (const auto& s : sections)
         if (rva >= s.va && rva < s.va + std::max(s.vsize, s.rawsize)) return &s;
     return nullptr;
+}
+
+const ImportSlot* PeImage::importBySlot(uint64_t slot_va) const {
+    for (const auto& im : imports)
+        if (im.slot_va == slot_va) return &im;
+    return nullptr;
+}
+
+bool PeImage::hasFunction(uint64_t va) const {
+    // functions 按 VA 升序（.pdata 本身有序），二分
+    size_t lo = 0, hi = functions.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (functions[mid].first < va) lo = mid + 1; else hi = mid;
+    }
+    return lo < functions.size() && functions[lo].first == va;
 }
 
 bool loadPe(const char* path, PeImage& pe, std::string* err) {
@@ -30,6 +49,7 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
     const uint8_t* opt = pe.data.data() + peOff + 24;
     pe.image_base = *(uint64_t*)(opt + 24);
     pe.entry_rva = *(uint32_t*)(opt + 16);
+    pe.size_of_image = *(uint32_t*)(opt + 56);
     const size_t secTab = peOff + 24 + optSize;
     for (uint16_t i = 0; i < nsec; ++i) {
         const uint8_t* p = pe.data.data() + secTab + i * 40;
@@ -44,6 +64,50 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
         s.exec = (*(uint32_t*)(p + 36) & 0x20000000) != 0;
         pe.sections.push_back(s);
     }
+    // ---- 导入表（IAT 槽位 -> DLL!API）----
+    {
+        const uint32_t impRva = *(uint32_t*)(opt + 120);
+        const uint32_t impSize = *(uint32_t*)(opt + 124);
+        if (impRva && impSize) {
+            const Section* isec = pe.byRva(impRva);
+            if (isec) {
+                uint32_t off = isec->raw + (impRva - isec->va);
+                for (int d = 0; d < 512 && off + 20 <= isec->raw + isec->rawsize; ++d, off += 20) {
+                    const uint8_t* desc = pe.data.data() + off;
+                    uint32_t oft = *(uint32_t*)(desc + 0);
+                    uint32_t nameRva = *(uint32_t*)(desc + 12);
+                    uint32_t ft = *(uint32_t*)(desc + 16);
+                    if (!nameRva && !ft) break;
+                    const Section* nsec = pe.byRva(nameRva);
+                    if (!nsec) continue;
+                    std::string dll((const char*)pe.data.data() + nsec->raw + (nameRva - nsec->va));
+                    if (dll.size() > 4 && dll.substr(dll.size() - 4) == ".dll") dll.erase(dll.size() - 4);
+                    for (char& c : dll) c = (char)std::toupper((unsigned char)c);
+                    uint32_t nameThunk = oft ? oft : ft;
+                    const Section* tsec = pe.byRva(nameThunk);
+                    const Section* fsec = pe.byRva(ft);
+                    if (!tsec || !fsec) continue;
+                    uint32_t toff = tsec->raw + (nameThunk - tsec->va);
+                    for (uint32_t i = 0;; ++i) {
+                        if (toff + 8 > tsec->raw + tsec->rawsize) break;
+                        uint64_t ent = *(uint64_t*)(pe.data.data() + toff + i * 8);
+                        if (!ent) break;
+                        if (ent & (1ull << 63)) continue;  // ordinal
+                        uint32_t hn = *(uint32_t*)(pe.data.data() + toff + i * 8);
+                        const Section* hsec = pe.byRva(hn);
+                        if (!hsec) continue;
+                        const char* fnameRaw = (const char*)pe.data.data() + hsec->raw + (hn - hsec->va) + 2;
+                        ImportSlot im;
+                        im.slot_va = pe.image_base + ft + (uint64_t)i * 8;
+                        im.dll = dll;
+                        im.name = fnameRaw;
+                        pe.imports.push_back(im);
+                    }
+                }
+            }
+        }
+    }
+
     for (const auto& s : pe.sections) {
         if (s.name != ".pdata") continue;
         const uint8_t* raw = pe.data.data() + s.raw;
@@ -117,6 +181,11 @@ struct Emit {
     bool fallsOffEnd = false;
     uint32_t ptrArgMask = 0;
     bool badMemBase = false;
+    uint32_t flags = 0;
+    int directCalls = 0;
+    bool indirectCall = false;
+    bool iatCall = false;
+    bool stubbed = false;
 };
 
 std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e) {
@@ -246,9 +315,31 @@ std::string ccSuffix(const std::string& mn, const char* prefix) {
     return "";
 }
 
+std::string hexStr(uint64_t v) { std::ostringstream o; o << std::hex << v; return o.str(); }
+std::string shimSym(const ImportSlot& im) { return "shim_" + im.dll + "_" + im.name; }
+
+// 目标若是 `jmp qword ptr [rip+disp]` 形式的 IAT thunk，返回对应导入槽
+static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
+    const Section* sec = pe.byRva((uint32_t)(target - pe.image_base));
+    if (!sec) return nullptr;
+    uint32_t off = sec->raw + (uint32_t)(target - pe.image_base - sec->va);
+    if (off + 6 > sec->raw + sec->rawsize) return nullptr;
+    const uint8_t* p = pe.data.data() + off;
+    if (p[0] == 0xFF && p[1] == 0x25) {
+        int32_t disp = *(const int32_t*)(p + 2);
+        uint64_t slot = target + 6 + (int64_t)disp;
+        return pe.importBySlot(slot);
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
+    return liftFunctionEx(pe, va, size, 0);
+}
+
+LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     LiftResult res;
     const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
     if (!sec) { res.unsupported.push_back("no-section"); return res; }
@@ -263,6 +354,7 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 
     Emit e;
+    e.flags = flags;
     e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
 
     size_t off = 0;
@@ -271,7 +363,13 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     while (off < effSize) {
         uint64_t rip = va + off;
         if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, effSize - off, &insn, ops))) {
-            e.unsupported.push_back("decode-fail");
+            if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"decode-fail\");\n";
+                e.count++;
+            } else {
+                e.unsupported.push_back("decode-fail");
+            }
             break;
         }
         uint64_t next_rip = rip + insn.length;
@@ -400,15 +498,50 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
         } else if (mn == "jmp") {
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-                if (t < va || t >= va + effSize) { e.unsupported.push_back("jump-out-of-func"); break; }
-                e.out << "  goto L_" << std::hex << t << std::dec << ";\n";
+                if (t >= va && t < va + effSize) {
+                    e.out << "  goto L_" << hexStr(t) << ";\n";
+                } else if (flags & LIFT_TAIL_JUMP) {
+                    // 尾调用：不压模拟返回地址，直接跳/返回
+                    if (pe.hasFunction(t)) {
+                        e.out << "  return sub_" << hexStr(t) << "(ctx);\n";
+                    } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
+                    }
+                } else { e.unsupported.push_back("jump-out-of-func"); break; }
+            } else if (flags & LIFT_TAIL_JUMP) {
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[0].mem.base == ZYDIS_REGISTER_RIP) {
+                    uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
+                    if (const ImportSlot* im = pe.importBySlot(slot)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx); return;\n";
+                    }
+                } else {
+                    e.indirectCall = true;
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                }
             } else {
                 e.unsupported.push_back("jmp-indirect");
             }
         } else if (isJcc) {
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-            if (t < va || t >= va + effSize) { e.unsupported.push_back("jump-out-of-func"); break; }
             std::string cond = ccExpr(mn);
+            if (t < va || t >= va + effSize) {
+                if ((flags & LIFT_TAIL_JUMP) && pe.hasFunction(t)) {
+                    if (cond.empty()) { e.unsupported.push_back(mn); break; }
+                    // 目标在另一块：cond 成立即尾跳进冷片段
+                    e.out << "  if (" << cond << ") return sub_" << hexStr(t) << "(ctx);\n";
+                    off += insn.length;
+                    continue;
+                }
+                e.unsupported.push_back("jump-out-of-func"); break;
+            }
             if (cond.empty()) { e.unsupported.push_back(mn); break; }
             e.out << "  if (" << cond << ") goto L_" << std::hex << t << std::dec << ";\n";
         } else if (!setcc.empty()) {
@@ -419,7 +552,46 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
             storeExpr(pe, insn, ops[0], "((" + cmovcc + ") ? " + b + " : " + a + ")", next_rip, ops[0].size / 8, e);
         } else if (mn == "call") {
             e.hasCall = true;
-            e.unsupported.push_back("call");
+            if (!(flags & LIFT_ALLOW_CALL)) {
+                e.unsupported.push_back("call");
+            } else {
+                const auto pushRet = [&]() {
+                    e.out << "  ctx->rsp -= 8; mem_write<uint64_t>(ctx, ctx->rsp, 0x"
+                          << hexStr(next_rip) << "ULL);\n";
+                };
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    pushRet();
+                    if (pe.hasFunction(t)) {
+                        e.directCalls++;
+                        e.out << "  sub_" << hexStr(t) << "(ctx);\n";
+                    } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx);\n";
+                    }
+                } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                           ops[0].mem.base == ZYDIS_REGISTER_RIP) {
+                    uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
+                    pushRet();
+                    if (const ImportSlot* im = pe.importBySlot(slot)) {
+                        e.iatCall = true;
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
+                    } else {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx);\n";
+                    }
+                } else {
+                    pushRet();
+                    e.indirectCall = true;
+                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx);\n";
+                }
+            }
+        } else if (flags & LIFT_STUB_UNKNOWN) {
+            e.stubbed = true;
+            e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
         } else {
             e.unsupported.push_back(mn);
         }
@@ -453,6 +625,10 @@ LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     res.fallsOffEnd = e.fallsOffEnd;
     res.ptrArgMask = e.ptrArgMask;
     res.badMemBase = e.badMemBase;
+    res.directCalls = e.directCalls;
+    res.indirectCall = e.indirectCall;
+    res.iatCall = e.iatCall;
+    res.stubbed = e.stubbed;
     return res;
 }
 
@@ -687,4 +863,194 @@ bool pickPureFunction(const PeImage& pe, size_t minSize, size_t maxSize,
     fprintf(stderr, "[funnel] size=%zu lift_ok=%zu no_call=%zu no_ripdata=%zu framed=%zu cf_closed=%zu capped=%d\n",
             nSize, nLift, nNoCall, nNoRip, nFramed, nClosed, (int)capped);
     return !out.empty();
+}
+
+// ---------------- 阶段 3：分片生成 ----------------
+namespace {
+
+std::string hexva(uint64_t v) { std::ostringstream o; o << std::hex << v; return o.str(); }
+
+}  // namespace
+
+bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
+                         std::vector<std::pair<uint64_t, uint32_t>>* closure) {
+    // 先为所有函数建立“可转译性 + 调用形态”索引
+    struct Info { bool ok; int direct; bool ind; bool iat; bool rip; uint32_t size; };
+    std::unordered_map<uint64_t, Info> infos;
+    infos.reserve(pe.functions.size() * 2);
+    for (const auto& fn : pe.functions) {
+        LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
+                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP);
+        Info i;
+        i.ok = r.ok && !r.stubbed;
+        i.direct = r.directCalls;
+        i.ind = r.indirectCall;
+        i.iat = r.iatCall;
+        i.rip = r.usesRipData;
+        i.size = fn.second;
+        infos[fn.first] = i;
+    }
+
+    // 收集每个函数的直接调用目标（不解码整段，只看 call rel32）
+    auto collectTargets = [&](uint64_t va, uint32_t size, std::vector<uint64_t>& tgts) {
+        const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+        if (!sec) return;
+        const uint8_t* code = pe.data.data() + sec->raw + (uint32_t)(va - pe.image_base - sec->va);
+        ZydisDecoder dec;
+        ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+        size_t off = 0;
+        ZydisDecodedInstruction insn;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        while (off < size) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, size - off, &insn, ops))) break;
+            uint64_t next_rip = va + off + insn.length;
+            if (insn.mnemonic == ZYDIS_MNEMONIC_CALL && ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (pe.hasFunction(t)) tgts.push_back(t);
+            }
+            off += insn.length;
+        }
+    };
+
+    for (const auto& fn : pe.functions) {
+        auto it = infos.find(fn.first);
+        if (it == infos.end()) continue;
+        const Info& ri = it->second;
+        if (!ri.ok || ri.ind || ri.iat || !ri.rip) continue;
+        if (ri.direct < 5 || ri.direct > 20) continue;
+        if (fn.second < 64 || fn.second > 6000) continue;
+
+        // BFS 闭包
+        std::vector<uint64_t> work{fn.first}, seen{fn.first};
+        bool ok = true;
+        while (!work.empty() && ok) {
+            uint64_t cur = work.back(); work.pop_back();
+            auto ci = infos.find(cur);
+            if (ci == infos.end()) continue;
+            const Info& ii = ci->second;
+            if (!ii.ok || ii.ind || ii.iat) { ok = false; break; }
+            std::vector<uint64_t> tgts;
+            auto fsize = pe.functions.size();
+            (void)fsize;
+            uint32_t sz = 0;
+            for (const auto& f : pe.functions) if (f.first == cur) { sz = f.second; break; }
+            if (!sz) { ok = false; break; }
+            collectTargets(cur, sz, tgts);
+            for (uint64_t t : tgts) {
+                bool dup = false;
+                for (uint64_t v : seen) if (v == t) { dup = true; break; }
+                if (!dup) { seen.push_back(t); work.push_back(t); }
+                if (seen.size() > 48) { ok = false; break; }
+            }
+        }
+        if (!ok || seen.size() < 3) continue;
+
+        NestedCand c;
+        c.va = fn.first;
+        c.size = fn.second;
+        c.directCalls = ri.direct;
+        c.closure = seen.size();
+        if (out) *out = c;
+        if (closure) {
+            closure->clear();
+            for (uint64_t v : seen) {
+                for (const auto& f : pe.functions) if (f.first == v) { closure->push_back(f); break; }
+            }
+            std::sort(closure->begin(), closure->end());
+        }
+        return true;
+    }
+    return false;
+}
+
+void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
+                  const std::vector<std::pair<uint64_t, uint32_t>>* only,
+                  ShardStats* stats) {
+    std::vector<std::pair<uint64_t, uint32_t>> list =
+        only ? *only : pe.functions;
+    std::sort(list.begin(), list.end());
+    if (shards < 1) shards = 1;
+
+    std::vector<std::vector<std::pair<uint64_t, uint32_t>>> buckets((size_t)shards);
+    for (size_t i = 0; i < list.size(); ++i)
+        buckets[i * (size_t)shards / list.size()].push_back(list[i]);
+
+    ShardStats st;
+    st.total = list.size();
+    st.shards = (size_t)shards;
+
+    // all_decls.h：所有函数声明 + 垫片声明
+    {
+        std::ofstream o(outDir + "/all_decls.h");
+        o << "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n"
+             "#include \"x64_runtime.h\"\n\n";
+        for (const auto& fn : list)
+            o << "void sub_" << hexva(fn.first) << "(X64Ctx* ctx);\n";
+        o << "\n// IAT 垫片\n";
+        for (const auto& im : pe.imports)
+            o << "void shim_" << im.dll << "_" << im.name << "(X64Ctx* ctx);\n";
+    }
+
+    // 分片
+    for (int si = 0; si < shards; ++si) {
+        std::ostringstream name;
+        name << outDir << "/shard_" << (si < 10 ? "00" : si < 100 ? "0" : "") << si << ".cpp";
+        std::ofstream o(name.str());
+        o << "// shard " << si << " / " << shards << "  functions=" << buckets[(size_t)si].size() << "\n"
+             "#include \"all_decls.h\"\n\n";
+        for (const auto& fn : buckets[(size_t)si]) {
+            LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
+                                          LIFT_ALLOW_CALL | LIFT_TAIL_JUMP | LIFT_STUB_UNKNOWN);
+            if (r.ok) {
+                o << "// va=0x" << hexva(fn.first) << " size=" << fn.second
+                  << " insns=" << r.insnCount << (r.stubbed ? " STUBBED" : "") << "\n";
+                o << r.code << "\n";
+                if (r.stubbed) ++st.stubbed; else ++st.ok;
+            } else {
+                o << "// va=0x" << hexva(fn.first) << " LIFT-FAILED:";
+                for (const auto& u : r.unsupported) o << " " << u;
+                o << "\nvoid sub_" << hexva(fn.first) << "(X64Ctx* ctx) {\n"
+                     "  UNIMPL_FUNC(0x" << hexva(fn.first) << "ULL);\n}\n\n";
+                ++st.failed;
+            }
+        }
+    }
+
+    // dispatch_table.cpp
+    {
+        std::ofstream o(outDir + "/dispatch_table.cpp");
+        o << "// 间接调用分发表（55,712 项，二分查找友好）\n#include \"all_decls.h\"\n\n";
+        o << "struct DispatchEntry { uint64_t va; RecompFn fn; };\n";
+        o << "static const DispatchEntry kDispatch[] = {\n";
+        for (const auto& fn : list)
+            o << "  {0x" << hexva(fn.first) << "ULL, sub_" << hexva(fn.first) << "},\n";
+        o << "};\n\n";
+        o << "void init_dispatch_table(const char* extra_url, void* extra) {\n"
+             "  (void)extra_url; (void)extra;\n"
+             "  for (const auto& e : kDispatch) register_recomp_fn(e.va, e.fn);\n"
+             "}\n";
+    }
+
+    // 所有 IAT 入口的弱定义占位（手写垫片覆盖它）
+    {
+        std::ofstream o(outDir + "/shims_auto.cpp");
+        o << "// 自动生成的 IAT 占位（weak，手写垫片优先）\n#include \"all_decls.h\"\n\n";
+        for (const auto& im : pe.imports) {
+            o << "__attribute__((weak)) void shim_" << im.dll << "_" << im.name
+              << "(X64Ctx* ctx) {\n  UNIMPL_API(\"" << im.dll << "!" << im.name << "\");\n}\n";
+        }
+    }
+
+    // 清单
+    {
+        std::ofstream o(outDir + "/manifest.tsv");
+        o << "va\tsize\tshard\n";
+        for (int si = 0; si < shards; ++si)
+            for (const auto& fn : buckets[(size_t)si])
+                o << "0x" << hexva(fn.first) << "\t" << fn.second << "\t" << si << "\n";
+    }
+
+    if (stats) *stats = st;
+    std::fprintf(stderr, "[shards] total=%zu ok=%zu stubbed=%zu failed=%zu shards=%zu imports=%zu\n",
+                 st.total, st.ok, st.stubbed, st.failed, st.shards, pe.imports.size());
 }
