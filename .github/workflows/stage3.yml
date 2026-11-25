@@ -69,10 +69,16 @@ jobs:
         run: |
           ./build/mew_lifter --find-callers 0x1409b5380 --exe Mewgenics.exe 2>&1 | tee -a generated/gpak_xref.txt
 
+      - name: Mine hidden entries (.reloc + GFIDS)
+        run: |
+          python3 tools/mine_hidden_entries.py Mewgenics.exe generated/pe_meta.json generated/extra_seeds.txt 2>&1 | tee generated/seeds.log
+          wc -l generated/extra_seeds.txt || true
+
       - name: Generate 64 shards + dispatch table + shims
         run: |
           mkdir -p generated/stage3
-          ./build/mew_lifter --shards 64 --out-dir generated/stage3 --exe Mewgenics.exe 2>&1 | tee generated/shards.log
+          ./build/mew_lifter --shards 64 --out-dir generated/stage3 --exe Mewgenics.exe \
+            --seeds generated/extra_seeds.txt 2>&1 | tee generated/shards.log
           du -sh generated/stage3
           ls generated/stage3 | head
           head -3 generated/stage3/manifest.tsv
@@ -239,6 +245,9 @@ jobs:
             generated/gpak_xref.txt
             generated/cfg_probe.txt
             generated/cfg.json
+            generated/extra_seeds.txt
+            generated/seeds.log
+            discovered_entries.txt
             generated/gpak_call.log
             generated/gpak_call_*.out
             generated/gpak_call_*.err
