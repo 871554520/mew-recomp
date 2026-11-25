@@ -68,6 +68,8 @@ void shim_KERNEL32_GetFileType(X64Ctx*);
 void shim_KERNEL32_GetLastError(X64Ctx*);
 void shim_KERNEL32_GetModuleFileNameW(X64Ctx*);
 void shim_KERNEL32_GetModuleHandleA(X64Ctx*);
+void shim_KERNEL32_GetModuleHandleExW(X64Ctx*);
+void shim_KERNEL32_GetModuleHandleExA(X64Ctx*);
 void shim_KERNEL32_GetModuleHandleW(X64Ctx*);
 void shim_KERNEL32_GetOEMCP(X64Ctx*);
 void shim_KERNEL32_GetProcessHeap(X64Ctx*);
@@ -482,6 +484,8 @@ RecompFn lookup_api(const char* name) {
         {"CreateFileW", shim_KERNEL32_CreateFileW},
         {"GetFileAttributesW", shim_KERNEL32_GetFileAttributesW},
         {"SetEndOfFile", shim_KERNEL32_SetEndOfFile},
+        {"GetModuleHandleExW", shim_KERNEL32_GetModuleHandleExW},
+        {"GetModuleHandleExA", shim_KERNEL32_GetModuleHandleExA},
         {"GetModuleHandleW", shim_KERNEL32_GetModuleHandleW},
         {"GetModuleHandleA", shim_KERNEL32_GetModuleHandleA},
         {"GetModuleFileNameW", shim_KERNEL32_GetModuleFileNameW},
@@ -689,4 +693,14 @@ void shim_KERNEL32_GetFileType(X64Ctx* c) {
     uint64_t h = arg0(c);
     if (h == 0x1000 || h == 0x1001 || h == 0x1002) { ret0(c, 2); return; }  // FILE_TYPE_CHAR
     ret0(c, 0);
+}
+
+// ---------------- 归属补充 ----------------
+void shim_KERNEL32_GetModuleHandleExW(X64Ctx* c) {
+    if (arg2(c)) mem_write<uint64_t>(c, arg2(c), 0x140000000ULL);
+    ret0(c, 1);
+}
+void shim_KERNEL32_GetModuleHandleExA(X64Ctx* c) {
+    if (arg2(c)) mem_write<uint64_t>(c, arg2(c), 0x140000000ULL);
+    ret0(c, 1);
 }
