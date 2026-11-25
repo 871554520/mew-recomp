@@ -6,6 +6,7 @@
 #include <sstream>
 #include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 
 // ---------------- PE ----------------
@@ -376,6 +377,19 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 
+    // 预扫：线性解码能落到的指令起始地址（分支只能跳进这个集合，否则标签不存在）
+    std::unordered_set<uint64_t> labelSet;
+    {
+        size_t p = 0;
+        ZydisDecodedInstruction i2;
+        ZydisDecodedOperand o2[ZYDIS_MAX_OPERAND_COUNT];
+        while (p < effSize) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, effSize - p, &i2, o2))) break;
+            labelSet.insert(va + p);
+            p += i2.length;
+        }
+    }
+
     Emit e;
     e.flags = flags;
     e.out << "void sub_" << std::hex << va << std::dec << "(X64Ctx* ctx) {\n";
@@ -522,7 +536,15 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
                 if (t >= va && t < va + effSize) {
-                    e.out << "  goto L_" << hexStr(t) << ";\n";
+                    if (labelSet.count(t)) {
+                        e.out << "  goto L_" << hexStr(t) << ";\n";
+                    } else if (flags & LIFT_STUB_UNKNOWN) {
+                        e.stubbed = true;
+                        e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
+                    } else {
+                        e.unsupported.push_back("jump-missing");
+                        break;
+                    }
                 } else if (flags & LIFT_TAIL_JUMP) {
                     // 尾调用：不压模拟返回地址，直接跳/返回
                     if (pe.hasFunction(t)) {
@@ -552,9 +574,32 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             } else {
                 e.unsupported.push_back("jmp-indirect");
             }
+        } else if (mn == "jrcxz" || mn == "jecxz" || mn == "jcxz") {
+            uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+            std::string cond = (mn == "jrcxz") ? "(read_reg(ctx,1,8) == 0)"
+                             : (mn == "jecxz") ? "(read_reg(ctx,1,4) == 0)"
+                                               : "(read_reg(ctx,1,2) == 0)";
+            if (t >= va && t < va + effSize && labelSet.count(t)) {
+                e.out << "  if (" << cond << ") goto L_" << hexStr(t) << ";\n";
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
+            } else {
+                e.unsupported.push_back(mn);
+            }
         } else if (isJcc) {
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
             std::string cond = ccExpr(mn);
+            if (t >= va && t < va + effSize && !labelSet.count(t)) {
+                if (flags & LIFT_STUB_UNKNOWN) {
+                    e.stubbed = true;
+                    e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
+                } else {
+                    e.unsupported.push_back("jump-missing");
+                }
+                off += insn.length;
+                continue;
+            }
             if (t < va || t >= va + effSize) {
                 if ((flags & LIFT_TAIL_JUMP) && pe.hasFunction(t)) {
                     if (cond.empty()) { e.unsupported.push_back(mn); break; }
