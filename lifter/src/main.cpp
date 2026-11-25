@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     std::string exe, outPath, mode, outDir, onlyPath;
     uint64_t va = 0;
     int shards = 0;
+    size_t skip = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--exe" && i + 1 < argc) exe = argv[++i];
@@ -47,6 +48,7 @@ int main(int argc, char** argv) {
         else if (a == "--shards" && i + 1 < argc) { mode = "shards"; shards = std::atoi(argv[++i]); }
         else if (a == "--pick") mode = "pick";
         else if (a == "--pick-nested") mode = "pick-nested";
+        else if (a == "--skip" && i + 1 < argc) skip = (size_t)std::atoi(argv[++i]);
         else if (a == "--lift" && i + 1 < argc) { mode = "lift"; va = std::strtoull(argv[++i], nullptr, 0); }
         else if (a == "--funcs") mode = "funcs";
     }
@@ -82,7 +84,7 @@ int main(int argc, char** argv) {
     if (mode == "pick-nested") {
         NestedCand cand;
         std::vector<std::pair<uint64_t, uint32_t>> closure;
-        if (!pickNestedCandidate(pe, &cand, &closure)) {
+        if (!pickNestedCandidate(pe, &cand, &closure, skip)) {
             std::printf("nested candidates: 0\n");
             return 1;
         }
