@@ -22,7 +22,7 @@ struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
     XmmReg   xmm[16];
-    bool zf, sf, cf, of, pf;
+    bool zf, sf, cf, of, pf, df;
     int64_t mem_bias;
     uint64_t gs_base;   // 伪 TEB 的 guest 地址（gs:[disp] 路由到这里）
     uint64_t fs_base;
