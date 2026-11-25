@@ -740,6 +740,9 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                 if (t >= va && t < va + effSize) {
                     if (labelSet.count(t)) {
                         e.out << "  goto L_" << hexStr(t) << ";\n";
+                    } else if (flags & LIFT_FRAGMENT) {
+                        if (g_needed_entries) g_needed_entries->insert(t);
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
                     } else if (flags & LIFT_STUB_UNKNOWN) {
                         e.stubbed = true;
                         e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
@@ -840,7 +843,10 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
             std::string cond = ccExpr(mn);
             if (t >= va && t < va + effSize && !labelSet.count(t)) {
-                if (flags & LIFT_STUB_UNKNOWN) {
+                if (flags & LIFT_FRAGMENT) {
+                    if (g_needed_entries) g_needed_entries->insert(t);
+                    e.out << "  if (" << cond << ") { dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return; }\n";
+                } else if (flags & LIFT_STUB_UNKNOWN) {
                     e.stubbed = true;
                     e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
                 } else {
@@ -1888,6 +1894,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                 if (t >= va && t < va + effSize) {
                     if (labelSet.count(t)) {
                         e.out << "  goto L_" << hexStr(t) << ";\n";
+                    } else if (flags & LIFT_FRAGMENT) {
+                        if (g_needed_entries) g_needed_entries->insert(t);
+                        e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
                     } else if (flags & LIFT_STUB_UNKNOWN) {
                         e.stubbed = true;
                         e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
@@ -1988,7 +1997,10 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
             std::string cond = ccExpr(mn);
             if (t >= va && t < va + effSize && !labelSet.count(t)) {
-                if (flags & LIFT_STUB_UNKNOWN) {
+                if (flags & LIFT_FRAGMENT) {
+                    if (g_needed_entries) g_needed_entries->insert(t);
+                    e.out << "  if (" << cond << ") { dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return; }\n";
+                } else if (flags & LIFT_STUB_UNKNOWN) {
                     e.stubbed = true;
                     e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-missing\");\n";
                 } else {
