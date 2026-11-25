@@ -2044,7 +2044,7 @@ std::vector<std::pair<uint64_t, uint64_t>> findStringRefs(const PeImage& pe, con
         }
     }
     if (targets.empty()) return out;
-    for (const auto& t : targets) std::fprintf(stderr, "[str] "%s" @ 0x%llx\n", needle, (unsigned long long)t);
+    for (const auto& t : targets) std::fprintf(stderr, "[str] %s @ 0x%llx\n", needle, (unsigned long long)t);
     std::vector<uint64_t> tset(targets.begin(), targets.end());
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
