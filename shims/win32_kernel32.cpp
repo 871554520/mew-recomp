@@ -39,7 +39,9 @@ void shim_KERNEL32_VirtualAlloc(X64Ctx* c) {
     int p = (prot & 0x40) ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_WRITE);
     void* m = mmap(nullptr, size ? size : 0x1000, p, flags, -1, 0);
     if (m == MAP_FAILED) { ret0(c, 0); return; }
-    ret0(c, (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias));
+    uint64_t g = (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias);
+    register_guest_range(g, size ? size : 0x1000);
+    ret0(c, g);
 }
 
 void shim_KERNEL32_VirtualFree(X64Ctx* c) {
@@ -55,7 +57,9 @@ void shim_KERNEL32_GetProcessHeap(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     void* p = std::malloc((size_t)arg2(c));
     std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", (size_t)arg2(c), p);
-    ret0(c, p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0);
+    uint64_t g = p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0;
+    if (g) register_guest_range(g, (size_t)arg2(c));
+    ret0(c, g);
 }
 
 void shim_KERNEL32_HeapFree(X64Ctx* c) {
