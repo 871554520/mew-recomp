@@ -1018,7 +1018,7 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
         } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
             /* no-op */
         } else if (mn == "ret") {
-            e.out << "  ctx->rsp += 8; return;\n";
+            e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
         } else if (mn == "leave") {
             e.out << "  write_reg(ctx,4,read_reg(ctx,5,8),8); write_reg(ctx,5,mem_read<uint64_t>(ctx,ctx->rsp),8); ctx->rsp += 8;\n";
         } else if (mn == "push") {
@@ -2214,7 +2214,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
             /* no-op */
         } else if (mn == "ret") {
-            e.out << "  ctx->rsp += 8; return;\n";
+            e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
         } else if (mn == "leave") {
             e.out << "  write_reg(ctx,4,read_reg(ctx,5,8),8); write_reg(ctx,5,mem_read<uint64_t>(ctx,ctx->rsp),8); ctx->rsp += 8;\n";
         } else if (mn == "push") {
