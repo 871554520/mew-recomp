@@ -1375,7 +1375,8 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
              "#include \"all_decls.h\"\n\n";
         for (const auto& fn : buckets[(size_t)si]) {
             LiftResult r = liftFunctionEx(pe, fn.first, fn.second,
-                                          LIFT_ALLOW_CALL | LIFT_TAIL_JUMP | LIFT_STUB_UNKNOWN);
+                                          LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
+                                          LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
             if (r.ok) {
                 o << "// va=0x" << hexva(fn.first) << " size=" << fn.second
                   << " insns=" << r.insnCount << (r.stubbed ? " STUBBED" : "") << "\n";
@@ -2177,4 +2178,30 @@ std::vector<uint64_t> findCallers(const PeImage& pe, uint64_t target_va) {
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
+}
+
+size_t addExtraEntries(PeImage& pe, const std::vector<uint64_t>& seeds) {
+    size_t added = 0;
+    for (uint64_t v : seeds) {
+        if (pe.hasFunction(v)) continue;
+        const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
+        if (!sec || !sec->exec) continue;
+        uint32_t len = 0;
+        for (const auto& f : pe.functions)
+            if (f.first > v) { len = (uint32_t)(f.first - v); break; }
+        if (!len) {
+            uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
+            len = sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 256) : 0;
+        }
+        if (!len) continue;
+        LiftResult r = liftFunctionEx(pe, v, len, LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
+                                                LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
+        if (!r.ok) continue;
+        pe.functions.emplace_back(v, len);
+        ++added;
+    }
+    std::sort(pe.functions.begin(), pe.functions.end());
+    pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
+    std::fprintf(stderr, "[seeds] added=%zu total=%zu\n", added, pe.functions.size());
+    return added;
 }
