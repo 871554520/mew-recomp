@@ -35,7 +35,8 @@ bool loadPe(const char* path, PeImage& out, std::string* err);
 enum LiftFlags : uint32_t {
     LIFT_ALLOW_CALL   = 1u << 0,  // 三路 call 路由
     LIFT_STUB_UNKNOWN = 1u << 1,  // 未实现助记符 -> UNIMPL_INSN 占位（保证全量可编译）
-    LIFT_TAIL_JUMP    = 1u << 2,  // jmp rel32 视为尾调用
+    LIFT_TAIL_JUMP    = 1u << 2,
+    LIFT_FRAGMENT     = 1u << 3,  // 片段模式：跳出范围的跳转改成 dispatch 并登记为目标入口  // jmp rel32 视为尾调用
 };
 
 struct LiftResult {
