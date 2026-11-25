@@ -83,6 +83,9 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure,
                          size_t skip = 0);
 
+// 数据段里指向 .text 的函数指针补登为额外入口（处理 CRT 初始化表 / C++ 虚表 / 冷片段）
+size_t expandFunctionListByDataPointers(PeImage& pe);
+
 // 阶段 3：分片生成
 struct ShardStats {
     size_t total = 0, ok = 0, stubbed = 0, failed = 0;
