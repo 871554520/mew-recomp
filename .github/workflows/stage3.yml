@@ -322,9 +322,11 @@ jobs:
             build-stage3b/libmew_recomp.a -o build-stage3b/mew_runner -lpthread 2>&1 | tail -5
           ls -l build-stage3b/mew_runner 2>/dev/null || { echo "second build: runner missing"; exit 0; }
           python3 -c "import struct;open('resources.gpak','wb').write(b'GPAK'+struct.pack('<II',1,0)+b'\0'*(65536-12))"
+          # runner 以 fastfail(3) 退出是预期行为，不能让它把 set -e 脚本打断
+          RC=0
           MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 ./build-stage3b/mew_runner Mewgenics.exe \
-            > generated/runner_b.out 2> generated/runner_b.err
-          echo "runner_b rc=$?"
+            > generated/runner_b.out 2> generated/runner_b.err || RC=$?
+          echo "runner_b rc=$RC"
           echo "misses_b=$(grep -c 'Unmapped indirect target' generated/runner_b.err || true)"
           echo "fastfail_b=$(grep -c 'FASTFAIL' generated/runner_b.err || true)"
           echo "gpak_refs_b=$(grep -c 'resources.gpak' generated/runner_b.err || true)"
