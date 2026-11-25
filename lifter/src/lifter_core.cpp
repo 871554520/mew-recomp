@@ -1370,7 +1370,11 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                     pushRet();
                     if (pe.hasFunction(t)) {
                         e.directCalls++;
-                        e.out << "  sub_" << hexStr(t) << "(ctx);\n";
+                        // 直接调用也要做 ABI 守卫：只测 dispatch 会漏掉直接调用的 rsp 失衡，
+                        // 而 MSVC 的 stack cookie 校验对 rsp 极其敏感（失配即 __fastfail(2)）。
+                        e.out << "  { AbiSnapshot _s = abi_snap(ctx); uint64_t _c = cur_fn_va();\n"
+                                 "    sub_" << hexStr(t) << "(ctx);\n"
+                                 "    if (mew_abi_guard_on()) abi_check(ctx, _s, 0x" << hexStr(t) << "ULL, _c); }\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
@@ -2563,7 +2567,11 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                     pushRet();
                     if (pe.hasFunction(t)) {
                         e.directCalls++;
-                        e.out << "  sub_" << hexStr(t) << "(ctx);\n";
+                        // 直接调用也要做 ABI 守卫：只测 dispatch 会漏掉直接调用的 rsp 失衡，
+                        // 而 MSVC 的 stack cookie 校验对 rsp 极其敏感（失配即 __fastfail(2)）。
+                        e.out << "  { AbiSnapshot _s = abi_snap(ctx); uint64_t _c = cur_fn_va();\n"
+                                 "    sub_" << hexStr(t) << "(ctx);\n"
+                                 "    if (mew_abi_guard_on()) abi_check(ctx, _s, 0x" << hexStr(t) << "ULL, _c); }\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
