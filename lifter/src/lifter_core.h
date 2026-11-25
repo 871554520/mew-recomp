@@ -61,6 +61,7 @@ struct LiftResult {
     bool indirectCall = false;
     bool iatCall = false;
     bool stubbed = false;   // 含 UNIMPL_INSN 占位
+    std::vector<std::string> stubMnems;  // 具体缺哪些助记符（运行期打印用）
 };
 
 // 阶段 2 的严格形态（不改语义）
