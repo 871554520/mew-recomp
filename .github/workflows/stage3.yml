@@ -300,7 +300,9 @@ jobs:
               m = re.match(r'0x([0-9a-fA-F]+)', line.strip())
               if m:
                   va = int(m.group(1), 16)
-                  if 0x140001000 <= va < 0x140e3f000 and va % 16 == 0:
+                  # 不再要求 16 字节对齐：MSVC 常把叶子函数/thunk 打包进同一条 .pdata，
+                # 目标可能是 +8 这类非对齐地址（实测 0x140d6adc8、0x140bc5e04 全被误杀）
+                if 0x140001000 <= va < 0x140e3f000:
                       v.add(va)
           for va in sorted(v):
               print('0x%x' % va)
