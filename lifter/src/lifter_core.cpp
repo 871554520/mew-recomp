@@ -540,6 +540,19 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             storeExpr(pe, insn, ops[0], std::string(fn) + "<uint64_t>(" + a + "," + b + ") & " +
                                      std::to_string(bits == 64 ? ~0ULL : ((1ULL << bits) - 1)) + "ULL",
                       next_rip, w, e);
+        } else if (mn == "xchg") {
+            std::string v0 = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string v1 = valExpr(pe, insn, ops[1], next_rip, e);
+            e.out << "  { uint64_t t0=" << v0 << "; uint64_t t1=" << v1 << ";\n";
+            storeExpr(pe, insn, ops[0], "t1", next_rip, ops[0].size / 8, e);
+            storeExpr(pe, insn, ops[1], "t0", next_rip, ops[1].size / 8, e);
+            e.out << "  }\n";
+        } else if (mn == "cpuid") {
+            e.out << "  { uint32_t a=(uint32_t)read_reg(ctx,0,4), b=0, c=(uint32_t)read_reg(ctx,1,4), d=0;\n"
+                     "    x64_cpuid(a, c, &a, &b, &c, &d);\n"
+                     "    write_reg(ctx,0,a,4); write_reg(ctx,3,b,4); write_reg(ctx,2,c,4); write_reg(ctx,1,d,4); }\n";
+        } else if (mn == "rdtsc") {
+            e.out << "  { uint64_t t=x64_rdtsc(); write_reg(ctx,0,t,4); write_reg(ctx,2,(t>>32),4); }\n";
         } else if (mn == "bswap") {
             std::string a = valExpr(pe, insn, ops[0], next_rip, e);
             e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",bswap64(" << a << "),8);\n";
