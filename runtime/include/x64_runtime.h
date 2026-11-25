@@ -56,6 +56,12 @@ static inline bool mew_unimpl_continue() {
     return cached == 1;
 }
 
+static inline bool mew_safe_mem() {
+    static int cached = -1;
+    if (cached < 0) { const char* v = std::getenv("MEW_SAFE_MEM"); cached = (v && v[0] == '1') ? 1 : 0; }
+    return cached == 1;
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
@@ -99,12 +105,31 @@ inline bool guest_mapped(uint64_t addr, size_t n = 1) {
 template <typename T>
 inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
     T v;
+    std::memset(&v, 0, sizeof(T));
+    if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
+        static int logged = 0;
+        if (logged < 20) {
+            std::fprintf(stderr, "[SAFE] unmapped read addr=0x%llx size=%zu\n",
+                         (unsigned long long)guest_addr, sizeof(T));
+            ++logged;
+        }
+        return v;
+    }
     std::memcpy(&v, reinterpret_cast<const void*>(guest_addr + ctx->mem_bias), sizeof(T));
     return v;
 }
 
 template <typename T>
 inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
+    if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
+        static int logged = 0;
+        if (logged < 20) {
+            std::fprintf(stderr, "[SAFE] unmapped write addr=0x%llx size=%zu\n",
+                         (unsigned long long)guest_addr, sizeof(T));
+            ++logged;
+        }
+        return;
+    }
     std::memcpy(reinterpret_cast<void*>(guest_addr + ctx->mem_bias), &val, sizeof(T));
 }
 
