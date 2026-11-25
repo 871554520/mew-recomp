@@ -65,12 +65,15 @@ jobs:
 
       - name: Compile all shards -> libmew_recomp.a
         run: |
+          set -o pipefail
           python3 tools/build_stage3.py \
             --src-dir generated/stage3 --obj-dir build-stage3 \
             --archive build-stage3/libmew_recomp.a --jobs "$(nproc)" --opt -O0 2>&1 | tee generated/compile.log
 
       - name: Gate 3 - link probe
         run: |
+          set -e
+          mkdir -p build-stage3
           FIRST=$(awk 'NR==2{print $1}' generated/stage3/manifest.tsv)
           SYM="sub_${FIRST#0x}"
           echo "probe symbol: $SYM"
@@ -86,7 +89,7 @@ jobs:
 
       - name: Stage 4 - build native harness
         run: |
-          ROOT=$(awk '/^# root/{print $4}' generated/nested.txt | sed 's/0x//')
+          ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
           echo "root=$ROOT"
           mkdir -p generated/stage4
           ./build/mew_lifter --shards 1 --only generated/nested.txt \
@@ -100,6 +103,7 @@ jobs:
 
       - name: Stage 4 - build guest harness
         run: |
+          mkdir -p build-stage3
           x86_64-w64-mingw32-gcc -O1 -o build-stage3/guest_nested.exe tests/stage4/guest_nested.c 2>&1 | tee generated/guest4_build.log
 
       - name: Stage 4 - byte-level compare
@@ -112,7 +116,7 @@ jobs:
           Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
           timeout 120 wineboot -q > /dev/null 2>&1 || true
           sleep 2
-          ROOT=$(awk '/^# root/{print $4}' generated/nested.txt | sed 's/0x//')
+          ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
           : > generated/verify4.log
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
             echo "== args: $ARGS" | tee -a generated/verify4.log
