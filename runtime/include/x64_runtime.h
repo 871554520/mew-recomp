@@ -108,6 +108,16 @@ static inline bool mew_safe_mem() {
     return cached == 1;
 }
 
+inline void record_missing_entry(uint64_t target_va, uint64_t caller_fn) {
+    if (target_va >= 0x140001000ULL && target_va < 0x140e3f000ULL) {
+        if (FILE* fp = std::fopen("discovered_entries.txt", "a")) {
+            std::fprintf(fp, "0x%llx # caller=0x%llx\n",
+                         (unsigned long long)target_va, (unsigned long long)caller_fn);
+            std::fclose(fp);
+        }
+    }
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
@@ -135,6 +145,7 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
             return;
         }
     }
+    record_missing_entry(target_va, cur_fn_va());
     call_trace().dump("dispatch miss");
     if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
