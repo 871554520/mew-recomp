@@ -1,23 +1,52 @@
-// 阶段 2/3 的转译器 CLI
-//   mew_lifter --pick Mewgenics.exe        列出纯算法候选函数
-//   mew_lifter --lift VA --exe Mewgenics.exe --out f.cpp
+// 阶段 2/3 转译器 CLI
+//   mew_lifter --pick --exe X.exe                     阶段 2 纯函数候选
+//   mew_lifter --lift VA --exe X.exe --out f.cpp      单函数严格转译
+//   mew_lifter --pick-nested --exe X.exe --out f.txt  阶段 4 中型嵌套候选 + 闭包
+//   mew_lifter --shards 64 --out-dir DIR --exe X.exe  阶段 3 分片全量生成
+//   mew_lifter --funcs --exe X.exe                    列出 .pdata 函数
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "lifter_core.h"
 
+namespace {
+
+std::vector<std::pair<uint64_t, uint32_t>> readOnlyList(const std::string& path) {
+    std::vector<std::pair<uint64_t, uint32_t>> v;
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const char* p = line.c_str();
+        char* end = nullptr;
+        unsigned long long va = std::strtoull(p, &end, 0);
+        if (end == p) continue;
+        uint32_t size = (uint32_t)std::strtoul(end, &end, 10);
+        if (size) v.emplace_back((uint64_t)va, size);
+    }
+    return v;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
-    std::string exe, outPath, mode;
+    std::string exe, outPath, mode, outDir, onlyPath;
     uint64_t va = 0;
+    int shards = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--exe" && i + 1 < argc) exe = argv[++i];
         else if (a == "--out" && i + 1 < argc) outPath = argv[++i];
+        else if (a == "--out-dir" && i + 1 < argc) outDir = argv[++i];
+        else if (a == "--only" && i + 1 < argc) onlyPath = argv[++i];
+        else if (a == "--shards" && i + 1 < argc) { mode = "shards"; shards = std::atoi(argv[++i]); }
         else if (a == "--pick") mode = "pick";
+        else if (a == "--pick-nested") mode = "pick-nested";
         else if (a == "--lift" && i + 1 < argc) { mode = "lift"; va = std::strtoull(argv[++i], nullptr, 0); }
         else if (a == "--funcs") mode = "funcs";
     }
@@ -26,8 +55,9 @@ int main(int argc, char** argv) {
     PeImage pe;
     std::string err;
     if (!loadPe(exe.c_str(), pe, &err)) { std::fprintf(stderr, "load failed: %s\n", err.c_str()); return 1; }
-    std::printf("image_base=0x%llx functions=%zu sections=%zu\n",
-                (unsigned long long)pe.image_base, pe.functions.size(), pe.sections.size());
+    std::printf("image_base=0x%llx functions=%zu sections=%zu imports=%zu\n",
+                (unsigned long long)pe.image_base, pe.functions.size(), pe.sections.size(),
+                pe.imports.size());
 
     if (mode == "pick") {
         std::vector<std::pair<uint64_t, uint32_t>> cands;
@@ -49,6 +79,25 @@ int main(int argc, char** argv) {
         return cands.empty() ? 1 : 0;
     }
 
+    if (mode == "pick-nested") {
+        NestedCand cand;
+        std::vector<std::pair<uint64_t, uint32_t>> closure;
+        if (!pickNestedCandidate(pe, &cand, &closure)) {
+            std::printf("nested candidates: 0\n");
+            return 1;
+        }
+        std::printf("nested candidate va=0x%llx size=%u direct=%d closure=%zu\n",
+                    (unsigned long long)cand.va, cand.size, cand.directCalls, closure.size());
+        std::string path = outPath.empty() ? "generated/nested.txt" : outPath;
+        std::ofstream o(path);
+        o << "# root va=0x" << std::hex << cand.va << std::dec << " size=" << cand.size
+          << " direct=" << cand.directCalls << " closure=" << closure.size() << "\n";
+        for (auto& c : closure) o << "0x" << std::hex << c.first << std::dec << " " << c.second << "\n";
+        o.close();
+        std::printf("wrote %s (%zu closure funcs)\n", path.c_str(), closure.size());
+        return 0;
+    }
+
     if (mode == "lift") {
         uint32_t size = 0;
         for (auto& fn : pe.functions)
@@ -63,6 +112,18 @@ int main(int argc, char** argv) {
         o << "#include \"x64_runtime.h\"\n#include \"x64_ops.h\"\n\n" << r.code;
         o.close();
         std::printf("wrote %s\n", path.c_str());
+        return 0;
+    }
+
+    if (mode == "shards") {
+        if (outDir.empty()) { std::fprintf(stderr, "need --out-dir\n"); return 2; }
+        std::vector<std::pair<uint64_t, uint32_t>> only;
+        std::vector<std::pair<uint64_t, uint32_t>>* onlyPtr = nullptr;
+        if (!onlyPath.empty()) { only = readOnlyList(onlyPath); onlyPtr = &only; }
+        ShardStats st;
+        emitShardSet(pe, shards, outDir, onlyPtr, &st);
+        std::printf("shards=%zu total=%zu ok=%zu stubbed=%zu failed=%zu\n",
+                    st.shards, st.total, st.ok, st.stubbed, st.failed);
         return 0;
     }
 
