@@ -36,7 +36,7 @@ std::vector<std::pair<uint64_t, uint32_t>> readOnlyList(const std::string& path)
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string exe, outPath, mode, outDir, onlyPath, needle, seedsPath;
+    std::string exe, outPath, mode, outDir, onlyPath, needle, seedsPath, seedsInsidePath;
     uint64_t va = 0;
     int shards = 0;
     size_t skip = 0;
@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
         else if (a == "--out" && i + 1 < argc) outPath = argv[++i];
         else if (a == "--out-dir" && i + 1 < argc) outDir = argv[++i];
         else if (a == "--seeds" && i + 1 < argc) seedsPath = argv[++i];
+        else if (a == "--seeds-inside" && i + 1 < argc) seedsInsidePath = argv[++i];
         else if (a == "--only" && i + 1 < argc) onlyPath = argv[++i];
         else if (a == "--shards" && i + 1 < argc) { mode = "shards"; shards = std::atoi(argv[++i]); }
         else if (a == "--pick") mode = "pick";
@@ -137,6 +138,17 @@ int main(int argc, char** argv) {
             }
             std::printf("seeds loaded=%zu\n", seeds.size());
             addExtraEntries(pe, seeds);
+        }
+        if (!seedsInsidePath.empty()) {
+            std::vector<uint64_t> seeds2;
+            std::ifstream sf2(seedsInsidePath);
+            std::string line2;
+            while (std::getline(sf2, line2)) {
+                if (line2.empty() || line2[0] == '#') continue;
+                seeds2.push_back(std::strtoull(line2.c_str(), nullptr, 0));
+            }
+            std::printf("seeds-inside loaded=%zu\n", seeds2.size());
+            addExtraEntriesAllowInside(pe, seeds2);
         }
         expandFunctionListByDataPointers(pe);
         std::vector<std::pair<uint64_t, uint32_t>> only;
