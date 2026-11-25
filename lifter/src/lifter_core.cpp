@@ -941,7 +941,8 @@ std::string hexva(uint64_t v) { std::ostringstream o; o << std::hex << v; return
 }  // namespace
 
 bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
-                         std::vector<std::pair<uint64_t, uint32_t>>* closure) {
+                         std::vector<std::pair<uint64_t, uint32_t>>* closure,
+                         size_t skip) {
     struct Info { bool ok; bool okNoStub; int direct; bool ind; bool iat; bool rip; uint32_t size; };
     std::unordered_map<uint64_t, Info> infos;
     infos.reserve(pe.functions.size() * 2);
@@ -990,7 +991,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         }
     };
 
-    size_t nRoot = 0, nRip = 0, nDirect = 0, tried = 0;
+    size_t nRoot = 0, nRip = 0, nDirect = 0, tried = 0, matches = 0;
     struct Near { uint64_t va; int direct; size_t closure; size_t stubbed; bool iat, ind; };
     std::vector<Near> nears;
 
@@ -1035,6 +1036,7 @@ bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
         if (hasIat || hasInd || stubbed > 0) continue;
         if (seen.size() > 96 || seen.size() < 4) continue;
         if (ri.size < 128) continue;
+        if (matches++ < skip) continue;
 
         NestedCand c;
         c.va = fn.first;
