@@ -1348,7 +1348,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
         uint32_t len = 0;
         if (base && base + fsize > v) len = (uint32_t)(base + fsize - v);
-        else len = std::min<uint32_t>(maxlen, 256);
+        else len = 0;
         if (!len) continue;
         LiftResult r = liftFunctionEx(pe, v, len, LIFT_ALLOW_CALL | LIFT_TAIL_JUMP);
         bool ok = r.ok && !r.stubbed;
