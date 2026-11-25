@@ -11,6 +11,8 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <malloc.h>
+#include <dirent.h>
+#include <cctype>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -139,10 +141,78 @@ FILE* g_stdout_file = nullptr;
 
 FILE* file_from_handle(uint64_t h) { return (FILE*)(uintptr_t)HandleTable::instance().get(h); }
 
+// Windows 路径 -> 宿主路径：去盘符、反斜杠转斜杠、统一挂到 MEW_DATA_DIR 下
 std::string host_path_from_guest(X64Ctx* c, uint64_t wpath) {
     std::string s = guest_wstr(c, wpath);
     for (char& ch : s) if (ch == '\\') ch = '/';
-    return s;
+    if (s.size() >= 2 && s[1] == ':') s = s.substr(2);          // "C:/x" -> "/x"
+    while (!s.empty() && s[0] == '/') s.erase(s.begin());       // 去掉前导斜杠
+    const char* root = std::getenv("MEW_DATA_DIR");
+    std::string base = (root && *root) ? std::string(root) : std::string(".");
+    if (!s.empty() && s[0] == '.') { size_t k = 0; while (k < s.size() && (s[k] == '.' || s[k] == '/')) ++k; s = s.substr(k); }
+    return base + "/" + s;
+}
+
+// 大小写不敏感地找文件（Linux 上 Windows 路径经常大小写不符）
+std::string find_case_insensitive(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (f) { std::fclose(f); return path; }
+    // 逐级目录匹配（最多 8 层）
+    std::vector<std::string> parts;
+    {
+        std::string cur;
+        for (char ch : path) { if (ch == '/') { if (!cur.empty()) parts.push_back(cur); cur.clear(); } else cur.push_back(ch); }
+        if (!cur.empty()) parts.push_back(cur);
+    }
+    std::string acc = path.rfind('/', 0) == 0 ? "/" : "";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::string want = parts[i];
+        bool last = (i + 1 == parts.size());
+        std::string cand = acc + (acc.empty() || acc.back() == '/' ? "" : "/") + want;
+        if (last) {
+            FILE* g = std::fopen(cand.c_str(), "rb");
+            if (g) { std::fclose(g); return cand; }
+        } else {
+            // 目录：用 opendir 找大小写匹配项
+            DIR* d = opendir(cand.empty() ? "." : cand.c_str());
+            if (!d) {
+                DIR* d2 = opendir(acc.empty() ? "." : acc.c_str());
+                if (d2) {
+                    std::string low = want; for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
+                    struct dirent* de;
+                    while ((de = readdir(d2))) {
+                        std::string nm = de->d_name, nl = nm;
+                        for (char& ch : nl) ch = (char)std::tolower((unsigned char)ch);
+                        if (nl == low) { want = nm; break; }
+                    }
+                    closedir(d2);
+                }
+            } else closedir(d);
+            cand = acc + (acc.empty() || acc.back() == '/' ? "" : "/") + want;
+        }
+        acc = cand;
+    }
+    return path;
+}
+
+std::mutex g_gpak_mu;
+std::unordered_map<uint64_t, bool> g_gpak_handles;
+void maybe_probe_gpak(FILE* f, uint64_t handle, const std::string& path) {
+    if (path.find("gpak") == std::string::npos) return;
+    unsigned char head[16] = {0};
+    long cur = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    size_t got = std::fread(head, 1, sizeof(head), f);
+    std::fseek(f, cur, SEEK_SET);
+    if (got >= 4 && std::memcmp(head, "GPAK", 4) == 0) {
+        std::fprintf(stderr, "[STAGE5 PASS] opened %s head=", path.c_str());
+        for (size_t i = 0; i < got; ++i) std::fprintf(stderr, "%02x", head[i]);
+        std::fprintf(stderr, "\n");
+    } else {
+        std::fprintf(stderr, "[STAGE5] opened %s but head is not GPAK (first %zu bytes)\n", path.c_str(), got);
+    }
+    std::lock_guard<std::mutex> lk(g_gpak_mu);
+    g_gpak_handles[handle] = true;
 }
 }  // namespace
 
@@ -155,37 +225,20 @@ std::unordered_map<void*, size_t> g_virt_ranges;
 
 void shim_KERNEL32_VirtualAlloc(X64Ctx* c) {
     uint64_t size = arg1(c);
-    uint32_t prot = (uint32_t)arg3(c);
-    size_t n = size ? (size_t)size : 0x1000;
-    int flags = MAP_PRIVATE | MAP_ANON;
-    int p = (prot & 0x40) ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_WRITE);
-    void* m = mmap(nullptr, n, p, flags, -1, 0);
-    if (m == MAP_FAILED) { ret0(c, 0); return; }
-    {
-        std::lock_guard<std::mutex> lk(g_virt_mu);
-        g_virt_ranges[m] = n;
-    }
-    uint64_t g = (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias);
-    register_guest_range(g, n);
+    // 同样走固定堆池（匿名 mmap 天然零页，等价于 MEM_COMMIT 语义）
+    uint64_t g = g_guest_heap.alloc(size ? (size_t)size : 0x1000, true);
     ret0(c, g);
 }
 
 void shim_KERNEL32_VirtualFree(X64Ctx* c) {
-    uint64_t addr = arg0(c);
-    void* p = (void*)(uintptr_t)((int64_t)addr + c->mem_bias);
-    if (!p) { ret0(c, 1); return; }
-    size_t n = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_virt_mu);
-        auto it = g_virt_ranges.find(p);
-        if (it != g_virt_ranges.end()) { n = it->second; g_virt_ranges.erase(it); }
-    }
-    if (n) {
-        munmap(p, n);
+    uint64_t a = arg0(c);
+    if (!a) { ret0(c, 1); return; }
+    if (g_guest_heap.owns(a)) {
+        g_guest_heap.free_block(a);
         ret0(c, 1);
     } else {
-        std::fprintf(stderr, "[shim] VirtualFree(0x%llx) ignored: not a range we mapped\n",
-                     (unsigned long long)addr);
+        std::fprintf(stderr, "[shim] VirtualFree(0x%llx) ignored: outside guest heap pool\n",
+                     (unsigned long long)a);
         ret0(c, 0);
     }
 }
@@ -201,51 +254,38 @@ std::unordered_set<void*> g_heap_blocks;
 
 void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     size_t n = (size_t)arg2(c);
-    void* p = std::malloc(n ? n : 1);
-    if (p) { std::lock_guard<std::mutex> lk(g_heap_mu); g_heap_blocks.insert(p); }
-    std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", n, p);
-    uint64_t g = p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0;
-    if (g) {
-        // 按真实可用大小登记：CRT 拿到 HeapAlloc(1) 之后常常往里写整个结构体，
-        // 只登记 1 字节会让 MEW_SAFE_MEM 误报 unmapped write（实测 0x140d6cb90）。
-        size_t usable = n ? n : 1;
-#if defined(__GLIBC__)
-        usable = malloc_usable_size(p);
-#endif
-        if (usable > (1u << 20)) usable = 1u << 20;
-        register_guest_range(g, usable);
-    }
+    uint32_t flags = (uint32_t)arg1(c);
+    // 统一走固定 Guest 堆池：地址一定落在堆区，SAFE_MEM 用区间比较 O(1) 放行
+    uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x8u) != 0);  // HEAP_ZERO_MEMORY=0x8
+    std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx\n", n, flags,
+                 (unsigned long long)g);
     ret0(c, g);
 }
 
 void shim_KERNEL32_HeapFree(X64Ctx* c) {
-    void* p = (void*)(uintptr_t)((int64_t)arg2(c) + c->mem_bias);
-    if (!p) { ret0(c, 1); return; }
-    bool known = false;
-    {
-        std::lock_guard<std::mutex> lk(g_heap_mu);
-        auto it = g_heap_blocks.find(p);
-        if (it != g_heap_blocks.end()) { g_heap_blocks.erase(it); known = true; }
-    }
-    if (known) {
-        std::free(p);
+    uint64_t a = arg2(c);
+    if (!a) { ret0(c, 1); return; }
+    if (g_guest_heap.owns(a)) {
+        g_guest_heap.free_block(a);
         ret0(c, 1);
     } else {
-        std::fprintf(stderr, "[shim] HeapFree(0x%llx) ignored: not a block we allocated\n",
-                     (unsigned long long)arg2(c));
+        std::fprintf(stderr, "[shim] HeapFree(0x%llx) ignored: outside guest heap pool\n",
+                     (unsigned long long)a);
         ret0(c, 0);
     }
 }
 
 // ---------------- 文件 ----------------
 void shim_KERNEL32_CreateFileW(X64Ctx* c) {
-    std::string path = host_path_from_guest(c, arg0(c));
+    std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
     uint32_t access = (uint32_t)arg1(c);
     const char* mode = (access & 0x40000000u) ? "wb+" : ((access & 0x80000000u) ? "rb" : "rb");
     FILE* f = std::fopen(path.c_str(), mode);
     std::fprintf(stderr, "[shim] CreateFileW(\"%s\", 0x%x) = %p\n", path.c_str(), access, (void*)f);
     if (!f) { ret0(c, (uint64_t)-1); return; }
-    ret0(c, HandleTable::instance().add(f));
+    uint64_t h = HandleTable::instance().add(f);
+    maybe_probe_gpak(f, h, path);
+    ret0(c, h);
 }
 
 void shim_KERNEL32_ReadFile(X64Ctx* c) {
