@@ -1337,20 +1337,10 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
     const uint64_t text_lo = pe.image_base + text->va;
     const uint64_t text_hi = text_lo + std::max(text->vsize, text->rawsize);
 
-    std::unordered_set<uint64_t> pending;
-    for (const auto& sec : pe.sections) {
-        if (sec.name == ".text" || sec.exec) continue;
-        if (sec.rawsize < 8) continue;
-        const uint8_t* p = pe.data.data() + sec.raw;
-        for (uint32_t off = 0; off + 8 <= sec.rawsize; off += 8) {
-            uint64_t v = 0;
-            std::memcpy(&v, p + off, 8);
-            if (v >= text_lo && v < text_hi && !pe.hasFunction(v)) pending.insert(v);
-            /* 4 字节 RVA 形式噪声太大（会把立即数当表项），暂不扫描 */
-        }
-    }
-    // 代码里的直接调用/跳转目标：不少是没被 .pdata 登记的冷片段
+    // ---- 1) 代码里的直接 call/jmp 目标（冷片段，优先级最高）----
+    std::vector<uint64_t> work_code;
     {
+        std::unordered_set<uint64_t> seen;
         ZydisDecoder dec;
         ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
         for (const auto& fn : pe.functions) {
@@ -1367,61 +1357,83 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
                 if ((insn.mnemonic == ZYDIS_MNEMONIC_CALL || insn.mnemonic == ZYDIS_MNEMONIC_JMP) &&
                     ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                     uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-                    if (t >= text_lo && t < text_hi && !pe.hasFunction(t)) pending.insert(t);
+                    if (t >= text_lo && t < text_hi && !pe.hasFunction(t) && seen.insert(t).second)
+                        work_code.push_back(t);
                 }
                 off += insn.length;
             }
         }
     }
 
-    const size_t candidates = pending.size();
+    // ---- 2) 数据段里的 8 字节函数指针 ----
+    std::vector<uint64_t> work_data;
+    {
+        std::unordered_set<uint64_t> seen;
+        for (const auto& sec : pe.sections) {
+            if (sec.name == ".text" || sec.exec) continue;
+            if (sec.rawsize < 8) continue;
+            const uint8_t* p = pe.data.data() + sec.raw;
+            for (uint32_t off = 0; off + 8 <= sec.rawsize; off += 8) {
+                uint64_t v = 0;
+                std::memcpy(&v, p + off, 8);
+                if (v >= text_lo && v < text_hi && !pe.hasFunction(v) && seen.insert(v).second)
+                    work_data.push_back(v);
+            }
+        }
+    }
+
     size_t added = 0;
     std::unordered_map<std::string, size_t> why;
     std::unordered_set<uint64_t> visited;
-    std::vector<uint64_t> work(pending.begin(), pending.end());
 
-    while (!work.empty()) {
-        uint64_t v = work.back();
-        work.pop_back();
-        if (!visited.insert(v).second) continue;
-        if (pe.hasFunction(v)) continue;
-        if (pe.functions.size() > 64000) break;
-        if (added >= 8000) break;
+    auto process = [&](std::vector<uint64_t>& work, size_t cap) {
+        size_t local = 0;
+        while (!work.empty() && local < cap) {
+            uint64_t v = work.back();
+            work.pop_back();
+            if (!visited.insert(v).second) continue;
+            if (pe.hasFunction(v)) continue;
+            if (pe.functions.size() > 90000) return;
 
-        uint64_t base = 0; uint32_t fsize = 0;
-        for (const auto& f : pe.functions)
-            if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
-        uint32_t len = 0;
-        if (base && base + fsize > v) {
-            len = (uint32_t)(base + fsize - v);
-        } else {
-            // 取到下一个已登记函数起点（冷片段通常在两个函数之间的空隙里）
+            uint64_t base = 0; uint32_t fsize = 0;
             for (const auto& f : pe.functions)
-                if (f.first > v) { len = (uint32_t)(f.first - v); break; }
-            if (!len) {
-                const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
-                if (!sec) continue;
-                uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
-                len = (sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 512) : 0);
+                if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
+            uint32_t len = 0;
+            if (base && base + fsize > v) {
+                len = (uint32_t)(base + fsize - v);
+            } else {
+                for (const auto& f : pe.functions)
+                    if (f.first > v) { len = (uint32_t)(f.first - v); break; }
+                if (!len) {
+                    const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
+                    if (!sec) continue;
+                    uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
+                    len = (sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 512) : 0);
+                }
             }
-        }
-        if (!len) continue;
+            if (!len) continue;
 
-        std::unordered_set<uint64_t> discovered;
-        g_needed_entries = &discovered;
-        LiftResult r = liftFunctionEx(pe, v, len,
-                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
-                                      LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
-        g_needed_entries = nullptr;
-        if (!r.ok) {
-            why[r.unsupported.empty() ? std::string("no-ok") : r.unsupported[0]]++;
-        } else {
-            pe.functions.emplace_back(v, len);
-            ++added;
+            std::unordered_set<uint64_t> discovered;
+            g_needed_entries = &discovered;
+            LiftResult r = liftFunctionEx(pe, v, len,
+                                          LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
+                                          LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
+            g_needed_entries = nullptr;
+            if (!r.ok) {
+                why[r.unsupported.empty() ? std::string("no-ok") : r.unsupported[0]]++;
+            } else {
+                pe.functions.emplace_back(v, len);
+                ++added;
+                ++local;
+            }
+            for (uint64_t t : discovered)
+                if (!visited.count(t) && !pe.hasFunction(t)) work.push_back(t);
         }
-        for (uint64_t t : discovered)
-            if (!visited.count(t) && !pe.hasFunction(t)) work.push_back(t);
-    }
+    };
+
+    process(work_code, 20000);
+    process(work_data, 4000);
+
     std::sort(pe.functions.begin(), pe.functions.end());
     pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
     if (!why.empty()) {
@@ -1429,7 +1441,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
         for (const auto& kv : why) std::fprintf(stderr, " %s=%zu", kv.first.c_str(), kv.second);
         std::fprintf(stderr, "\n");
     }
-    std::fprintf(stderr, "[expand] data pointers -> extra entries=%zu (candidates=%zu, functions=%zu)\n",
-                 added, candidates, pe.functions.size());
+    std::fprintf(stderr, "[expand] code_targets=%zu data_ptrs=%zu extra=%zu functions=%zu\n",
+                 work_code.size(), work_data.size(), added, pe.functions.size());
     return added;
 }
