@@ -1,6 +1,7 @@
 #pragma once
 // 阶段 4：PE 原始段镜像加载 + .reloc 修正 + 独立模拟栈
 #include <cstdint>
+#include "x64_runtime.h"
 #include <cstddef>
 #include <vector>
 #include <string>
