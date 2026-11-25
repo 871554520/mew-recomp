@@ -47,7 +47,7 @@ static inline std::string utf16_to_utf8(const uint16_t* w, size_t maxUnits) {
 }
 
 static inline std::string guest_wstr(X64Ctx* c, uint64_t addr, size_t maxUnits = 4096) {
-    if (!addr) return std::string();
+    if (!addr || !guest_mapped(addr, 2)) return std::string("<badptr>");
     const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, addr);
     return utf16_to_utf8(p, maxUnits);
 }
