@@ -20,7 +20,7 @@ struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
     XmmReg   xmm[16];
-    bool zf, sf, cf, of;
+    bool zf, sf, cf, of, pf;
     int64_t mem_bias;
 };
 
