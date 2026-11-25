@@ -63,6 +63,13 @@ jobs:
           head -3 generated/stage3/manifest.tsv
           wc -l generated/stage3/all_decls.h generated/stage3/dispatch_table.cpp
 
+      - name: Dump hot functions (debug)
+        run: |
+          for VA in 140d3e354 140d6ad18; do
+            echo "===== sub_$VA ====="
+            awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -70
+          done | tee generated/hot_functions.txt
+
       - name: Compile all shards -> libmew_recomp.a
         run: |
           set -o pipefail
@@ -185,4 +192,5 @@ jobs:
             generated/runner.out
             generated/runner.err
             generated/runner_api.log
+            generated/hot_functions.txt
           if-no-files-found: warn
