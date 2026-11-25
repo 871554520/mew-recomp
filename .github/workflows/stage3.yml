@@ -310,7 +310,7 @@ jobs:
           echo "all seeds: $(wc -l < generated/all_seeds.txt)"
           mkdir -p generated/stage3b
           ./build/mew_lifter --shards 64 --out-dir generated/stage3b --seeds generated/all_seeds.txt \
-              --exe Mewgenics.exe 2>&1 | tail -6
+              --seeds-inside generated/runtime_seeds.txt --exe Mewgenics.exe 2>&1 | tail -6
           python3 tools/build_stage3.py \
             --src-dir generated/stage3b --obj-dir build-stage3b \
             --archive build-stage3b/libmew_recomp.a --jobs "$(nproc)" --opt=-O0 2>&1 | tail -6
