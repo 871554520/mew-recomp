@@ -184,6 +184,10 @@ const char* ctype(int bytes) {
 int gprId(ZydisRegister r) {
     switch (r) {
         case ZYDIS_REGISTER_RAX: case ZYDIS_REGISTER_EAX: case ZYDIS_REGISTER_AX: case ZYDIS_REGISTER_AL: case ZYDIS_REGISTER_AH: return 0;
+        case ZYDIS_REGISTER_SPL: return 4;
+        case ZYDIS_REGISTER_BPL: return 5;
+        case ZYDIS_REGISTER_SIL: return 6;
+        case ZYDIS_REGISTER_DIL: return 7;
         case ZYDIS_REGISTER_RCX: case ZYDIS_REGISTER_ECX: case ZYDIS_REGISTER_CX: case ZYDIS_REGISTER_CL: case ZYDIS_REGISTER_CH: return 1;
         case ZYDIS_REGISTER_RDX: case ZYDIS_REGISTER_EDX: case ZYDIS_REGISTER_DX: case ZYDIS_REGISTER_DL: case ZYDIS_REGISTER_DH: return 2;
         case ZYDIS_REGISTER_RBX: case ZYDIS_REGISTER_EBX: case ZYDIS_REGISTER_BX: case ZYDIS_REGISTER_BL: case ZYDIS_REGISTER_BH: return 3;
@@ -430,13 +434,14 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         char sz = mn[6];
         const char* T = (sz == 'b') ? "u8" : (sz == 'w') ? "u16" : "u32";
         const char* ST = (sz == 'b') ? "int8_t" : (sz == 'w') ? "int16_t" : "int32_t";
+        const char* CT = (sz == 'b') ? "uint8_t" : (sz == 'w') ? "uint16_t" : "uint32_t";
         int lanes = (sz == 'b') ? 16 : (sz == 'w') ? 8 : 4;
         bool eq = (mn.rfind("pcmpeq", 0) == 0);
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
         e.out << "  { for(int i=0;i<" << lanes << ";++i) { bool c = ";
         if (eq) e.out << "ctx->xmm[" << dx << "]." << T << "[i] == " << src << "." << T << "[i]";
         else e.out << "((" << ST << ")ctx->xmm[" << dx << "]." << T << "[i]) > ((" << ST << ")" << src << "." << T << "[i])";
-        e.out << "; ctx->xmm[" << dx << "]." << T << "[i] = c ? (" << T << ")~0 : 0; } }\n";
+        e.out << "; ctx->xmm[" << dx << "]." << T << "[i] = c ? (" << CT << ")~0 : 0; } }\n";
         return true;
     }
     // ---- 打包整数 <-> 浮点转换 ----
