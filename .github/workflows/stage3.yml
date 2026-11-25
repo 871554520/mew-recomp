@@ -61,6 +61,10 @@ jobs:
             ./build/mew_lifter --find-string "$S" --exe Mewgenics.exe 2>&1 | tee -a generated/gpak_xref.txt
           done
 
+      - name: Find gpak callers
+        run: |
+          ./build/mew_lifter --find-callers 0x1409b5380 --exe Mewgenics.exe 2>&1 | tee -a generated/gpak_xref.txt
+
       - name: Generate 64 shards + dispatch table + shims
         run: |
           mkdir -p generated/stage3
