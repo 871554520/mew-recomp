@@ -69,6 +69,10 @@ jobs:
         run: |
           ./build/mew_lifter --find-callers 0x1409b5380 --exe Mewgenics.exe 2>&1 | tee -a generated/gpak_xref.txt
 
+      - name: Stub mnemonic histogram
+        run: |
+          ./build/mew_lifter --stub-hist --exe Mewgenics.exe 2>&1 | tee generated/stub_hist.txt
+
       - name: Mine hidden entries (.reloc + GFIDS)
         run: |
           python3 tools/mine_hidden_entries.py Mewgenics.exe generated/pe_meta.json generated/extra_seeds.txt 2>&1 | tee generated/seeds.log
@@ -251,6 +255,7 @@ jobs:
             generated/cfg.json
             generated/extra_seeds.txt
             generated/seeds.log
+            generated/stub_hist.txt
             discovered_entries.txt
             generated/gpak_call.log
             generated/gpak_call_*.out
