@@ -540,6 +540,46 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
             storeExpr(pe, insn, ops[0], std::string(fn) + "<uint64_t>(" + a + "," + b + ") & " +
                                      std::to_string(bits == 64 ? ~0ULL : ((1ULL << bits) - 1)) + "ULL",
                       next_rip, w, e);
+        } else if (mn == "bt" || mn == "btc" || mn == "btr" || mn == "bts") {
+            int w = ops[0].size / 8;
+            int nbits = w * 8;
+            e.out << "  { uint64_t b=" << valExpr(pe, insn, ops[0], next_rip, e)
+                  << "; uint64_t ii=(" << valExpr(pe, insn, ops[1], next_rip, e) << ") & " << (nbits - 1) << ";\n"
+                     "    ctx->cf = ((b >> ii) & 1ULL) != 0;\n";
+            if (mn == "bts") e.out << "    b |= (1ULL << ii);\n";
+            else if (mn == "btr") e.out << "    b &= ~(1ULL << ii);\n";
+            else if (mn == "btc") e.out << "    b ^= (1ULL << ii);\n";
+            if (mn != "bt") storeExpr(pe, insn, ops[0], "b", next_rip, w, e);
+            e.out << "  }\n";
+        } else if (mn == "bsf" || mn == "bsr" || mn == "tzcnt" || mn == "lzcnt" || mn == "popcnt") {
+            int w = ops[0].size / 8;
+            std::string src = valExpr(pe, insn, ops[1], next_rip, e);
+            std::string fn = (mn == "bsf" || mn == "tzcnt") ? "x64_ctz"
+                           : (mn == "bsr" || mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
+            storeExpr(pe, insn, ops[0], fn + "(" + src + ", " + std::to_string(w * 8) + ")", next_rip, w, e);
+            if (mn == "bsf" || mn == "bsr") {
+                e.out << "  (void)sub_flags(ctx," << src << ",0ULL," << w << ");\n";
+            }
+        } else if (mn == "cmpxchg") {
+            int w = ops[0].size / 8;
+            std::string dst = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string srcv = valExpr(pe, insn, ops[1], next_rip, e);
+            uint64_t mask = w >= 8 ? ~0ULL : ((1ULL << (w * 8)) - 1);
+            e.out << "  { uint64_t d=" << dst << ", s=" << srcv
+                  << ", acc=read_reg(ctx,0," << w << ") & " << mask << "ULL;\n"
+                     "    (void)sub_flags(ctx,acc,d," << w << ");\n"
+                     "    if (ctx->zf) { d = s; } else { write_reg(ctx,0,d," << w << "); }\n";
+            storeExpr(pe, insn, ops[0], "d", next_rip, w, e);
+            e.out << "  }\n";
+        } else if (mn == "xadd") {
+            int w = ops[0].size / 8;
+            std::string dst = valExpr(pe, insn, ops[0], next_rip, e);
+            std::string srcv = valExpr(pe, insn, ops[1], next_rip, e);
+            e.out << "  { uint64_t d=" << dst << ", s=" << srcv << ";\n";
+            storeExpr(pe, insn, ops[1], "d", next_rip, w, e);
+            e.out << "    uint64_t r=add_flags(ctx,d,s," << w << ");\n";
+            storeExpr(pe, insn, ops[0], "r", next_rip, w, e);
+            e.out << "  }\n";
         } else if (mn == "xchg") {
             std::string v0 = valExpr(pe, insn, ops[0], next_rip, e);
             std::string v1 = valExpr(pe, insn, ops[1], next_rip, e);
