@@ -629,16 +629,38 @@ void shim_KERNEL32_FreeLibrary(X64Ctx* c) { ret0(c, 1); }
 // ---------------- FLs(纤程局部存储) / 异常上下文 / 其它启动 API ----------------
 void shim_KERNEL32_FlsAlloc(X64Ctx* c) {
     std::lock_guard<std::mutex> lk(g_tls_mu);
-    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) { g_tls_used[i] = true; ret0(c, i); return; }
+    for (int i = 0; i < 1024; ++i) if (!g_tls_used[i]) {
+        g_tls_used[i] = true;
+        std::fprintf(stderr, "[shim] FlsAlloc()=%d\n", i);
+        ret0(c, i);
+        return;
+    }
+    std::fprintf(stderr, "[shim] FlsAlloc()=FLS_OUT_OF_INDEXES\n");
     ret0(c, (uint64_t)-1);
 }
 void shim_KERNEL32_FlsFree(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c);
+    static int logged = 0;
+    if (logged++ < 30)
+        std::fprintf(stderr, "[shim] FlsFree(%u)\n", i);
     if (i < 1024) g_tls_used[i] = false;
     ret0(c, 1);
 }
-void shim_KERNEL32_FlsGetValue(X64Ctx* c) { ret0(c, g_tls[(uint32_t)arg0(c) & 1023]); }
-void shim_KERNEL32_FlsSetValue(X64Ctx* c) { g_tls[(uint32_t)arg0(c) & 1023] = arg1(c); ret0(c, 1); }
+void shim_KERNEL32_FlsGetValue(X64Ctx* c) {
+    uint32_t i = (uint32_t)arg0(c);
+    uint64_t v = (i < 1024) ? g_tls[i] : 0;
+    static int logged = 0;
+    if (logged++ < 10) std::fprintf(stderr, "[shim] FlsGetValue(%u)=0x%llx\n", i, (unsigned long long)v);
+    ret0(c, v);
+}
+void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
+    uint32_t i = (uint32_t)arg0(c);
+    static int logged = 0;
+    if (logged++ < 20)
+        std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx)\n", i, (unsigned long long)arg1(c));
+    if (i < 1024) g_tls[i] = arg1(c);
+    ret0(c, 1);
+}
 
 void shim_KERNEL32_RtlCaptureContext(X64Ctx* c) {
     if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 0x4d0);
