@@ -238,6 +238,8 @@ struct Emit {
 };
 
 
+std::string addrExpr(const PeImage& pe, const ZydisDecodedOperand& op, uint64_t next_rip, Emit& e);
+
 static bool is_xmm_reg(const ZydisDecodedOperand& o) {
     return o.type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(o.reg.value) >= 0;
 }
