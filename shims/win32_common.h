@@ -52,6 +52,16 @@ static inline std::string guest_wstr(X64Ctx* c, uint64_t addr, size_t maxUnits =
     return utf16_to_utf8(p, maxUnits);
 }
 
+// 在 guest 地址空间分配一块（mmap 后登记，返回 guest 地址）
+static inline uint64_t guest_alloc(X64Ctx* c, size_t n) {
+    extern void* mmap(void*, size_t, int, int, int, long);
+    void* p = mmap(nullptr, (n + 4095) & ~size_t(4095), 3 /*RW*/, 0x22 /*PRIVATE|ANON*/, -1, 0);
+    if (p == (void*)-1) return 0;
+    uint64_t g = (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias);
+    register_guest_range(g, n);
+    return g;
+}
+
 // 句柄表：宿主对象 -> guest 句柄值
 class HandleTable {
 public:
