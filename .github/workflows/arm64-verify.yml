@@ -40,17 +40,25 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target mew_lifter -j"$(nproc)"
 
+      - name: hello probe (qemu sanity)
+        run: |
+          printf '#include <cstdio>\nint main(){std::printf("hello-arm64\\n");return 42;}\n' > /tmp/hello.cpp
+          aarch64-linux-gnu-g++ -O2 /tmp/hello.cpp -o /tmp/hello_dyn
+          qemu-aarch64 -L /usr/aarch64-linux-gnu /tmp/hello_dyn; echo "dyn rc=$?"
+          aarch64-linux-gnu-g++ -O2 -static /tmp/hello.cpp -o /tmp/hello_static
+          qemu-aarch64 /tmp/hello_static; echo "static rc=$?"
+
       - name: Stage 2 golden hash on ARM64 (qemu)
         run: |
           mkdir -p generated
           ./build/mew_lifter --lift 0x1401657b0 --exe Mewgenics.exe --out generated/lifted.cpp
           python3 tools/stage2_wrap.py 1401657b0 generated/wrapper.cpp
-          aarch64-linux-gnu-g++ -std=c++17 -O2 -static -I runtime/include \
+          aarch64-linux-gnu-g++ -std=c++17 -O2 -I runtime/include \
             tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
             -o build/native_harness_arm64
           : > generated/arm64_stage2.txt
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 ./build/native_harness_arm64 0 $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err || true
+            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_harness_arm64 0 $ARGS >> generated/arm64_stage2.txt 2>> generated/arm64_stage2.err || true
             echo "harness rc=$?" >> generated/arm64_stage2.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage2.err || true
@@ -68,14 +76,14 @@ jobs:
           ./build/mew_lifter --shards 1 --only generated/nested.txt --out-dir generated/stage4 --exe Mewgenics.exe
           ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
           python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap.cpp
-          aarch64-linux-gnu-g++ -std=c++17 -O2 -static -I runtime/include -I generated/stage4 \
+          aarch64-linux-gnu-g++ -std=c++17 -O2 -I runtime/include -I generated/stage4 \
             tests/stage4/native_nested.cpp generated/stage4/shard_000.cpp \
             generated/stage4/dispatch_table.cpp generated/stage4/shims_auto.cpp \
             runtime/src/pe_image_loader.cpp generated/nested_wrap.cpp \
             -o build/native_nested_arm64
           : > generated/arm64_stage4.txt
           for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
-            qemu-aarch64 ./build/native_nested_arm64 0 $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err || true
+            qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/native_nested_arm64 0 $ARGS >> generated/arm64_stage4.txt 2>> generated/arm64_stage4.err || true
             echo "nested rc=$?" >> generated/arm64_stage4.txt
           done
           echo '--- stderr ---'; cat generated/arm64_stage4.err || true
