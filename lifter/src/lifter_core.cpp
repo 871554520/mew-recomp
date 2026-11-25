@@ -112,6 +112,17 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
                     if (!nsec) continue;
                     std::string dll((const char*)pe.data.data() + nsec->raw + (nameRva - nsec->va));
                     if (dll.size() > 4 && dll.substr(dll.size() - 4) == ".dll") dll.erase(dll.size() - 4);
+                    // API-set 归一化：让符号名与手写垫片一致（否则弱占位会顶掉强符号）
+                    {
+                        std::string lower = dll;
+                        for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+                        if (lower.rfind("api-ms-win-", 0) == 0) {
+                            if (lower.find("-user") != std::string::npos) dll = "USER32";
+                            else if (lower.find("crt") != std::string::npos) dll = "UCRT";
+                            else if (lower.find("ole") != std::string::npos) dll = "OLE32";
+                            else dll = "KERNEL32";
+                        }
+                    }
                     for (char& c : dll) c = (char)std::toupper((unsigned char)c);
                     uint32_t nameThunk = oft ? oft : ft;
                     const Section* tsec = pe.byRva(nameThunk);
