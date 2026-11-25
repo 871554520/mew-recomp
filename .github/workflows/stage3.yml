@@ -128,6 +128,36 @@ jobs:
               build-stage3/libmew_recomp.a -o build-stage3/link_probe 2>&1 | tee generated/link.log
           ./build-stage3/link_probe | tee -a generated/link.log
 
+      - name: Gate 1 - stage 2 single function replay (hard gate)
+        run: |
+          set +e
+          export WINEPREFIX=$HOME/.wine
+          export WINEDEBUG=err+all
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1024x768x24 > /tmp/xvfb.log 2>&1 &
+          timeout 120 wineboot -q > /dev/null 2>&1
+          sleep 2
+          x86_64-w64-mingw32-gcc -O1 -o build-stage3/guest_harness.exe tests/stage2/guest_harness.c 2>/dev/null
+          VA=1401657b0
+          MASK=0xb
+          ./build/mew_lifter --lift 0x$VA --exe Mewgenics.exe --out generated/gate1_lifted.cpp > generated/gate1_lift.log 2>&1 || { echo "GATE1 lift failed"; tail -5 generated/gate1_lift.log; exit 1; }
+          python3 tools/stage2_wrap.py "$VA" generated/gate1_wrap.cpp > /dev/null
+          g++ -O1 -std=c++17 -I runtime/include \
+              tests/stage2/native_harness.cpp generated/gate1_lifted.cpp generated/gate1_wrap.cpp \
+              -o build-stage3/gate1_native 2> generated/gate1_build.log || { echo "GATE1 build failed"; tail -8 generated/gate1_build.log; exit 1; }
+          OK=1
+          for ARGS in "1 2 3 4" "0 0 0 0" "255 16 0 1" "123456789 987654321 0 7"; do
+            ./build-stage3/gate1_native "$MASK" $ARGS > generated/gate1_native.out 2>/dev/null || { echo "GATE1 native crash [$ARGS]"; OK=0; continue; }
+            timeout 90 wine build-stage3/guest_harness.exe Mewgenics.exe "0x$VA" "$MASK" $ARGS \
+              > generated/gate1_guest.out 2> generated/gate1_guest.err
+            if [ $? -ne 0 ]; then echo "GATE1 guest failed [$ARGS]"; tail -3 generated/gate1_guest.err; OK=0; continue; fi
+            python3 tools/stage2_compare.py generated/gate1_guest.out generated/gate1_native.out >> generated/gate1_compare.log 2>&1 || { echo "GATE1 mismatch [$ARGS]"; OK=0; }
+          done
+          echo "--- gate1 compare ---"; tail -12 generated/gate1_compare.log 2>/dev/null
+          if [ "$OK" -ne 1 ]; then echo "GATE1 FAILED: 阶段2 单函数对拍回归"; exit 1; fi
+          echo "GATE1 PASSED 0x$VA"
+
       - name: Stage 4 - candidate loop (native vs Wine byte-level)
         run: |
           set +e
@@ -223,7 +253,7 @@ jobs:
           : > generated/gpak_call.log
           VA=0x1409b9970
           for LEVEL in 1 2 3 4 5; do
-            echo "=== level $LEVEL call 0x$VA ===" | tee -a generated/gpak_call.log
+            echo "=== level $LEVEL call $VA ===" | tee -a generated/gpak_call.log
             MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 45 ./build-stage3/mew_runner Mewgenics.exe \
               --call "$VA" > generated/gpak_call_$LEVEL.out 2> generated/gpak_call_$LEVEL.err
             echo "rc=$?" | tee -a generated/gpak_call.log
@@ -232,7 +262,7 @@ jobs:
               echo "GPAK OPENED at level $LEVEL va=$VA" | tee -a generated/gpak_call.log
               break
             fi
-            NEXT=$(./build/mew_lifter --find-callers "$VA" --exe Mewgenics.exe 2>/dev/null | awk '/caller=/{gsub("caller=","");gsub("->.*","");print $2}' | head -1)
+            NEXT=$(./build/mew_lifter --find-callers "$VA" --exe Mewgenics.exe 2>/dev/null | awk '/caller=/{gsub("caller=","");gsub("->.*","");for(i=1;i<=NF;i++) if ($i ~ /^0x/) {print $i; exit}}' | head -1)
             if [ -z "$NEXT" ] || [ "$NEXT" = "$VA" ]; then
               echo "no caller beyond $VA" | tee -a generated/gpak_call.log
               break
@@ -241,6 +271,45 @@ jobs:
           done
           echo "--- tail of last err ---"
           tail -25 generated/gpak_call_$LEVEL.err | tee -a generated/gpak_call.log
+
+      - name: Stage 5b - reflow runtime-missed entries (second build)
+        run: |
+          set +e
+          if [ ! -s discovered_entries.txt ]; then
+            echo "no runtime-missed entries recorded"; exit 0
+          fi
+          python3 - <<'PYEOF' > generated/runtime_seeds.txt
+          import re
+          v = set()
+          for line in open('discovered_entries.txt'):
+              m = re.match(r'0x([0-9a-fA-F]+)', line.strip())
+              if m:
+                  va = int(m.group(1), 16)
+                  if 0x140001000 <= va < 0x140e3f000 and va % 16 == 0:
+                      v.add(va)
+          for va in sorted(v):
+              print('0x%x' % va)
+          PYEOF
+          echo "runtime seeds: $(wc -l < generated/runtime_seeds.txt)"
+          cat generated/extra_seeds.txt generated/runtime_seeds.txt | sort -u > generated/all_seeds.txt
+          echo "all seeds: $(wc -l < generated/all_seeds.txt)"
+          ./build/mew_lifter --shards 64 --out-dir generated/stage3b --seeds generated/all_seeds.txt \
+              --exe Mewgenics.exe 2>&1 | tail -6
+          python3 tools/build_stage3.py \
+            --src-dir generated/stage3b --obj-dir build-stage3b \
+            --archive build-stage3b/libmew_recomp.a --jobs "$(nproc)" --opt=-O0 2>&1 | tail -6
+          g++ -std=c++17 -O0 -g -rdynamic -I runtime/include -I shims -I generated/stage3b \
+            runtime/src/mew_runner.cpp runtime/src/pe_image_loader.cpp shims/win32_kernel32.cpp \
+            build-stage3b/libmew_recomp.a -o build-stage3b/mew_runner -lpthread 2>&1 | tail -5
+          ls -l build-stage3b/mew_runner 2>/dev/null || { echo "second build: runner missing"; exit 0; }
+          python3 -c "import struct;open('resources.gpak','wb').write(b'GPAK'+struct.pack('<II',1,0)+b'\0'*(65536-12))"
+          MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 ./build-stage3b/mew_runner Mewgenics.exe \
+            > generated/runner_b.out 2> generated/runner_b.err
+          echo "runner_b rc=$?"
+          echo "misses_b=$(grep -c 'Unmapped indirect target' generated/runner_b.err || true)"
+          echo "fastfail_b=$(grep -c 'FASTFAIL' generated/runner_b.err || true)"
+          echo "gpak_refs_b=$(grep -c 'resources.gpak' generated/runner_b.err || true)"
+          tail -25 generated/runner_b.err
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -274,4 +343,12 @@ jobs:
             generated/gpak_call.log
             generated/gpak_call_*.out
             generated/gpak_call_*.err
+            generated/gate1_*.log
+            generated/gate1_*.out
+            generated/runtime_seeds.txt
+            generated/all_seeds.txt
+            generated/runner_b.out
+            generated/runner_b.err
+            generated/stage3b/manifest.tsv
+            discovered_entries.txt
           if-no-files-found: warn
