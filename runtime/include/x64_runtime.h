@@ -66,6 +66,7 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
                  static_cast<unsigned long long>(target_va),
                  (unsigned long long)near_lo,
                  (long long)((int64_t)target_va - (int64_t)near_lo));
+    if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
     std::abort();
 }
 
