@@ -1374,7 +1374,8 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                         // 而 MSVC 的 stack cookie 校验对 rsp 极其敏感（失配即 __fastfail(2)）。
                         e.out << "  { AbiSnapshot _s = abi_snap(ctx); uint64_t _c = cur_fn_va();\n"
                                  "    sub_" << hexStr(t) << "(ctx);\n"
-                                 "    if (mew_abi_guard_on()) abi_check(ctx, _s, 0x" << hexStr(t) << "ULL, _c); }\n";
+                                 "    if (mew_abi_guard_on() || mew_stack_repair_on())\n"
+                                 "      abi_guard_after_call(ctx, _s, 0x" << hexStr(t) << "ULL, _c, 8); }\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
@@ -2571,7 +2572,8 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         // 而 MSVC 的 stack cookie 校验对 rsp 极其敏感（失配即 __fastfail(2)）。
                         e.out << "  { AbiSnapshot _s = abi_snap(ctx); uint64_t _c = cur_fn_va();\n"
                                  "    sub_" << hexStr(t) << "(ctx);\n"
-                                 "    if (mew_abi_guard_on()) abi_check(ctx, _s, 0x" << hexStr(t) << "ULL, _c); }\n";
+                                 "    if (mew_abi_guard_on() || mew_stack_repair_on())\n"
+                                 "      abi_guard_after_call(ctx, _s, 0x" << hexStr(t) << "ULL, _c, 8); }\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
                         e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8;\n";
