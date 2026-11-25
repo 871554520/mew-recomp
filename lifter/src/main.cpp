@@ -35,7 +35,7 @@ std::vector<std::pair<uint64_t, uint32_t>> readOnlyList(const std::string& path)
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string exe, outPath, mode, outDir, onlyPath;
+    std::string exe, outPath, mode, outDir, onlyPath, needle;
     uint64_t va = 0;
     int shards = 0;
     size_t skip = 0;
@@ -51,6 +51,7 @@ int main(int argc, char** argv) {
         else if (a == "--skip" && i + 1 < argc) skip = (size_t)std::atoi(argv[++i]);
         else if (a == "--lift" && i + 1 < argc) { mode = "lift"; va = std::strtoull(argv[++i], nullptr, 0); }
         else if (a == "--funcs") mode = "funcs";
+        else if (a == "--find-string" && i + 1 < argc) { mode = "find-string"; needle = argv[++i]; }
     }
     if (exe.empty()) { std::fprintf(stderr, "need --exe\n"); return 2; }
 
@@ -131,6 +132,15 @@ int main(int argc, char** argv) {
         std::printf("shards=%zu total=%zu ok=%zu stubbed=%zu failed=%zu\n",
                     st.shards, st.total, st.ok, st.stubbed, st.failed);
         return 0;
+    }
+
+    if (mode == "find-string") {
+        auto refs = findStringRefs(pe, needle.c_str());
+        std::printf("refs=%zu\n", refs.size());
+        for (auto& r : refs)
+            std::printf("  str=0x%llx referenced_by=0x%llx\n",
+                        (unsigned long long)r.first, (unsigned long long)r.second);
+        return refs.empty() ? 1 : 0;
     }
 
     if (mode == "funcs") {
