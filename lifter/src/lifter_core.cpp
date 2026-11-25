@@ -93,7 +93,15 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
                         if (toff + 8 > tsec->raw + tsec->rawsize) break;
                         uint64_t ent = *(uint64_t*)(pe.data.data() + toff + i * 8);
                         if (!ent) break;
-                        if (ent & (1ull << 63)) continue;  // ordinal
+                        if (ent & (1ull << 63)) {
+                            // 按序号导入：也要建槽，否则蹦床槽位是垃圾值
+                            ImportSlot im;
+                            im.slot_va = pe.image_base + ft + (uint64_t)i * 8;
+                            im.dll = dll;
+                            im.name = "Ordinal" + std::to_string((unsigned long long)(ent & 0xFFFF));
+                            pe.imports.push_back(im);
+                            continue;
+                        }
                         uint32_t hn = *(uint32_t*)(pe.data.data() + toff + i * 8);
                         const Section* hsec = pe.byRva(hn);
                         if (!hsec) continue;
