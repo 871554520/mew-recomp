@@ -137,6 +137,12 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx) {
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
     if (it != tbl.end()) {
+        if (target_va >= 0x500000000ULL && target_va < 0x500100000ULL && api_trace_hook()) {
+            api_trace_hook()(target_va, ctx, 0);
+            it->second(ctx);
+            api_trace_hook()(target_va, ctx, 1);
+            return;
+        }
         it->second(ctx);
         return;
     }
@@ -206,6 +212,7 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
             std::fprintf(stderr, "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va());
+            if (logged < 3) call_trace().dump("safe-mem");
             ++logged;
         }
         return v;
@@ -301,6 +308,13 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
         std::fflush(stderr);                                                     \
         std::_Exit(3);                                                           \
     } while (0)
+
+// 合成地址（0x5000000xx）调用追踪钩子：post=0 调用前，post=1 调用后。
+using ApiTraceHook = void (*)(uint64_t, X64Ctx*, int);
+inline ApiTraceHook& api_trace_hook() {
+    static ApiTraceHook h = nullptr;
+    return h;
+}
 
 // 由生成的 dispatch_table.cpp 提供
 void init_dispatch_table(const char* extra_url = nullptr, void* extra = nullptr);
