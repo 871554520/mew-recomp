@@ -22,8 +22,8 @@ jobs:
 
       - name: Fetch exe
         run: |
-          curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-recomp/main/Mewgenics.exe || \
           curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
+          test -s Mewgenics.exe
           ls -l Mewgenics.exe
 
       - name: Build lifter
