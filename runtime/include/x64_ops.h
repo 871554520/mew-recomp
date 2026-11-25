@@ -31,6 +31,18 @@ static inline uint64_t sub_flags(X64Ctx* c, uint64_t a, uint64_t b, int width) {
     return r;
 }
 
+static inline uint64_t sbb_flags(X64Ctx* c, uint64_t a, uint64_t b, int width) {
+    uint64_t mask = width >= 8 ? ~0ULL : ((1ULL << (width * 8)) - 1);
+    uint64_t borrow = c->cf ? 1ULL : 0ULL;
+    uint64_t sub = (b + borrow) & mask;
+    uint64_t r = (a - sub) & mask;
+    set_zsp(c, r, width);
+    c->cf = (a & mask) < sub;
+    uint64_t signbit = 1ULL << (width * 8 - 1);
+    c->of = (((a ^ b) & (a ^ r)) & signbit) != 0;
+    return r;
+}
+
 static inline uint64_t logic_flags(X64Ctx* c, uint64_t r, int width) {
     c->cf = false;
     c->of = false;
