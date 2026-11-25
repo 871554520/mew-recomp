@@ -279,3 +279,32 @@ extern "C" void shim_USER32_MessageBoxW(X64Ctx* c) {
 }
 extern "C" void shim_USER32_GetSystemMetrics(X64Ctx* c) { ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
 extern "C" void shim_USER32_GetDesktopWindow(X64Ctx* c) { ret0(c, 1); }
+
+// ---------------- CRT / 时间补充 ----------------
+extern "C" void shim_KERNEL32_GetSystemTimeAsFileTime(X64Ctx* c) {
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    // FILETIME: 100ns since 1601-01-01
+    int64_t ft = ((int64_t)ts.tv_sec + 11644473600LL) * 10000000LL + ts.tv_nsec / 100;
+    if (arg0(c)) { mem_write<uint32_t>(c, arg0(c), (uint32_t)ft); mem_write<uint32_t>(c, arg0(c) + 4, (uint32_t)(ft >> 32)); }
+    ret0(c, 0);
+}
+
+extern "C" void shim_KERNEL32_GetSystemTime(X64Ctx* c) { if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 16); ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetLocalTime(X64Ctx* c) { if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 16); ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetTimeZoneInformation(X64Ctx* c) { if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 172); ret0(c, 0); }
+extern "C" void shim_KERNEL32_GetACP(X64Ctx* c) { ret0(c, 65001); }
+extern "C" void shim_KERNEL32_GetOEMCP(X64Ctx* c) { ret0(c, 65001); }
+extern "C" void shim_KERNEL32_GetCPInfo(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_GetStringTypeW(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_LCMapStringW(X64Ctx* c) { ret0(c, 0); }
+extern "C" void shim_KERNEL32_IsValidCodePage(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_IsValidLocale(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_GetUserDefaultLCID(X64Ctx* c) { ret0(c, 0x0409); }
+extern "C" void shim_KERNEL32_GetSystemDefaultLCID(X64Ctx* c) { ret0(c, 0x0409); }
+extern "C" void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
+    uint32_t n = (uint32_t)arg0(c);
+    ret0(c, n == (uint32_t)-10 ? 0x101 : (n == (uint32_t)-11 ? 0x102 : 0x103));
+}
+extern "C" void shim_KERNEL32_GetFileType(X64Ctx* c) { ret0(c, 1); }
+extern "C" void shim_KERNEL32_SetHandleCount(X64Ctx* c) { ret0(c, (uint32_t)arg0(c)); }
+extern "C" void shim_KERNEL32_RtlUnwind(X64Ctx* c) { (void)c; }
