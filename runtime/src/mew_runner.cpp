@@ -2,12 +2,38 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "x64_runtime.h"
 #include "pe_image.h"
 
+namespace {
+void crash_handler(int sig, siginfo_t* si, void*) {
+    void* bt[64];
+    int n = backtrace(bt, 64);
+    std::fprintf(stderr, "\n[CRASH] signal=%d fault=0x%llx frames=%d\n", sig,
+                 (unsigned long long)(uintptr_t)si->si_addr, n);
+    backtrace_symbols_fd(bt, n, 2);
+    std::fflush(stderr);
+    _exit(139);
+}
+void install_crash_handler() {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGILL, &sa, nullptr);
+    sigaction(SIGFPE, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+}
+}  // namespace
+
 int main(int argc, char** argv) {
+    install_crash_handler();
     const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
     GuestImage img;
     std::string err;
