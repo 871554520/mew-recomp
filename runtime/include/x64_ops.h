@@ -39,6 +39,30 @@ static inline uint64_t logic_flags(X64Ctx* c, uint64_t r, int width) {
 }
 
 // 写寄存器：32 位写清零高 32 位；8/16 位写保留高位（方案书硬性要求）
+// CPUID / RDTSC：x86 宿主用真实指令，其它架构返回稳定占位值
+static inline void x64_cpuid(uint32_t leaf, uint32_t sub,
+                             uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned int eax, ebx, ecx, edx;
+    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(leaf), "c"(sub));
+    *a = eax; *b = ebx; *c = ecx; *d = edx;
+#else
+    (void)leaf; (void)sub;
+    *a = 0x756E6547; *b = 0x49656E69; *c = 0x6C65746E; *d = 0x000006F2;  // "GenuineIntel"
+#endif
+}
+
+static inline uint64_t x64_rdtsc() {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned int lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#else
+    return 0;
+#endif
+}
+
 static inline void write_reg(X64Ctx* c, int regid, uint64_t v, int width) {
     uint64_t* preg = nullptr;
     switch (regid) {
