@@ -10,6 +10,7 @@
 #include <mutex>
 #include <unordered_set>
 #include <unordered_map>
+#include <malloc.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -204,7 +205,16 @@ void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     if (p) { std::lock_guard<std::mutex> lk(g_heap_mu); g_heap_blocks.insert(p); }
     std::fprintf(stderr, "[shim] HeapAlloc(%zu)=%p\n", n, p);
     uint64_t g = p ? (uint64_t)((int64_t)(uintptr_t)p - c->mem_bias) : 0;
-    if (g) register_guest_range(g, n ? n : 1);
+    if (g) {
+        // 按真实可用大小登记：CRT 拿到 HeapAlloc(1) 之后常常往里写整个结构体，
+        // 只登记 1 字节会让 MEW_SAFE_MEM 误报 unmapped write（实测 0x140d6cb90）。
+        size_t usable = n ? n : 1;
+#if defined(__GLIBC__)
+        usable = malloc_usable_size(p);
+#endif
+        if (usable > (1u << 20)) usable = 1u << 20;
+        register_guest_range(g, usable);
+    }
     ret0(c, g);
 }
 
