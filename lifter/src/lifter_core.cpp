@@ -1346,11 +1346,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             uint64_t v = 0;
             std::memcpy(&v, p + off, 8);
             if (v >= text_lo && v < text_hi && !pe.hasFunction(v)) pending.insert(v);
-            // 4 字节 RVA 形式（image_base + rva）
-            uint32_t rva = 0;
-            std::memcpy(&rva, p + off, 4);
-            uint64_t v4 = pe.image_base + rva;
-            if (rva >= text->va && v4 < text_hi && !pe.hasFunction(v4)) pending.insert(v4);
+            /* 4 字节 RVA 形式噪声太大（会把立即数当表项），暂不扫描 */
         }
     }
     const size_t candidates = pending.size();
@@ -1364,7 +1360,8 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
         work.pop_back();
         if (!visited.insert(v).second) continue;
         if (pe.hasFunction(v)) continue;
-        if (pe.functions.size() > 120000) break;
+        if (pe.functions.size() > 64000) break;
+        if (added >= 8000) break;
 
         uint64_t base = 0; uint32_t fsize = 0;
         for (const auto& f : pe.functions)
