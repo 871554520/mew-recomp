@@ -274,6 +274,9 @@ std::string valExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const 
 
 std::string hexStr(uint64_t v);
 
+// 从 PE 原始字节读 8 字节（未应用重定位，值就是原始 VA）
+static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out);
+
 void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst,
                const std::string& val, uint64_t next_rip, int bytes, Emit& e) {
     (void)in;
@@ -351,6 +354,16 @@ std::string ccSuffix(const std::string& mn, const char* prefix) {
 }
 
 std::string hexStr(uint64_t v) { std::ostringstream o; o << std::hex << v; return o.str(); }
+
+static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out) {
+    if (va < pe.image_base) return false;
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return false;
+    uint32_t off = sec->raw + (uint32_t)(va - pe.image_base - sec->va);
+    if (off + 8 > sec->raw + sec->rawsize) return false;
+    std::memcpy(out, pe.data.data() + off, 8);
+    return true;
+}
 std::string shimSym(const ImportSlot& im) { return "shim_" + im.dll + "_" + im.name; }
 
 // 目标若是 `jmp qword ptr [rip+disp]` 形式的 IAT thunk，返回对应导入槽
@@ -636,6 +649,50 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
                         e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
                     }
                 } else { e.unsupported.push_back("jump-out-of-func"); break; }
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                       ops[0].mem.index != ZYDIS_REGISTER_NONE) {
+                // switch 跳转表：jmp qword ptr [index*scale + table]
+                int64_t disp = ops[0].mem.disp.has_displacement ? (int64_t)ops[0].mem.disp.value : 0;
+                uint64_t tbl = 0;
+                if (ops[0].mem.base == ZYDIS_REGISTER_RIP) tbl = next_rip + disp;
+                else if (ops[0].mem.base == ZYDIS_REGISTER_NONE) tbl = (uint64_t)(uint32_t)disp;
+                int idx_reg = gprId(ops[0].mem.index);
+                int scale = (int)ops[0].mem.scale;
+                bool expanded = false;
+                if (tbl && idx_reg >= 0 && (scale == 8 || scale == 4) && effSize < 0x10000) {
+                    std::vector<std::pair<uint64_t, uint64_t>> table;  // (index, target)
+                    bool all_in = true;
+                    for (int k = 0; k < 256; ++k) {
+                        uint64_t raw = 0;
+                        if (!readGuestQword(pe, tbl + (uint64_t)k * scale, &raw)) { break; }
+                        if (!raw) continue;
+                        // 表项可能是原始 VA，也可能已被重定位；两种都接受
+                        uint64_t t = raw;
+                        if (t > (1ULL << 47)) t = (uint64_t)((int64_t)raw - pe.image_base) + pe.image_base;  // no-op 保护
+                        if (t < va || t >= va + effSize) { all_in = false; break; }
+                        if (!labelSet.count(t)) { all_in = false; break; }
+                        table.push_back({(uint64_t)k, t});
+                        if (table.size() >= 128) break;
+                    }
+                    if (all_in && table.size() >= 2) {
+                        e.out << "  { uint64_t ix = read_reg(ctx," << idx_reg << ",8);\n"
+                                 "    switch (ix) {\n";
+                        for (const auto& kv : table)
+                            e.out << "      case " << kv.first << "ULL: goto L_" << hexStr(kv.second) << ";\n";
+                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"jump-table-oor\");\n"
+                                 "    }\n"
+                                 "  }\n";
+                        expanded = true;
+                    }
+                }
+                if (!expanded) {
+                    if (flags & LIFT_TAIL_JUMP) {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                    } else {
+                        e.unsupported.push_back("jmp-indirect");
+                    }
+                }
             } else if (flags & LIFT_TAIL_JUMP) {
                 if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[0].mem.base == ZYDIS_REGISTER_RIP) {
                     uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
