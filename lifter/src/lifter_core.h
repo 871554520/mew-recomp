@@ -77,6 +77,7 @@ struct NestedCand {
     uint32_t size = 0;
     int directCalls = 0;
     size_t closure = 0;
+    uint32_t ptr_mask = 0;
 };
 bool pickNestedCandidate(const PeImage& pe, NestedCand* out,
                          std::vector<std::pair<uint64_t, uint32_t>>* closure,
