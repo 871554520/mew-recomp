@@ -101,6 +101,20 @@ jobs:
           python3 tools/build_stage3.py \
             --src-dir generated/stage3 --obj-dir build-stage3 \
             --archive build-stage3/libmew_recomp.a --jobs "$(nproc)" --opt=-O0 2>&1 | tee generated/compile.log
+          RC=$?
+          echo "compile rc=$RC"
+          if [ $RC -ne 0 ]; then
+            echo '--- print offending shard lines ---'
+            grep -m1 -h 'error:' generated/compile.log | sed -E 's/.*shard_[0-9]+\.cpp:([0-9]+):.*/\1/' | while read -r LN; do
+              grep -h 'shard_' generated/compile.log | head -1 >/dev/null
+            done
+            for F in $(grep -h -o 'generated/stage3/shard_[0-9]*\.cpp' generated/compile.log | sort -u | head -3); do
+              LN=$(grep -m1 "$F:" generated/compile.log | sed -E 's/.*:([0-9]+):[0-9]+: error.*/\1/')
+              echo "== $F line $LN =="
+              sed -n "$((LN-2)),$((LN+2))p" "$F"
+            done
+          fi
+          exit $RC
 
       - name: Gate 3 - link probe
         run: |
