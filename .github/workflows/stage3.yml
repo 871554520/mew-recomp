@@ -54,6 +54,10 @@ jobs:
           ./build/isa_histogram Mewgenics.exe generated/isa_histogram.json
           python3 tools/summarize_isa.py generated/isa_histogram.json generated/isa_freq.tsv | tee generated/isa_report.txt
 
+      - name: CFG load-config probe
+        run: |
+          python3 tools/cfg_info.py Mewgenics.exe generated/cfg.json 2>&1 | tee generated/cfg_probe.txt
+
       - name: Find gpak loader (string xref)
         run: |
           for S in "resources.gpak" ".gpak" "gpak"; do
@@ -233,6 +237,8 @@ jobs:
             generated/runner_api.log
             generated/hot_functions.txt
             generated/gpak_xref.txt
+            generated/cfg_probe.txt
+            generated/cfg.json
             generated/gpak_call.log
             generated/gpak_call_*.out
             generated/gpak_call_*.err
