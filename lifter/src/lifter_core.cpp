@@ -1337,7 +1337,7 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
     const uint64_t text_lo = pe.image_base + text->va;
     const uint64_t text_hi = text_lo + std::max(text->vsize, text->rawsize);
 
-    std::vector<uint64_t> extra;
+    std::unordered_set<uint64_t> pending;
     for (const auto& sec : pe.sections) {
         if (sec.name == ".text" || sec.exec) continue;
         if (sec.rawsize < 8) continue;
@@ -1347,31 +1347,58 @@ size_t expandFunctionListByDataPointers(PeImage& pe) {
             std::memcpy(&v, p + off, 8);
             if (v < text_lo || v >= text_hi) continue;
             if (pe.hasFunction(v)) continue;
-            extra.push_back(v);
+            pending.insert(v);
         }
     }
-    std::sort(extra.begin(), extra.end());
-    extra.erase(std::unique(extra.begin(), extra.end()), extra.end());
-
+    const size_t candidates = pending.size();
     size_t added = 0;
-    for (uint64_t v : extra) {
-        // 长度取到“包含它的函数末尾”
+    std::unordered_map<std::string, size_t> why;
+    std::unordered_set<uint64_t> visited;
+    std::vector<uint64_t> work(pending.begin(), pending.end());
+
+    while (!work.empty()) {
+        uint64_t v = work.back();
+        work.pop_back();
+        if (!visited.insert(v).second) continue;
+        if (pe.hasFunction(v)) continue;
+        if (pe.functions.size() > 120000) break;
+
         uint64_t base = 0; uint32_t fsize = 0;
         for (const auto& f : pe.functions)
             if (f.first <= v && f.first >= base) { base = f.first; fsize = f.second; }
         uint32_t len = 0;
         if (base && base + fsize > v) len = (uint32_t)(base + fsize - v);
-        else len = 0;
+        else {
+            const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
+            if (!sec) continue;
+            uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
+            len = (sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 4096) : 0);
+        }
         if (!len) continue;
+
+        std::unordered_set<uint64_t> discovered;
+        g_needed_entries = &discovered;
         LiftResult r = liftFunctionEx(pe, v, len,
-                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP | LIFT_STUB_UNKNOWN);
-        bool ok = r.ok;  // 允许占位：先进分发表，运行时撞到再补
-        if (!ok) continue;
-        pe.functions.emplace_back(v, len);
-        ++added;
+                                      LIFT_ALLOW_CALL | LIFT_TAIL_JUMP |
+                                      LIFT_STUB_UNKNOWN | LIFT_FRAGMENT);
+        g_needed_entries = nullptr;
+        if (!r.ok) {
+            why[r.unsupported.empty() ? std::string("no-ok") : r.unsupported[0]]++;
+        } else {
+            pe.functions.emplace_back(v, len);
+            ++added;
+        }
+        for (uint64_t t : discovered)
+            if (!visited.count(t) && !pe.hasFunction(t)) work.push_back(t);
     }
     std::sort(pe.functions.begin(), pe.functions.end());
+    pe.functions.erase(std::unique(pe.functions.begin(), pe.functions.end()), pe.functions.end());
+    if (!why.empty()) {
+        std::fprintf(stderr, "[expand] why:");
+        for (const auto& kv : why) std::fprintf(stderr, " %s=%zu", kv.first.c_str(), kv.second);
+        std::fprintf(stderr, "\n");
+    }
     std::fprintf(stderr, "[expand] data pointers -> extra entries=%zu (candidates=%zu, functions=%zu)\n",
-                 added, extra.size(), pe.functions.size());
+                 added, candidates, pe.functions.size());
     return added;
 }
