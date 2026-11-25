@@ -55,7 +55,7 @@ jobs:
           mkdir -p generated
           ./build/mew_lifter --lift 0x1401657b0 --exe Mewgenics.exe --out generated/lifted.cpp
           python3 tools/stage2_wrap.py 1401657b0 generated/wrapper.cpp
-          aarch64-linux-gnu-g++ -std=c++17 -O2 -I runtime/include \
+          aarch64-linux-gnu-g++ -std=c++17 -O0 -g -rdynamic -I runtime/include \
             tests/stage2/native_harness.cpp generated/lifted.cpp generated/wrapper.cpp \
             -o build/native_harness_arm64
           : > generated/arm64_stage2.txt
