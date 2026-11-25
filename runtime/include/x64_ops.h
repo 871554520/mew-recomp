@@ -165,3 +165,87 @@ template <typename T> static inline T rotr(T v, T n) {
 static inline uint64_t bswap64(uint64_t v) {
     return __builtin_bswap64(v);
 }
+
+// ---- 字符串指令（Windows ABI 要求 DF=0）----
+static inline uint64_t x64_stride_dir(X64Ctx* c, int bytes) {
+    return c->df ? (uint64_t)(-(int64_t)bytes) : (uint64_t)bytes;
+}
+
+static inline void x64_stos(X64Ctx* c, int bytes, int rep) {
+    uint64_t count = rep ? c->rcx : 1;
+    uint64_t mask = bytes >= 8 ? ~0ULL : ((1ULL << (bytes * 8)) - 1);
+    uint64_t val = c->rax & mask;
+    uint64_t step = x64_stride_dir(c, bytes);
+    for (uint64_t i = 0; i < count; ++i) {
+        if (bytes == 1) mem_write<uint8_t>(c, c->rdi, (uint8_t)val);
+        else if (bytes == 2) mem_write<uint16_t>(c, c->rdi, (uint16_t)val);
+        else if (bytes == 4) mem_write<uint32_t>(c, c->rdi, (uint32_t)val);
+        else mem_write<uint64_t>(c, c->rdi, val);
+        c->rdi += step;
+    }
+    if (rep) c->rcx = 0;
+}
+
+static inline void x64_movs(X64Ctx* c, int bytes, int rep) {
+    uint64_t count = rep ? c->rcx : 1;
+    uint64_t step = x64_stride_dir(c, bytes);
+    for (uint64_t i = 0; i < count; ++i) {
+        if (bytes == 1) mem_write<uint8_t>(c, c->rdi, mem_read<uint8_t>(c, c->rsi));
+        else if (bytes == 2) mem_write<uint16_t>(c, c->rdi, mem_read<uint16_t>(c, c->rsi));
+        else if (bytes == 4) mem_write<uint32_t>(c, c->rdi, mem_read<uint32_t>(c, c->rsi));
+        else mem_write<uint64_t>(c, c->rdi, mem_read<uint64_t>(c, c->rsi));
+        c->rdi += step; c->rsi += step;
+    }
+    if (rep) c->rcx = 0;
+}
+
+static inline void x64_lods(X64Ctx* c, int bytes, int rep) {
+    uint64_t count = rep ? c->rcx : 1;
+    uint64_t step = x64_stride_dir(c, bytes);
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t v = 0;
+        if (bytes == 1) v = mem_read<uint8_t>(c, c->rsi);
+        else if (bytes == 2) v = mem_read<uint16_t>(c, c->rsi);
+        else if (bytes == 4) v = mem_read<uint32_t>(c, c->rsi);
+        else v = mem_read<uint64_t>(c, c->rsi);
+        write_reg(c, 0, v, bytes);
+        c->rsi += step;
+    }
+    if (rep) c->rcx = 0;
+}
+
+static inline void x64_scas(X64Ctx* c, int bytes, int rep, int repne) {
+    uint64_t step = x64_stride_dir(c, bytes);
+    for (;;) {
+        uint64_t v = 0;
+        if (bytes == 1) v = mem_read<uint8_t>(c, c->rdi);
+        else if (bytes == 2) v = mem_read<uint16_t>(c, c->rdi);
+        else if (bytes == 4) v = mem_read<uint32_t>(c, c->rdi);
+        else v = mem_read<uint64_t>(c, c->rdi);
+        (void)sub_flags(c, c->rax, v, bytes);
+        c->rdi += step;
+        if (!rep) break;
+        c->rcx -= 1;
+        if (c->rcx == 0) break;
+        if (!repne && !c->zf) break;
+        if (repne && c->zf) break;
+    }
+}
+
+static inline void x64_cmps(X64Ctx* c, int bytes, int rep, int repne) {
+    uint64_t step = x64_stride_dir(c, bytes);
+    for (;;) {
+        uint64_t a = 0, b = 0;
+        if (bytes == 1) { a = mem_read<uint8_t>(c, c->rsi); b = mem_read<uint8_t>(c, c->rdi); }
+        else if (bytes == 2) { a = mem_read<uint16_t>(c, c->rsi); b = mem_read<uint16_t>(c, c->rdi); }
+        else if (bytes == 4) { a = mem_read<uint32_t>(c, c->rsi); b = mem_read<uint32_t>(c, c->rdi); }
+        else { a = mem_read<uint64_t>(c, c->rsi); b = mem_read<uint64_t>(c, c->rdi); }
+        (void)sub_flags(c, a, b, bytes);
+        c->rsi += step; c->rdi += step;
+        if (!rep) break;
+        c->rcx -= 1;
+        if (c->rcx == 0) break;
+        if (!repne && !c->zf) break;
+        if (repne && c->zf) break;
+    }
+}
