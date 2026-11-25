@@ -183,4 +183,6 @@ jobs:
             generated/stage3/*.tsv
             generated/runner*.log
             generated/runner.out
+            generated/runner.err
+            generated/runner_api.log
           if-no-files-found: warn
