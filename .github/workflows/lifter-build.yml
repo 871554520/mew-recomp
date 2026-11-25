@@ -1,0 +1,32 @@
+name: Lifter build probe (fast)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lifter/**'
+      - 'runtime/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake ninja-build g++
+          if ! sudo apt-get install -y -qq libzydis-dev; then
+            git clone --depth 1 --branch v4.1.0 https://github.com/zyantific/zydis.git /tmp/zydis
+            cmake -S /tmp/zydis -B /tmp/zydis/build -G Ninja -DZYDIS_BUILD_TESTS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_TOOLS=OFF > /dev/null
+            cmake --build /tmp/zydis/build -j"$(nproc)" > /dev/null
+            sudo cmake --install /tmp/zydis/build > /dev/null
+            sudo ldconfig
+          fi
+      - name: Build lifter only
+        run: |
+          set +e
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /tmp/cfg.log 2>&1
+          cmake --build build --target mew_lifter -j"$(nproc)" 2>&1 | tail -60
+          exit ${PIPESTATUS[0]}
