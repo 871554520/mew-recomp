@@ -45,10 +45,10 @@ jobs:
           printf '#include <cstdio>\nint main(){std::printf("hello-arm64\\n");return 42;}\n' > /tmp/hello.cpp
           aarch64-linux-gnu-g++ -O2 /tmp/hello.cpp -o /tmp/hello_dyn
           qemu-aarch64 -L /usr/aarch64-linux-gnu /tmp/hello_dyn || true
-echo "dyn rc=$?"
+          echo "dyn rc=$?"
           aarch64-linux-gnu-g++ -O2 -static /tmp/hello.cpp -o /tmp/hello_static
           qemu-aarch64 /tmp/hello_static || true
-echo "static rc=$?"
+          echo "static rc=$?"
 
       - name: Stage 2 golden hash on ARM64 (qemu)
         run: |
