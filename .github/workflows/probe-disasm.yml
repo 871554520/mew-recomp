@@ -76,30 +76,8 @@ jobs:
             echo "=== callers of $T ==="
             ./build/mew_lifter --find-callers "$T" --exe Mewgenics.exe 2>&1 | grep -E 'caller=|callers=' | tee -a generated/probe.txt
           done
-          echo "=== who contains 0x140d3e889 ==="
-          python3 - <<'PYEOF'
-          import struct
-          d=open('Mewgenics.exe','rb').read()
-          pe=struct.unpack_from('<I',d,0x3c)[0]
-          nsec=struct.unpack_from('<H',d,pe+6)[0]
-          optsz=struct.unpack_from('<H',d,pe+20)[0]
-          opt=pe+24
-          base=struct.unpack_from('<Q',d,opt+24)[0]
-          secs=[]; st=opt+optsz
-          for i in range(nsec):
-              q=st+i*40
-              name=d[q:q+8].rstrip(b'\\0').decode('latin1')
-              vs,va,rs,raw=struct.unpack_from('<IIII',d,q+8)
-              secs.append((name,va,vs,raw,rs))
-          pd=[s for s in secs if s[0]=='.pdata'][0]
-          n,va,vs,raw,rs=pd
-          for probe in (0x140d3e889,0x140d3e894,0x140d3e8ac,0x140d3e820):
-              hit=[]
-              for i in range((vs or rs)//12):
-                  b,e,u=struct.unpack_from('<III',d,raw+i*12)
-                  if base+b <= probe < base+e: hit.append((base+b,base+e))
-              print('probe=0x%x in=%s' % (probe, ['0x%x-0x%x'%h for h in hit] or 'none'))
-          PYEOF
+          echo '=== pdata owner already known: 0x140d3e889 in 0x140d3e738-0x140d3e8a9 ==='
+
       - name: Lift __scrt_common_main and friends
         run: |
           set +e
