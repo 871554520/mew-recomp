@@ -4,6 +4,7 @@
 //   mew_lifter --pick-nested --exe X.exe --out f.txt  阶段 4 中型嵌套候选 + 闭包
 //   mew_lifter --shards 64 --out-dir DIR --exe X.exe  阶段 3 分片全量生成
 //   mew_lifter --funcs --exe X.exe                    列出 .pdata 函数
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
