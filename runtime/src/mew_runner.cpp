@@ -1,0 +1,52 @@
+// 阶段 5：宿主启动器 —— 加载 PE 镜像、初始化主线程 ctx、调用入口点
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+
+#include "x64_runtime.h"
+#include "pe_image.h"
+
+int main(int argc, char** argv) {
+    const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
+    GuestImage img;
+    std::string err;
+    if (!load_pe_image(exe, &img, &err)) {
+        std::fprintf(stderr, "load image failed: %s\n", err.c_str());
+        return 1;
+    }
+
+    uint64_t entry = img.orig_image_base;
+    {
+        FILE* fp = std::fopen(exe, "rb");
+        if (fp) {
+            uint32_t peOff = 0;
+            std::fseek(fp, 0x3c, SEEK_SET);
+            std::fread(&peOff, 4, 1, fp);
+            uint32_t entryRva = 0;
+            std::fseek(fp, (long)peOff + 24 + 16, SEEK_SET);
+            std::fread(&entryRva, 4, 1, fp);
+            std::fclose(fp);
+            entry = img.orig_image_base + entryRva;
+        }
+    }
+
+    std::printf("runner: image_base=0x%llx entry=0x%llx bias=%lld\n",
+                (unsigned long long)img.orig_image_base,
+                (unsigned long long)entry, (long long)img.mem_bias);
+
+    init_dispatch_table();
+
+    X64Ctx ctx;
+    init_guest_thread_ctx(&ctx, img);
+    ctx.rcx = 0;   // hInstance
+    ctx.rdx = 0;   // hPrevInstance
+    ctx.r8 = 0;    // lpCmdLine
+    ctx.r9 = 1;    // nCmdShow
+
+    std::printf("runner: calling entry...\n");
+    std::fflush(stdout);
+    dispatch_indirect(entry, &ctx);
+    std::printf("runner: entry returned rax=%llu\n", (unsigned long long)ctx.rax);
+    return 0;
+}
