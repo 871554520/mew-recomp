@@ -2079,3 +2079,30 @@ std::vector<std::pair<uint64_t, uint64_t>> findStringRefs(const PeImage& pe, con
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
+
+std::vector<uint64_t> findCallers(const PeImage& pe, uint64_t target_va) {
+    std::vector<uint64_t> out;
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    for (const auto& fn : pe.functions) {
+        const Section* sec = pe.byRva((uint32_t)(fn.first - pe.image_base));
+        if (!sec || !sec->exec) continue;
+        const uint8_t* code = pe.data.data() + sec->raw + (uint32_t)(fn.first - pe.image_base - sec->va);
+        size_t off = 0;
+        ZydisDecodedInstruction insn;
+        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+        while (off < fn.second) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + off, fn.second - off, &insn, ops))) break;
+            uint64_t next_rip = fn.first + off + insn.length;
+            if ((insn.mnemonic == ZYDIS_MNEMONIC_CALL || insn.mnemonic == ZYDIS_MNEMONIC_JMP) &&
+                ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                if (t == target_va) out.push_back(fn.first);
+            }
+            off += insn.length;
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
