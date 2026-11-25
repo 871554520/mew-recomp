@@ -217,6 +217,7 @@ inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, ui
                (dsp != 0 && dsp != 8);
     if (!bad) return;
     ++logged;
+    call_trace().dump("abi-violation");
     std::fprintf(stderr,
         "[ABI VIOLATION] target=0x%llx caller=0x%llx rbx:0x%llx->0x%llx rsi:0x%llx->0x%llx "
         "rdi:0x%llx->0x%llx rbp:0x%llx->0x%llx rsp_delta=%lld\n",
