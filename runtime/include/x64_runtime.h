@@ -22,6 +22,8 @@ struct X64Ctx {
     XmmReg   xmm[16];
     bool zf, sf, cf, of, pf;
     int64_t mem_bias;
+    uint64_t gs_base;   // 伪 TEB 的 guest 地址（gs:[disp] 路由到这里）
+    uint64_t fs_base;
 };
 
 using RecompFn = void (*)(X64Ctx*);
