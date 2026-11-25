@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <unordered_map>
 #include <algorithm>
 #include <vector>
@@ -345,11 +347,26 @@ inline void register_guest_range(uint64_t guest_lo, uint64_t len) {
     guest_mem_ranges().push_back({guest_lo, guest_lo + len});
 }
 
+// 宿主地址是否真的映射（mincore 不触碰内存内容，只查页表）。
+// 用于放行那些由垫片/系统库分配、但没经过我们登记表的合法堆地址。
+inline bool host_page_mapped(uint64_t addr, size_t n) {
+    static const long page = sysconf(_SC_PAGESIZE);
+    if (!page) return false;
+    uint64_t lo = addr & ~(uint64_t)(page - 1);
+    uint64_t hi = (addr + n - 1) & ~(uint64_t)(page - 1);
+    unsigned char vec = 0;
+    for (uint64_t a = lo; a <= hi; a += (uint64_t)page)
+        if (mincore(reinterpret_cast<void*>(a), (size_t)page, &vec) != 0) return false;
+    return true;
+}
+
 inline bool guest_mapped(uint64_t addr, size_t n = 1) {
     if (!addr) return false;
     for (const auto& r : guest_mem_ranges())
         if (addr >= r.lo && addr + n <= r.hi) return true;
-    return false;
+    // 未登记的地址：交给宿主页表判断。bias=0 时 guest 地址就是宿主地址，
+    // 这样 malloc/系统库给的内存不会被 SAFE_MEM 误杀（实测 0x140d6cb90 往堆对象写字段）。
+    return host_page_mapped(addr, n);
 }
 
 // 函数/垫片入口处的返回地址（= guest 栈顶）。用来在调用环里定位"是谁调的这一层"。
