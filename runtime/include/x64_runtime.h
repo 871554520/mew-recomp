@@ -211,6 +211,30 @@ struct AbiSnapshot {
 inline AbiSnapshot abi_snap(const X64Ctx* c) {
     return AbiSnapshot{c->rbx, c->rbp, c->rsi, c->rdi, c->r12, c->r13, c->r14, c->r15, c->rsp};
 }
+// MEW_STACK_REPAIR=1：调用边界强制平衡模拟栈。
+// 实测存在 rsp 逐层漏 8 字节（-8/-24/-48/-64），会让 MSVC 的 stack cookie
+// （xor rsp）校验失败 → __fastfail(2)。修复前先用它把执行流推过去。
+inline bool mew_stack_repair_on() {
+    static int v = [] { const char* e = std::getenv("MEW_STACK_REPAIR"); return (e && e[0] == '1') ? 1 : 0; }();
+    return v == 1;
+}
+
+// 调用点用：期望返回后 rsp == 调用前的 rsp + push 的数量（direct call 压 1 个）
+inline void abi_guard_after_call(X64Ctx* ctx, const AbiSnapshot& s, uint64_t target, uint64_t caller,
+                                 long long expect_delta) {
+    if (mew_stack_repair_on()) {
+        long long d = (long long)(ctx->rsp - s.rsp);
+        if (d != expect_delta) {
+            static int fixed = 0;
+            if (fixed++ < 40)
+                std::fprintf(stderr, "[rsp-repair] target=0x%llx caller=0x%llx delta=%lld -> %lld\n",
+                             (unsigned long long)target, (unsigned long long)caller, d, expect_delta);
+            ctx->rsp = s.rsp + (uint64_t)expect_delta;
+        }
+    }
+    abi_check(ctx, s, target, caller);
+}
+
 inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller) {
     static int logged = 0;
     if (logged > 40) return;
