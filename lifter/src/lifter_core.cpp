@@ -1114,11 +1114,10 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                          ? (uint64_t)ops[0].imm.value.u : 3;
             if (imm == 3) {
                 /* int3：断点填充，按 nop 处理 */
-            } else if (flags & LIFT_STUB_UNKNOWN) {
-                e.stubbed = true;
-                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"int\");\n";
             } else {
-                e.unsupported.push_back("int");
+                /* int 0x29 = __fastfail（CRT 致命路径），int 0x2c = 断言。
+                   旧实现当占位跳过，掩盖了真正的失败原因；现在显式报告。 */
+                e.out << "  MEW_FASTFAIL(0x" << hexStr(rip) << "ULL, " << imm << ");\n";
             }
         } else if (mn == "bt" || mn == "btc" || mn == "btr" || mn == "bts") {
             int w = ops[0].size / 8;
@@ -2271,11 +2270,10 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                          ? (uint64_t)ops[0].imm.value.u : 3;
             if (imm == 3) {
                 /* int3：断点填充，按 nop 处理 */
-            } else if (flags & LIFT_STUB_UNKNOWN) {
-                e.stubbed = true;
-                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"int\");\n";
             } else {
-                e.unsupported.push_back("int");
+                /* int 0x29 = __fastfail（CRT 致命路径），int 0x2c = 断言。
+                   旧实现当占位跳过，掩盖了真正的失败原因；现在显式报告。 */
+                e.out << "  MEW_FASTFAIL(0x" << hexStr(rip) << "ULL, " << imm << ");\n";
             }
         } else if (mn == "bt" || mn == "btc" || mn == "btr" || mn == "bts") {
             int w = ops[0].size / 8;
