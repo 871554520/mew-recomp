@@ -46,9 +46,11 @@ jobs:
           echo "===== exports-trie (head) =====";    head -12 /tmp/o_exports.txt
           echo "===== rebase (head) =====";          head -5  /tmp/o_rebase.txt
           echo "===== bind (head) =====";            head -5  /tmp/o_bind.txt
-          echo "===== 计数 ====="
-          echo "rebase_total=$(wc -l < /tmp/o_rebase.txt)"
-          echo "bind_total=$(wc -l < /tmp/o_bind.txt)"
+          echo "===== 计数（只数带 0x 地址的条目行，去掉 4 行表头）====="
+          RB=$(grep -c '0x' /tmp/o_rebase.txt || true)
+          BD=$(grep -c '0x' /tmp/o_bind.txt || true)
+          echo "rebase_total=$RB"
+          echo "bind_total=$BD"
           echo "===== malformed 门禁 ====="
           if grep -n -E 'malformed|inconsistent|bad offset|bad segIndex|too large|Unknown' /tmp/o_*.txt; then
             echo "::error::llvm-objdump 报出结构错误，Mach-O 未过关"
@@ -60,6 +62,11 @@ jobs:
             exit 1
           fi
           grep -m1 '_SDL_main' /tmp/o_exports.txt
+          if [ "$RB" != "76945" ] || [ "$BD" != "1348" ]; then
+            echo "::error::计数不符：rebase=$RB（期望 76945）bind=$BD（期望 1348）"
+            exit 1
+          fi
+          echo "计数吻合 76945 / 1348"
 
       - name: 十六进制抽查
         run: |
