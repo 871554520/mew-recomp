@@ -245,15 +245,24 @@ def main(path):
         return tsz, addr, kids, offs, p
 
     def find(name):
+        # 边名字可以是多字符（转换器做了路径压缩，否则 trie 深度会超过 dyld 的
+        # 255 层上限），所以这里按前缀匹配走，不能一次只吃一个字符。
         q = trie_off
-        for i in range(len(name)):
+        pos = 0
+        while True:
             tsz, addr, kids, offs, _ = node(q)
-            c = name[i:i + 1]
-            if c not in kids:
+            rest = name[pos:]
+            if not rest:
+                return addr if tsz else None
+            hit = None
+            for nm, v in zip(kids, offs):
+                if rest.startswith(nm):
+                    hit = (nm, v)
+                    break
+            if hit is None:
                 return None
-            q = trie_off + offs[kids.index(c)]
-        tsz, addr, kids, offs, p = node(q)
-        return addr if tsz else None
+            q = trie_off + hit[1]
+            pos += len(hit[0])
 
     a = find(b'_SDL_main')
     print('trie 走查 _SDL_main -> %s' % (hex(a) if a else None))

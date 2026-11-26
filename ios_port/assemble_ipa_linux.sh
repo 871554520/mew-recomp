@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 注意：libmew_relinked.dylib 的 export trie 深度必须 <= 255（dyld 硬上限，超了真机
+# 报 `trie too deep > 255` 直接拒绝加载 = 黑屏）。转换器已做路径压缩 + 硬门禁，
+# verify_bundle.py 也会复核，这里不需要额外处理。
 # 在 Linux 上组装 IPA：不需要 macOS、不需要 Xcode。
 #
 # 前提：三件「只能由 macOS 编出来」的产物已经在 out/products/ 里：
