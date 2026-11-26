@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <sys/mman.h>
 #include "guest_heap.h"
 #include <unistd.h>
@@ -107,13 +108,16 @@ inline uint64_t mew_trace_fn() {
         }                                                                         \
         if (mew_trace_fn() == (uint64_t)(VA)) {                                   \
             static int _mew_tn = 0;                                               \
-            if (_mew_tn++ < 40)                                                   \
+            if (_mew_tn++ < 40) {                                                 \
                 std::fprintf(stderr,                                               \
                     "[fn] 0x%llx rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx rax=0x%llx\n", \
                     (unsigned long long)(VA), (unsigned long long)(CTX)->rcx,      \
                     (unsigned long long)(CTX)->rdx, (unsigned long long)(CTX)->r8, \
                     (unsigned long long)(CTX)->r9, (unsigned long long)(CTX)->rsp, \
                     (unsigned long long)(CTX)->rax);                              \
+                mew_probe_qword("[fn:rcx+0x88]", (CTX)->rcx + 0x88);              \
+                mew_probe_qword("[fn:rdx]", (CTX)->rdx);                          \
+            }                                                                     \
         }                                                                         \
     } while (0)
 #define MEW_TRACE_API(CTX, NAME) \
@@ -419,6 +423,43 @@ inline uint64_t mew_guest_ret(X64Ctx* ctx) {
     return ret;
 }
 
+// MEW_WATCH=0xaddr[,0xaddr...]：对指定地址的读写打点（定位"谁把它清零了"）。
+inline std::vector<uint64_t>& mew_watch_addrs() {
+    static std::vector<uint64_t> v = [] {
+        std::vector<uint64_t> out;
+        const char* e = std::getenv("MEW_WATCH");
+        if (e) {
+            std::string s(e);
+            size_t p = 0;
+            while (p <= s.size()) {
+                size_t q = s.find(',', p);
+                std::string tok = s.substr(p, q == std::string::npos ? std::string::npos : q - p);
+                if (!tok.empty()) out.push_back(std::strtoull(tok.c_str(), nullptr, 0));
+                if (q == std::string::npos) break;
+                p = q + 1;
+            }
+        }
+        return out;
+    }();
+    return v;
+}
+inline bool mew_watch_on() {
+    static const bool on = !mew_watch_addrs().empty();
+    return on;
+}
+inline uint64_t mew_bits(const void* p, size_t n) {
+    uint64_t b = 0;
+    if (n > 8) n = 8;
+    std::memcpy(&b, p, n);
+    return b;
+}
+inline bool mew_watch_hit(uint64_t addr, size_t n) {
+    if (!mew_watch_on()) return false;
+    for (uint64_t w : mew_watch_addrs())
+        if (addr <= w && w < addr + n) return true;
+    return false;
+}
+
 template <typename T>
 inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
     T v;
@@ -435,6 +476,14 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
         return v;
     }
     std::memcpy(&v, reinterpret_cast<const void*>(guest_addr + ctx->mem_bias), sizeof(T));
+    if (mew_watch_hit(guest_addr, sizeof(T))) {
+        static int n = 0;
+        if (n++ < 60)
+            std::fprintf(stderr, "[watch] R addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)mew_bits(&v, sizeof(T)),
+                         (unsigned long long)cur_fn_va());
+    }
     return v;
 }
 
@@ -451,6 +500,14 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
         return;
     }
     std::memcpy(reinterpret_cast<void*>(guest_addr + ctx->mem_bias), &val, sizeof(T));
+    if (mew_watch_hit(guest_addr, sizeof(T))) {
+        static int n = 0;
+        if (n++ < 60)
+            std::fprintf(stderr, "[watch] W addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)mew_bits(&val, sizeof(T)),
+                         (unsigned long long)cur_fn_va());
+    }
 }
 
 // ---------------- 阶段 3 占位与日志 ----------------
