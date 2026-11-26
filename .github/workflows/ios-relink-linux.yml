@@ -5,6 +5,7 @@ on:
     paths:
       - tools/elf2macho_dylib.py
       - ios_port/verify_macho.py
+      - .github/workflows/ios-relink-linux.yml
 concurrency:
   group: ios-relink-linux
   cancel-in-progress: true
@@ -38,10 +39,13 @@ jobs:
           OBJDUMP=$(command -v llvm-objdump || echo /usr/lib/llvm-18/bin/llvm-objdump)
           echo "using $OBJDUMP"
           D=/tmp/libmew_relinked.dylib
-          $OBJDUMP --macho --private-headers $D > /tmp/o_headers.txt 2>&1
-          $OBJDUMP --macho --exports-trie  $D > /tmp/o_exports.txt 2>&1
-          $OBJDUMP --macho --rebase        $D > /tmp/o_rebase.txt  2>&1
-          $OBJDUMP --macho --bind          $D > /tmp/o_bind.txt    2>&1
+          # llvm-objdump 只要往 stderr 打过一句诊断就以 1 退出，采样阶段先关掉 -e
+          set +e
+          $OBJDUMP --macho --private-headers $D > /tmp/o_headers.txt 2>&1; echo "rc_headers=$?"
+          $OBJDUMP --macho --exports-trie  $D > /tmp/o_exports.txt 2>&1; echo "rc_exports=$?"
+          $OBJDUMP --macho --rebase        $D > /tmp/o_rebase.txt  2>&1; echo "rc_rebase=$?"
+          $OBJDUMP --macho --bind          $D > /tmp/o_bind.txt    2>&1; echo "rc_bind=$?"
+          set -e
           echo "===== private-headers (head) ====="; head -60 /tmp/o_headers.txt
           echo "===== exports-trie (head) =====";    head -12 /tmp/o_exports.txt
           echo "===== rebase (head) =====";          head -5  /tmp/o_rebase.txt
