@@ -377,27 +377,43 @@ void shim_KERNEL32_InitializeCriticalSection(X64Ctx* c) {
     ret0(c, 1);
 }
 
+// Windows 的 CRITICAL_SECTION 是可重入的。pthread 的 RECURSIVE 属性在部分构建里
+// 没生效（实测同一 cs=0x1413bb298 二次进入直接堵死），所以这里自己记深度：
+// 只在 0->1 时真正 lock，1->0 时 unlock，中间的重入只加计数。
+std::mutex g_cs_mu;
+std::unordered_map<uint64_t, int> g_cs_depth;
+
 void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
-    uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    uint64_t cs = arg0(c);
+    uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
+    int d = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_cs_mu);
+        d = ++g_cs_depth[cs];
+    }
     static int logged = 0;
     if (logged++ < 40)
-        std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx)\n",
-                     (unsigned long long)arg0(c), (unsigned long long)m);
-    if (m) {
+        std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
+                     (unsigned long long)cs, (unsigned long long)m, d);
+    if (d == 1 && m)
         pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
-        if (logged <= 40) std::fprintf(stderr, "[shim] EnterCS acquired cs=0x%llx\n",
-                                       (unsigned long long)arg0(c));
-    }
     ret0(c, 1);
 }
 
 void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
-    uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    uint64_t cs = arg0(c);
+    uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
+    int d = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_cs_mu);
+        auto it = g_cs_depth.find(cs);
+        if (it != g_cs_depth.end() && it->second > 0) d = --it->second;
+    }
     static int logged = 0;
     if (logged++ < 40)
-        std::fprintf(stderr, "[shim] LeaveCS(cs=0x%llx mutex=0x%llx)\n",
-                     (unsigned long long)arg0(c), (unsigned long long)m);
-    if (m) pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
+        std::fprintf(stderr, "[shim] LeaveCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
+                     (unsigned long long)cs, (unsigned long long)m, d);
+    if (d == 0 && m) pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
     ret0(c, 1);
 }
 
