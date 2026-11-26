@@ -354,8 +354,10 @@ class MachO:
 
         # rebase/bind opcode 里的 segIndex 其实是「全局节索引」，不是段索引。
         # __TEXT 有 __text/__eh_frame 两节，所以 __DATA_CONST 的节索引 = 2，__DATA = 3。
+        # 低 4 位是**段索引**（0=__TEXT, 1=__DATA_CONST, 2=__DATA）；
+        # 之前报 bad segIndex 是因为数据段 nsects=0，LLVM 的段表里没收录它们。
         SECTIONS_PER_SEG = [2, 1, 1]
-        SECIDX = [0, 2, 3]   # 每段「第一节」的全局索引
+        SECIDX = [0, 1, 2]   # 段索引
 
         # ---------- 2) rebase / bind ----------
         rebase_blob = bytearray()
