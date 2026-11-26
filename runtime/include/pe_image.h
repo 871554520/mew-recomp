@@ -15,6 +15,8 @@ struct GuestImage {
     uint8_t* host_base = nullptr;
     size_t image_size = 0;
     int64_t mem_bias = 0;   // host_addr = guest_addr + mem_bias
+    uint64_t pdata_va = 0;      // .pdata（异常目录）在镜像里的 VA
+    uint32_t pdata_bytes = 0;   // 字节数（/12 = RUNTIME_FUNCTION 个数）
 };
 
 // 把 PE 全部节按原 RVA 映射到一块连续匿名内存，并应用 .reloc（DIR64/HIGHLOW）
