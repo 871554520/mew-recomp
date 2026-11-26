@@ -14,6 +14,18 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Install zydis
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake ninja-build g++
+          if ! sudo apt-get install -y -qq libzydis-dev; then
+            git clone --depth 1 --branch v4.1.0 https://github.com/zyantific/zydis.git /tmp/zydis
+            cmake -S /tmp/zydis -B /tmp/zydis/build -G Ninja -DZYDIS_BUILD_TESTS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_TOOLS=OFF > /dev/null
+            cmake --build /tmp/zydis/build -j"$(nproc)" > /dev/null
+            sudo cmake --install /tmp/zydis/build > /dev/null
+            sudo ldconfig
+          fi
+
       - name: Fetch exe
         run: |
           curl -fL --retry 5 --retry-delay 3 -o Mewgenics.exe \
@@ -32,6 +44,30 @@ jobs:
               | sed -n '/^[ ]*[0-9a-f]* </,$p' >> out/disasm.txt
           done
           wc -l out/disasm.txt
+      - name: Lift C++
+        run: |
+          cmake -B build-lift -G Ninja -DCMAKE_BUILD_TYPE=Release > out/lift_cfg.log 2>&1
+          cmake --build build-lift --target mew_lifter -j"$(nproc)" 2>&1 | tail -5
+          ./build-lift/mew_lifter --funcs --exe Mewgenics.exe > out/funcs.txt 2>/dev/null || true
+          for VA in $(echo "${{ inputs.vas }}" | tr ',' ' '); do
+            TAG=$(echo "$VA" | sed 's/0x//')
+            ./build-lift/mew_lifter --lift "$VA" --exe Mewgenics.exe --out "out/lifted_$TAG.cpp" > "out/lift_$TAG.log" 2>&1 || true
+            echo "===== $VA =====" >> out/lift_index.txt
+            cat "out/lift_$TAG.log" >> out/lift_index.txt
+          done
+          python3 - <<'PY2' >> out/lift_index.txt
+          vas=[0x140d6e8bc,0x140d6cb90,0x140d6cd78,0x140d70c00,0x140d6d1f8,0x140d6bc64]
+          try:
+              fns=[l.split() for l in open('out/funcs.txt') if l.strip()]
+              fns=[(int(a,16),int(b)) for a,b in fns]
+          except Exception as e:
+              fns=[]; print('funcs parse err',e)
+          for v in vas:
+              near=[f for f in fns if v-0x40<=f[0]<=v+0x40]
+              print('probe=0x%x near=%s'%(v,[('0x%x'%a,b) for a,b in near]))
+          PY2
+          ls -l out/ | head -20
+
       - name: pdata + imports + init table
         run: |
           python3 - <<'PY' > out/meta.txt 2>&1
