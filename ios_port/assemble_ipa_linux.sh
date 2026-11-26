@@ -18,7 +18,7 @@ OUT="${OUT:-${ROOT}/out}"
 PROD="${OUT}/products"
 REPORT="${OUT}/assemble_report.txt"
 # 版本号唯一来源：IPA 文件名与 Info.plist 必须同源，否则真机上核对版本会误判（P2-1）
-VER="${IPA_VERSION:-0.11.2}"
+VER="${IPA_VERSION:-0.11.3}"
 mkdir -p "$OUT"
 : > "$REPORT"
 say() { echo "==> [$(date +%H:%M:%S)] $*" | tee -a "$REPORT"; }

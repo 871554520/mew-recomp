@@ -38,6 +38,10 @@ extern int rename(const char*, const char*);
 extern int snprintf(char*, size_t, const char*, ...);
 extern int vsnprintf(char*, size_t, const char*, va_list);
 extern void exit(int);
+extern void _exit(int);
+// Darwin 的信号处理装法：signal() 的 ABI 最简单，不需要 sigaction 结构体布局
+typedef void (*mew_sighandler_t)(int);
+extern mew_sighandler_t signal(int, mew_sighandler_t);
 extern int _NSGetExecutablePath(char*, unsigned*);
 extern unsigned _dyld_image_count(void);
 extern const char* _dyld_get_image_name(unsigned);
@@ -82,6 +86,23 @@ static void say(const char* fmt, ...) {
     if ((size_t)n >= sizeof buf) n = (int)sizeof buf - 1;
     if (g_logfd >= 0) { (void)write(g_logfd, buf, (size_t)n); }
     (void)write(2, buf, (size_t)n);
+}
+
+// 崩溃处理器：真机上最怕「App 直接消失、日志没有任何交代」。
+// say() 只用栈缓冲 + write()，在信号上下文里是安全的；打完这一行再退出，
+// 配合 mew.log 里崩溃前的最后几行，就能定位到「在哪个阶段死的」。
+static void mew_crash_handler(int sig) {
+    say("\n[host] CRASH signal=%d —— 进程在这里被判死，看上一行日志定位\n", sig);
+    if (g_logfd >= 0) close(g_logfd);
+    _exit(128 + (sig & 0x7f));
+}
+
+static void install_crash_handlers(void) {
+    (void)signal(11, mew_crash_handler);   // SIGSEGV
+    (void)signal(10, mew_crash_handler);   // SIGBUS
+    (void)signal(6,  mew_crash_handler);   // SIGABRT
+    (void)signal(4,  mew_crash_handler);   // SIGILL
+    (void)signal(8,  mew_crash_handler);   // SIGFPE
 }
 
 static const char* exe_dir(void) {
@@ -328,6 +349,7 @@ static int app_main(int argc, char** argv) {
 // ---------------- 入口：必须走 SDL_RunApp（iOS 靠它进 UIApplicationMain） ----------------
 int main(int argc, char** argv) {
     int logged = logs_setup();
+    install_crash_handlers();
     say("\n[host 0] main() entered, logs_setup=%d\n", logged);
 
     // 先用 dlopen 把 SDL3 拉进来，再 dlsym 取 SDL_RunApp：
