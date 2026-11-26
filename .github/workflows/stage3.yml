@@ -361,7 +361,8 @@ jobs:
             ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_bt.out 2> generated/runner_bt.err || RC=$?
           echo "runner_bt rc=$RC"
           echo "watch_w=$(grep -c '\[watch\] W' generated/runner_bt.err || true)"
-          (grep -E '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err || true) | head -80 || true
+          (grep -nE '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err > generated/bt_grep.txt || true)
+          head -40 generated/bt_grep.txt || true
           # 第三趟：真正打开 SEH 派发（MEW_SEH_DISPATCH=1），看 try/catch 能不能落地
           RC=0
           MEW_SEH_DISPATCH=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 180 \
