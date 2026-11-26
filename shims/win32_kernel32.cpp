@@ -798,6 +798,7 @@ void shim_KERNEL32_RtlCaptureContext(X64Ctx* c) {
 }
 
 void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx* c) {
+    seh::ensure_ready();
     uint64_t pc = arg0(c);
     seh::FuncEntry fe;
     if (!seh::lookup_function_entry(pc, &fe)) { ret0(c, 0); return; }
@@ -810,6 +811,7 @@ void shim_KERNEL32_RtlVirtualUnwind(X64Ctx* c) {
     const uint64_t control_pc = arg2(c);
     const uint64_t context_va = arg4(c);
     const uint64_t handler_data = arg5(c);
+    seh::ensure_ready();
     if (!context_va) { ret0(c, 0); return; }
     seh::Ctx64 w;
     std::memcpy(&w, reinterpret_cast<const void*>(uintptr_t(context_va)), sizeof(w));
