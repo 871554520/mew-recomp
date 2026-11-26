@@ -35,6 +35,7 @@ extern int access(const char*, int);
 extern int unlink(const char*);
 extern int rename(const char*, const char*);
 extern int snprintf(char*, size_t, const char*, ...);
+extern int vsnprintf(char*, size_t, const char*, va_list);
 extern void exit(int);
 extern int _NSGetExecutablePath(char*, unsigned*);
 extern unsigned _dyld_image_count(void);
