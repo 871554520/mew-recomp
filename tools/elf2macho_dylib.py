@@ -391,7 +391,13 @@ class MachO:
             si, so = seg_of_va(va + elf_base)
             if si is None:
                 continue
-            bind_blob += bytes([0x11, self.ordinal[dll]])
+            ordv = self.ordinal[dll]
+            # SET_DYLIB_ORDINAL_IMM：低 4 位就是序号本身，**不能再跟一个字节**
+            # （之前写成 [0x11, 序号]，多出的那 1 字节被 dyld/LLVM 当成下一条
+            #  opcode；shim 的序号是 3 → 0x03 = BIND_OPCODE_DONE，整张 bind 表
+            #  在第一项就被判定结束，所以 --bind 永远只输出 0 条。）
+            assert 0 < ordv < 16, '依赖库序号超出 SET_DYLIB_ORDINAL_IMM: %d' % ordv
+            bind_blob += bytes([0x10 | ordv])
             if add:
                 bind_blob += bytes([0x60]) + sleb(add)
             bind_blob += bytes([0x40]) + sym_out.encode() + b'\0'   # flags=0, 名字紧随
