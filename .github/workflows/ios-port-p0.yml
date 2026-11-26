@@ -1,0 +1,59 @@
+name: iOS port P0 (load libmain.so on macOS arm64)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ios_port/**
+
+jobs:
+  p0:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble APK from parts
+        run: |
+          set -e
+          ls -l ios_port/vendor/ || true
+          cat ios_port/vendor/apk_part_*.bin > /tmp/app.apk
+          ls -l /tmp/app.apk
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('/tmp/app.apk')
+          with open('/tmp/libmain.so', 'wb') as f:
+              f.write(z.read('lib/arm64-v8a/libmain.so'))
+          print('libmain.so ->', '/tmp/libmain.so')
+          PY
+          ls -l /tmp/libmain.so
+          file /tmp/libmain.so || true
+
+      - name: Build p0 loader (arm64)
+        run: |
+          set -e
+          clang -O2 -std=c11 -o /tmp/p0_report ios_port/p0_report.c ios_port/elf_loader.c
+          file /tmp/p0_report || true
+
+      - name: Run P0 report
+        run: |
+          set +e
+          /tmp/p0_report /tmp/libmain.so > /tmp/p0_report.txt 2>&1
+          echo "exit=$?"
+          sed -n 1,60p /tmp/p0_report.txt
+
+      - name: Try init_array
+        run: |
+          set +e
+          /tmp/p0_report /tmp/libmain.so --run-init > /tmp/p0_init.txt 2>&1
+          echo "exit=$?"
+          tail -40 /tmp/p0_init.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-port-p0
+          path: |
+            /tmp/p0_report.txt
+            /tmp/p0_init.txt
+            /tmp/p0_report
