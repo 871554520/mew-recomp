@@ -362,6 +362,16 @@ jobs:
           echo "runner_bt rc=$RC"
           echo "watch_w=$(grep -c '\[watch\] W' generated/runner_bt.err || true)"
           (grep -E '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err || true) | head -80 || true
+          # 第三趟：真正打开 SEH 派发（MEW_SEH_DISPATCH=1），看 try/catch 能不能落地
+          RC=0
+          MEW_SEH_DISPATCH=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 180 \
+            ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_se.out 2> generated/runner_se.err || RC=$?
+          echo "runner_se rc=$RC"
+          echo "seh_frames=$(grep -c '\[seh\] depth=' generated/runner_se.err || true)"
+          echo "seh_handlers=$(grep -c 'handler 0x' generated/runner_se.err || true)"
+          echo "seh_resume=$(grep -c 'RESUME #' generated/runner_se.err || true)"
+          echo "seh_unhandled=$(grep -c 'unhandled' generated/runner_se.err || true)"
+          (grep -E '\[seh\]' generated/runner_se.err || true) | head -60 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -403,6 +413,8 @@ jobs:
             generated/runner_b.err
             generated/runner_bt.out
             generated/runner_bt.err
+            generated/runner_se.out
+            generated/runner_se.err
             generated/stage3b_abort_chain.txt
             generated/runner_nosafe.out
             generated/runner_nosafe.err
