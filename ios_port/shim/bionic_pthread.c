@@ -146,9 +146,6 @@ int bionic_pthread_rwlock_unlock(void* l) {
 }
 
 // ---------------- 直接透传的那些（签名/AArch64 约定一致） ----------------
-int bionic_pthread_create(pthread_t* t, const void* attr, void* (*fn)(void*), void* arg) {
-    return pthread_create(t, (const pthread_attr_t*)attr, fn, arg);
-}
 int bionic_pthread_join(pthread_t t, void** r) { return pthread_join(t, r); }
 int bionic_pthread_detach(pthread_t t) { return pthread_detach(t); }
 void bionic_pthread_exit(void* r) { pthread_exit(r); }
@@ -159,21 +156,42 @@ int bionic_pthread_key_delete(unsigned k) { return pthread_key_delete(k); }
 void* bionic_pthread_getspecific(unsigned k) { return pthread_getspecific(k); }
 int bionic_pthread_setspecific(unsigned k, const void* v) { return pthread_setspecific(k, v); }
 
+// pthread_attr_t：Bionic 56B / Darwin 64B，直接透传会写穿 8 字节栈内存。
+// 做法：在自己的 56B 结构里只存 detachstate + stacksize，pthread_create 时临时构造 Darwin attr。
+typedef struct {
+    uint32_t detachstate;   // 0 = joinable, 1 = detached
+    uint32_t _pad;
+    uint64_t stacksize;
+} bionic_attr;
+
 int bionic_pthread_attr_init(void* a) {
     memset(a, 0, BIONIC_ATTR_SIZE);
-    return pthread_attr_init((pthread_attr_t*)a) == 0 ? 0 : 22;
+    return 0;
 }
-int bionic_pthread_attr_destroy(void* a) { return pthread_attr_destroy((pthread_attr_t*)a); }
+int bionic_pthread_attr_destroy(void* a) { (void)a; return 0; }
 int bionic_pthread_attr_setdetachstate(void* a, int s) {
-    return pthread_attr_setdetachstate((pthread_attr_t*)a, s) == 0 ? 0 : 22;
+    ((bionic_attr*)a)->detachstate = (uint32_t)s;
+    return 0;
 }
 int bionic_pthread_attr_setstacksize(void* a, size_t s) {
-    return pthread_attr_setstacksize((pthread_attr_t*)a, s) == 0 ? 0 : 22;
+    ((bionic_attr*)a)->stacksize = (uint64_t)s;
+    return 0;
 }
-int bionic_pthread_mutexattr_init(void* a) { return pthread_mutexattr_init((pthread_mutexattr_t*)a); }
-int bionic_pthread_mutexattr_destroy(void* a) { return pthread_mutexattr_destroy((pthread_mutexattr_t*)a); }
+int bionic_pthread_create(pthread_t* t, const void* attr, void* (*fn)(void*), void* arg) {
+    if (!attr) return pthread_create(t, NULL, fn, arg) == 0 ? 0 : 11;
+    const bionic_attr* ba = (const bionic_attr*)attr;
+    pthread_attr_t da;
+    pthread_attr_init(&da);
+    if (ba->stacksize) pthread_attr_setstacksize(&da, (size_t)ba->stacksize);
+    pthread_attr_setdetachstate(&da, ba->detachstate ? PTHREAD_CREATE_DETACHED : PTHREAD_CREATE_JOINABLE);
+    int r = pthread_create(t, &da, fn, arg);
+    pthread_attr_destroy(&da);
+    return r == 0 ? 0 : 11;
+}
+
+int bionic_pthread_mutexattr_init(void* a) { memset(a, 0, 8); return 0; }
+int bionic_pthread_mutexattr_destroy(void* a) { (void)a; return 0; }
 int bionic_pthread_mutexattr_settype(void* a, int t) {
-    // Bionic 的 PTHREAD_MUTEX_RECURSIVE 与 Darwin 数值不同（bionic 1 / darwin 2）
-    int dt = (t == 1) ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_NORMAL;
-    return pthread_mutexattr_settype((pthread_mutexattr_t*)a, dt);
+    *(int*)a = t;   // 先记住，mutex_init 时再翻译成 Darwin 类型
+    return 0;
 }
