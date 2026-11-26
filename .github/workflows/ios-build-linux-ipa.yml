@@ -214,12 +214,23 @@ jobs:
             cat out/assemble_report.txt 2>/dev/null
           } > diag-ios.txt
           wc -l diag-ios.txt
+          # 在临时仓库里做「单文件根提交」再 force-push。
+          # 不要在本仓库里用 git checkout --orphan + git rm --cached：
+          # 实测在这个 job 里 rm --cached 不生效，孤儿提交会把整个仓库（含
+          # .github/workflows/**）一起带上，GITHUB_TOKEN 不允许推送工作流文件，
+          # 于是 push 被静默拒绝、诊断分支永远停在旧内容。
+          ORIG="$(git -C "$GITHUB_WORKSPACE" config --get remote.origin.url)"
+          HDR="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
+          TMP="$(mktemp -d)"
+          cp diag-ios.txt "$TMP/"
+          cd "$TMP"
+          git init -q
           git config user.name "ci-diag"
           git config user.email "ci-diag@users.noreply.github.com"
-          git checkout -q --orphan diagtmp 2>/dev/null || git checkout -q diagtmp
-          git rm -rq --cached . >/dev/null 2>&1
+          [ -n "$HDR" ] && git config http.https://github.com/.extraheader "$HDR"
           git add -f diag-ios.txt
-          git commit -q -m "ios diag: run ${{ github.run_id }}" || echo "无新内容"
+          git commit -q -m "ios diag: run ${{ github.run_id }}"
+          git remote add origin "$ORIG"
           git push -q -f origin HEAD:ci-diag-ios && echo "已发布到 ci-diag-ios"
 
   # ---------- C. 只在需要刷新三件产物时才跑 macOS ----------
