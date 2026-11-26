@@ -20,6 +20,7 @@
 
 #include "x64_runtime.h"
 #include "win32_common.h"
+#include "seh_x64.h"
 
 // ---- 前向声明：动态加载表可能在定义之前引用 ----
 void shim_KERNEL32_FlsAlloc(X64Ctx*);
@@ -784,12 +785,56 @@ void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
 }
 
 void shim_KERNEL32_RtlCaptureContext(X64Ctx* c) {
-    if (arg0(c)) std::memset(guest_ptr_from_ctx(c, arg0(c)), 0, 0x4d0);
+    uint64_t dst = arg0(c);
+    if (!dst) { ret0(c, 0); return; }
+    std::memset(reinterpret_cast<void*>(uintptr_t(dst)), 0, seh::kContextSize);
+    seh::Ctx64 w;
+    seh::ctx_to_win(c, &w);
+    w.Rip = 0;
+    std::memcpy(&w.Rip, reinterpret_cast<const void*>(uintptr_t(c->rsp)), 8);  // 返回地址
+    w.Rsp = c->rsp + 8;
+    std::memcpy(reinterpret_cast<void*>(uintptr_t(dst)), &w, sizeof(w));
     ret0(c, 0);
 }
-void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_RtlVirtualUnwind(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_RtlUnwindEx(X64Ctx* c) { ret0(c, 0); }
+
+void shim_KERNEL32_RtlLookupFunctionEntry(X64Ctx* c) {
+    uint64_t pc = arg0(c);
+    seh::FuncEntry fe;
+    if (!seh::lookup_function_entry(pc, &fe)) { ret0(c, 0); return; }
+    if (arg1(c)) std::memcpy(reinterpret_cast<void*>(uintptr_t(arg1(c))), &seh::image().base, 8);
+    ret0(c, fe.entry_va);
+}
+
+void shim_KERNEL32_RtlVirtualUnwind(X64Ctx* c) {
+    // (HandlerType, ImageBase, ControlPc, FunctionEntry, ContextRecord, HandlerData)
+    const uint64_t control_pc = arg2(c);
+    const uint64_t context_va = arg4(c);
+    const uint64_t handler_data = arg5(c);
+    if (!context_va) { ret0(c, 0); return; }
+    seh::Ctx64 w;
+    std::memcpy(&w, reinterpret_cast<const void*>(uintptr_t(context_va)), sizeof(w));
+    uint64_t handler = 0, estab = 0;
+    seh::virtual_unwind(control_pc, &w, &handler, &estab, false);
+    std::memcpy(reinterpret_cast<void*>(uintptr_t(context_va)), &w, sizeof(w));
+    if (handler_data) std::memcpy(reinterpret_cast<void*>(uintptr_t(handler_data)), &estab, 8);
+    ret0(c, handler);
+}
+
+void shim_KERNEL32_RtlUnwindEx(X64Ctx* c) {
+    // (TargetFrame, TargetIp, ExceptionRecord, ReturnValue, ContextRecord, HistoryTable)
+    const uint64_t target_frame = arg0(c);
+    const uint64_t target_ip = arg1(c);
+    std::fprintf(stderr, "[shim] RtlUnwindEx(frame=0x%llx ip=0x%llx)\n",
+                 (unsigned long long)target_frame, (unsigned long long)target_ip);
+    if (target_ip && seh::seh_dispatch_enabled()) {
+        seh::Ctx64 w;
+        seh::ctx_to_win(c, &w);
+        w.Rsp = target_frame;
+        w.Rax = arg3(c);
+        seh::resume_at(target_ip, w);
+    }
+    ret0(c, 0);
+}
 void shim_KERNEL32_RtlPcToFileHeader(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_TerminateProcess(X64Ctx* c) {
     std::fprintf(stderr, "[shim] TerminateProcess(code=%u)\n", (unsigned)arg1(c));
@@ -911,12 +956,33 @@ void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
 }
 
 void shim_KERNEL32_RaiseException(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] RaiseException(code=0x%x, flags=0x%x)\n",
-                 (unsigned)arg0(c), (unsigned)arg2(c));
+    const uint32_t code = (uint32_t)arg0(c);
+    const uint32_t flags = (uint32_t)arg2(c);
+    const uint32_t nparams = (uint32_t)arg1(c);
+    std::fprintf(stderr, "[shim] RaiseException(code=0x%x, flags=0x%x, n=%u)\n",
+                 code, flags, nparams);
+    // C++ EH 依赖真正的两阶段派发：先走 .pdata 链条问 personality routine。
+    // MEW_SEH_DISPATCH=1 时才真的调用 handler；否则只打印帧链（观测模式）。
+    const uint64_t* params = arg3(c) ? reinterpret_cast<const uint64_t*>(uintptr_t)arg3(c) : nullptr;
+    if (seh::raise_exception_dispatch(c, code, flags, nparams, params)) return;  // 已接管
     ret0(c, 0);
 }
 
-void shim_KERNEL32_RtlUnwind(X64Ctx* c) { (void)c; }
+void shim_KERNEL32_RtlUnwind(X64Ctx* c) {
+    // RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue)
+    const uint64_t target_frame = arg0(c);
+    const uint64_t target_ip = arg1(c);
+    std::fprintf(stderr, "[shim] RtlUnwind(frame=0x%llx ip=0x%llx)\n",
+                 (unsigned long long)target_frame, (unsigned long long)target_ip);
+    if (target_ip && seh::seh_dispatch_enabled()) {
+        seh::Ctx64 w;
+        seh::ctx_to_win(c, &w);
+        w.Rsp = target_frame;
+        ret0(c, arg3(c));
+        seh::resume_at(target_ip, w);
+    }
+    ret0(c, 0);
+}
 
 void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
     // (cp, dwFlags, lpWide, cchWide, lpMulti, cbMulti, lpDefault, pfUsed)
