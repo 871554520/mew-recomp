@@ -136,12 +136,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: mewhost-linux
-          path: out/products_new
+          path: out/hostnew
       - name: 覆盖 + 复核
         run: |
           set -euo pipefail
-          ls -l out/products_new
-          cp out/products_new/MewHost out/products/MewHost
+          echo "===== 下载到的内容 ====="; find out/hostnew -type f | head -10
+          NEW=$(find out/hostnew -name MewHost -type f | head -1)
+          [ -n "$NEW" ] || { echo "::error::没找到下载的 MewHost"; exit 1; }
+          cp "$NEW" out/products/MewHost
           chmod +x out/products/MewHost
           strings out/products/MewHost | grep -q SDL_RunApp || { echo "::error::新 MewHost 没 SDL_RunApp"; exit 1; }
           strings out/products/MewHost | grep -q mew.log    || { echo "::error::新 MewHost 没 mew.log"; exit 1; }
