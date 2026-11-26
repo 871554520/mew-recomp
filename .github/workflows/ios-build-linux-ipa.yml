@@ -110,6 +110,9 @@ jobs:
     needs: [prepare-dylib, build-host-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 末尾把打包报告 force-push 到 ci-diag-ios 分支（公开可读）
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -180,6 +183,32 @@ jobs:
             out/assemble_report.txt
           if-no-files-found: warn
           retention-days: 7
+
+      # IPA 本身要走 artifact（要 token），但「这轮出了什么、多大、校验收没通过」
+      # 可以公开：force-push 到孤儿分支 ci-diag-ios，任何人 raw 就能读。
+      - name: 发布打包摘要到分支 ci-diag-ios
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          {
+            echo "repo=${{ github.repository }} run=${{ github.run_id }} sha=${{ github.sha }} at=$(date -u +%FT%TZ)"
+            echo
+            echo '===== IPA 文件 ====='
+            ls -l out/*.ipa 2>/dev/null
+            sha256sum out/*.ipa 2>/dev/null
+            echo
+            echo '===== 打包报告（assemble_report.txt）====='
+            cat out/assemble_report.txt 2>/dev/null
+          } > diag-ios.txt
+          wc -l diag-ios.txt
+          git config user.name "ci-diag"
+          git config user.email "ci-diag@users.noreply.github.com"
+          git checkout -q --orphan diagtmp 2>/dev/null || git checkout -q diagtmp
+          git rm -rq --cached . >/dev/null 2>&1
+          git add -f diag-ios.txt
+          git commit -q -m "ios diag: run ${{ github.run_id }}" || echo "无新内容"
+          git push -q -f origin HEAD:ci-diag-ios && echo "已发布到 ci-diag-ios"
 
   # ---------- C. 只在需要刷新三件产物时才跑 macOS ----------
   refresh-mac-products:

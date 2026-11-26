@@ -10,6 +10,9 @@ jobs:
   full:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # 末尾要把诊断摘要 force-push 到 ci-diag-stage3 分支（公开可读，免 token 取日志）
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -454,3 +457,48 @@ jobs:
             generated/stage3b/manifest.tsv
             discovered_entries.txt
           if-no-files-found: warn
+
+      # 日志接口要 admin 权限（403），artifact 也要 token。把本轮诊断摘要
+      # force-push 到一个孤儿分支，任何人用 raw.githubusercontent 就能读。
+      # 设成 always + continue-on-error：这一步失败绝不影响构建结论。
+      - name: 发布诊断摘要到分支 ci-diag-stage3
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          {
+            echo "repo=${{ github.repository }} run=${{ github.run_id }} sha=${{ github.sha }} at=$(date -u +%FT%TZ)"
+            echo "compile_errors=$(grep -c 'error:' generated/compile.log 2>/dev/null)"
+            echo "unimpl_api_lines=$(grep -c '\[UNIMPL API\]' generated/runner.err 2>/dev/null)"
+            echo "unimpl_insn_lines=$(grep -c '\[UNIMPL INSN\]' generated/runner.err 2>/dev/null)"
+            echo "unimpl_func_lines=$(grep -c '\[UNIMPL FUNC\]' generated/runner.err 2>/dev/null)"
+            echo
+            echo '===== UNIMPL API TABLE（聚合表）====='
+            grep -A30 'UNIMPL API TABLE' generated/runner.err 2>/dev/null | head -36
+            echo
+            echo '===== runner.err 末尾 30 行 ====='
+            tail -30 generated/runner.err 2>/dev/null
+            echo
+            echo '===== runner_b（第二次构建，600s/120s 长跑）====='
+            tail -25 generated/runner_b.err 2>/dev/null
+            echo
+            echo '===== runner_nosafe（关 SAFE_MEM，看真崩溃点）====='
+            grep -A14 '\[CRASH\]' generated/runner_nosafe.err 2>/dev/null | head -20
+            echo
+            echo '===== SEH 派发统计 ====='
+            grep -E 'RESUME|unhandled|handler 0x|seh' generated/runner_se.err 2>/dev/null | head -20
+            echo
+            echo '===== gpak（资源包）路径 ====='
+            grep -E 'resources\.gpak|CreateFileW|GPAK' generated/runner.err generated/gpak_*.err 2>/dev/null | head -20
+            echo
+            echo '===== ABI 违规（前 10）====='
+            grep 'ABI VIOLATION' generated/runner_nosafe.err generated/runner_b.err 2>/dev/null | head -10
+          } > diag-summary.txt
+          wc -l diag-summary.txt
+          git config user.name "ci-diag"
+          git config user.email "ci-diag@users.noreply.github.com"
+          git checkout -q --orphan diagtmp 2>/dev/null || git checkout -q diagtmp
+          git rm -rq --cached . >/dev/null 2>&1
+          git add -f diag-summary.txt
+          git commit -q -m "stage3 diag: run ${{ github.run_id }}" || echo "无新内容"
+          git push -q -f origin HEAD:ci-diag-stage3 && echo "已发布到 ci-diag-stage3"
