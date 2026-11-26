@@ -27,6 +27,7 @@ extern int open(const char*, int, ...);
 extern off_t lseek(int, off_t, int);
 extern int close(int);
 extern ssize_t write(int, const void*, size_t);
+extern ssize_t read(int, void*, size_t);
 extern int dup2(int, int);
 extern int mkdir(const char*, unsigned);
 extern int chdir(const char*);
@@ -148,6 +149,42 @@ static const char* get_dlerror(void) {
     return e ? e : "unknown";
 }
 
+// gpak 可能被放到 Documents/ 或 Documents/game/（iOS「文件」App 里很容易放错层级）。
+// 这里把所有候选都探一遍并逐条记日志，然后用**实际找到的那个目录**当工作目录。
+static const char* find_gpak_dir(void) {
+    static char cand[6][1500];
+    const char* home = getenv("HOME");
+    if (!home) return 0;
+    snprintf(cand[0], sizeof cand[0], "%s/Documents/game/resources.gpak", home);
+    snprintf(cand[1], sizeof cand[1], "%s/Documents/resources.gpak", home);
+    snprintf(cand[2], sizeof cand[2], "%s/Documents/game/game/resources.gpak", home);
+    snprintf(cand[3], sizeof cand[3], "%s/Documents/Resources/resources.gpak", home);
+    static const char* tag[4] = { "Documents/game", "Documents", "Documents/game/game", "Documents/Resources" };
+    for (int i = 0; i < 4; i++) {
+        long sz = file_size(cand[i]);
+        say("[host] 探测 %-22s -> %s%s%ld\n", tag[i], sz >= 0 ? "存在 size=" : "不存在",
+            sz >= 0 ? "" : "", sz);
+        if (sz >= 0) {
+            // 顺便把 gpak 头 16 字节打出来，确认是容器而不是空文件/占位文件
+            int fd = open(cand[i], O_RDONLY);
+            if (fd >= 0) {
+                unsigned char hd[16];
+                long got = (long)read(fd, hd, 16);
+                close(fd);
+                if (got > 0) {
+                    char hex[64];
+                    int n = 0;
+                    for (long k = 0; k < got && n < 48; k++)
+                        n += snprintf(hex + n, sizeof hex - n, "%02x", hd[k]);
+                    say("[host] gpak 头 16 字节：%s\n", hex);
+                }
+            }
+            return tag[i];
+        }
+    }
+    return 0;
+}
+
 static void* find_mew_header(void) {
     unsigned n = _dyld_image_count();
     for (unsigned i = 0; i < n; i++) {
@@ -167,7 +204,27 @@ static int app_main(int argc, char** argv) {
     write_lowmem_once(g_game);
 
     long gsz = file_size(g_gpak);
-    say("[host 2] gpak exists=%s size=%ld\n", gsz >= 0 ? "yes" : "no", gsz);
+    const char* found = (gsz >= 0) ? "Documents/game" : find_gpak_dir();
+    say("[host 2] gpak exists=%s size=%ld dir=%s\n",
+        gsz >= 0 ? "yes" : (found ? "yes(其他目录)" : "no"), gsz,
+        found ? found : "-");
+    if (gsz < 0 && found) {
+        // 找到了但不在 game/ 下：把工作目录切到它所在的目录
+        const char* home = getenv("HOME");
+        if (home) {
+            if (found[0] == 'D' && mew_has(found, "Documents/game/game")) {
+                snprintf(g_game, sizeof g_game, "%s/Documents/game/game", home);
+            } else if (mew_has(found, "Documents/game")) {
+                snprintf(g_game, sizeof g_game, "%s/Documents/game", home);
+            } else if (mew_has(found, "Documents/Resources")) {
+                snprintf(g_game, sizeof g_game, "%s/Documents/Resources", home);
+            } else {
+                snprintf(g_game, sizeof g_game, "%s/Documents", home);
+            }
+            say("[host 2b] 改用数据目录：%s\n", g_game);
+            gsz = file_size(g_gpak) >= 0 ? file_size(g_gpak) : 0;
+        }
+    }
 
     // 每个库都先试 @rpath，失败再试绝对路径（Linux 编出来的 MewHost 没有 LC_RPATH，
     // 所以绝对路径这条路是必须的，不能省）。
