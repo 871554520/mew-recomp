@@ -90,7 +90,7 @@ jobs:
 
       - name: Dump hot functions (debug)
         run: |
-          for VA in 140d6ee24 140d6ee34 140d6ee3c 140d6ca68 140d6cb90; do
+          for VA in 140d6ee24 140d6ee34 140d6ee3c 140d6ca68 140d6cb90 140d79870 140d79928 140d79600 140d6ceb4; do
             echo "===== sub_$VA ====="
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -200
           done | tee generated/hot_functions.txt
@@ -345,6 +345,12 @@ jobs:
           echo "fastfail_b=$(grep -c 'FASTFAIL' generated/runner_b.err || true)"
           echo "gpak_refs_b=$(grep -c 'resources.gpak' generated/runner_b.err || true)"
           tail -25 generated/runner_b.err
+          # 复跑一次，只看 abort 判定函数 0x140d79870 的入参（rcx/rdx 与 [rcx+0x88]/[rdx]）
+          RC=0
+          MEW_TRACE_FN=0x140d79870 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 \
+            ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_bt.out 2> generated/runner_bt.err || RC=$?
+          echo "runner_bt rc=$RC"
+          grep -E '^\[fn\]|^\[FASTFAIL\]|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err | head -60
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -384,6 +390,8 @@ jobs:
             generated/all_seeds.txt
             generated/runner_b.out
             generated/runner_b.err
+            generated/runner_bt.out
+            generated/runner_bt.err
             generated/runner_nosafe.out
             generated/runner_nosafe.err
             generated/gpak_direct.log
