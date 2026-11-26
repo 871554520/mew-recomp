@@ -141,6 +141,13 @@ static void write_lowmem_once(const char* base) {
     say("[host] 已写入低内存配置：%s\n", cfg);
 }
 
+// dlerror() 是会「清空」的：连续调两次，第二次返回 NULL。
+// 之前日志里 dlopen shim -> 0x0 (null) 就是这么来的 —— 明明有错误信息却打成 (null)。
+static const char* get_dlerror(void) {
+    const char* e = dlerror();
+    return e ? e : "unknown";
+}
+
 static void* find_mew_header(void) {
     unsigned n = _dyld_image_count();
     for (unsigned i = 0; i < n; i++) {
@@ -162,10 +169,24 @@ static int app_main(int argc, char** argv) {
     long gsz = file_size(g_gpak);
     say("[host 2] gpak exists=%s size=%ld\n", gsz >= 0 ? "yes" : "no", gsz);
 
+    // 每个库都先试 @rpath，失败再试绝对路径（Linux 编出来的 MewHost 没有 LC_RPATH，
+    // 所以绝对路径这条路是必须的，不能省）。
+    char alt[4300];
     void* h_sdl = dlopen("@rpath/SDL3.framework/SDL3", RTLD_NOW | RTLD_GLOBAL);
-    say("[host] dlopen SDL3 -> %p %s\n", h_sdl, h_sdl ? "" : (dlerror() ? dlerror() : "?"));
+    if (!h_sdl) {
+        snprintf(alt, sizeof alt, "%s/Frameworks/SDL3.framework/SDL3", dir);
+        say("[host] @rpath/SDL3 失败：%s，改试 %s\n", get_dlerror(), alt);
+        h_sdl = dlopen(alt, RTLD_NOW | RTLD_GLOBAL);
+    }
+    say("[host] dlopen SDL3 -> %p %s\n", h_sdl, h_sdl ? "ok" : get_dlerror());
+
     void* h_shim = dlopen("@rpath/libbionic_shim.dylib", RTLD_NOW | RTLD_GLOBAL);
-    say("[host] dlopen shim -> %p %s\n", h_shim, h_shim ? "" : (dlerror() ? dlerror() : "?"));
+    if (!h_shim) {
+        snprintf(alt, sizeof alt, "%s/Frameworks/libbionic_shim.dylib", dir);
+        say("[host] @rpath/shim 失败：%s，改试 %s\n", get_dlerror(), alt);
+        h_shim = dlopen(alt, RTLD_NOW | RTLD_GLOBAL);
+    }
+    say("[host] dlopen shim -> %p %s\n", h_shim, h_shim ? "ok" : get_dlerror());
 
     if (gsz < 0) {
         if (!h_sdl) h_sdl = dlopen("@rpath/SDL3.framework/SDL3", RTLD_NOW | RTLD_GLOBAL);
@@ -191,7 +212,7 @@ static int app_main(int argc, char** argv) {
         say("[host] dlopen %s 失败：%s\n", p3, dlerror() ? dlerror() : "?");
         h = dlopen(MEW_DYLIB_NAME, RTLD_NOW | RTLD_GLOBAL);
     }
-    say("[host 3b] dlopen result h=%p %s\n", h, h ? "" : (dlerror() ? dlerror() : "?"));
+    say("[host 3b] dlopen result h=%p %s\n", h, h ? "ok" : get_dlerror());
     if (!h) return 2;
 
     void* hdr = find_mew_header();
