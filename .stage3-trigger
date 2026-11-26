@@ -1,1 +1,2 @@
 t=1795726400 v0.11.3 round-D: AVX/VEX 指令支持（vmovdqa/vmovdqu/vmovntdq/vpxor/vpcmpeqw/vpmovmskb/vinsertf128/vzeroupper/punpck?qdq）+ USER32 假窗口
+t=1795726400 v0.11.5 round-E: 验证 avx 命名空间别名（shard_049 编译错）

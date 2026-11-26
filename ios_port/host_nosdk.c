@@ -216,6 +216,52 @@ static void* find_mew_header(void) {
 }
 
 // ---------------- 真正的 App 主逻辑（由 SDL_RunApp 回调进来） ----------------
+// ---------------- 预建可写目录 ----------------
+// 存档是 SQLite 库（游戏里是 glaiel::SQLSaveFile，exe 里能搜到 `saves/`、
+// `PRAGMA user_version` 这些串）。SQLite **不会**自己创建目录，而这条链路上的
+// CreateDirectoryW 没有真正生效，于是真机实测就死在
+//     [msgbox] ERROR: unable to open database file
+// 紧接着进程退出（用户看到的就是「闪退」）。所以起游戏之前先把存档/偏好目录
+// 建出来：已有的不动，缺的补上。
+static void mkdir_p(const char* path) {
+    char tmp[2048];
+    size_t n = mew_strlen(path);
+    if (n == 0 || n >= sizeof tmp) return;
+    for (size_t k = 0; k <= n; ++k) tmp[k] = path[k];
+    for (size_t i = 1; i < n; ++i) {
+        if (tmp[i] == '/') {
+            tmp[i] = '\0';
+            mkdir(tmp, 0755);
+            tmp[i] = '/';
+        }
+    }
+    mkdir(tmp, 0755);
+}
+
+static void prepare_writable_dirs(void) {
+    // 假 SteamID 是游戏这条链路里固定的那个（日志里 saves 路径就是它）
+    static const char* steamid = "76561197960265729";
+    static const char* bases[] = { "pref", "C/pref", "Resources/pref" };
+    char b[2048];
+    for (unsigned i = 0; i < sizeof bases / sizeof *bases; ++i) {
+        snprintf(b, sizeof b, "%s/%s/Glaiel Games/Mewgenics", g_docs, bases[i]);
+        mkdir_p(b);
+        snprintf(b, sizeof b, "%s/%s/Glaiel Games/Mewgenics/%s", g_docs, bases[i], steamid);
+        mkdir_p(b);
+        snprintf(b, sizeof b, "%s/%s/Glaiel Games/Mewgenics/%s/saves", g_docs, bases[i], steamid);
+        mkdir_p(b);
+        snprintf(b, sizeof b, "%s/%s/Glaiel Games/Mewgenics/%s/logs", g_docs, bases[i], steamid);
+        mkdir_p(b);
+    }
+    // 还有几种相对 cwd 的写法（`saves/`、`./saves/`）
+    snprintf(b, sizeof b, "%s/saves", g_game);
+    mkdir_p(b);
+    snprintf(b, sizeof b, "%s/logs", g_game);
+    mkdir_p(b);
+    say("[host 3e] 可写目录已预建：%s/pref/…、%s/C/pref/…、%s/saves\n",
+        g_docs, g_docs, g_game);
+}
+
 static int app_main(int argc, char** argv) {
     (void)argc; (void)argv;
     const char* dir = exe_dir();
@@ -293,6 +339,9 @@ static int app_main(int argc, char** argv) {
     if (chdir(g_game) != 0) chdir(dir);
     char cwd[4096];
     if (getcwd(cwd, sizeof cwd)) say("[host] cwd = %s\n", cwd);
+
+    // 必须在起游戏之前：SQLite 存档库要的目录不存在就直接 unable to open database file
+    prepare_writable_dirs();
 
     say("[host 3] before dlopen(%s)\n", MEW_DYLIB_NAME);
     char p3[4200];
