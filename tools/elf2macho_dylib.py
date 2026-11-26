@@ -352,6 +352,11 @@ class MachO:
                     return i, va - p_['vm']
             return None, None
 
+        # rebase/bind opcode 里的 segIndex 其实是「全局节索引」，不是段索引。
+        # __TEXT 有 __text/__eh_frame 两节，所以 __DATA_CONST 的节索引 = 2，__DATA = 3。
+        SECTIONS_PER_SEG = [2, 1, 1]
+        SECIDX = [0, 2, 3]   # 每段「第一节」的全局索引
+
         # ---------- 2) rebase / bind ----------
         rebase_blob = bytearray()
         for va, add in sorted(self.rebases):
@@ -362,7 +367,7 @@ class MachO:
                 # 只读段里的内部指针：写死即可（不行 rebase，dyld 不允许改 __TEXT）
                 struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
                 continue
-            rebase_blob += bytes([0x20 | (si & 0xF)]) + uleb(so) + bytes([0x51])   # SET_SEGMENT_AND_OFFSET_ULEB(seg=si) + DO_REBASE_IMM_TIMES(1)
+            rebase_blob += bytes([0x20 | (SECIDX[si] & 0xF)]) + uleb(so) + bytes([0x51])   # SET_SEGMENT_AND_OFFSET_ULEB(seg=si) + DO_REBASE_IMM_TIMES(1)
             struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
 
         bind_blob = bytearray()
@@ -389,7 +394,7 @@ class MachO:
                 bind_blob += bytes([0x60]) + sleb(add)
             bind_blob += bytes([0x40]) + sym_out.encode() + b'\0'   # flags=0, 名字紧随
             bind_blob += bytes([0x51])
-            bind_blob += bytes([0x70 | (si & 0xF)]) + uleb(so)   # SET_SEGMENT_AND_OFFSET_ULEB
+            bind_blob += bytes([0x70 | (SECIDX[si] & 0xF)]) + uleb(so)   # SET_SEGMENT_AND_OFFSET_ULEB
             bind_blob += bytes([0x90])
             struct.pack_into('<Q', buf, va + elf_base, 0)
 
@@ -444,6 +449,12 @@ class MachO:
                 if ehp:
                     secs += sect('__eh_frame', '__TEXT', elf_base + ehp['va'], ehp['fsz'],
                                  elf_base + ehp['va'], S_REGULAR, 3)
+            if i == 1:
+                secs += sect('__data', '__DATA_CONST', p_['vm'] + p_['lead'], p_['msz'] - p_['lead'],
+                             p_['fileoff'] + p_['lead'], S_REGULAR, 3)
+            elif i == 2:
+                secs += sect('__data', '__DATA', p_['vm'] + p_['lead'], p_['msz'] - p_['lead'],
+                             p_['fileoff'] + p_['lead'], S_REGULAR, 3)
             nsec = len(secs) // 80
             prot = 5 if i == 0 else 3
             maxprot = 5 if i == 0 else 3
