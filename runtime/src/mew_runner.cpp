@@ -4,12 +4,21 @@
 #include <cstring>
 #include <execinfo.h>
 #include <signal.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "x64_runtime.h"
 #include "pe_image.h"
 
 namespace {
+// 每 15 秒采样一次调用环顶部，用来判断"卡死"发生在哪个循环里
+void sample_handler(int) {
+    static int tick = 0;
+    std::fprintf(stderr, "[SAMPLE %d] top frames:\n", ++tick);
+    call_trace().dump_tail(6);
+    std::fflush(stderr);
+}
+
 void timeout_handler(int) {
     std::fprintf(stderr, "\n[TIMEOUT] terminated by watchdog\n");
     call_trace().dump("timeout");
@@ -44,6 +53,18 @@ void install_crash_handler() {
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGALRM, &sa, nullptr);
+
+    if (std::getenv("MEW_SAMPLE_SEC")) {
+        struct sigaction sa2;
+        std::memset(&sa2, 0, sizeof(sa2));
+        sa2.sa_handler = sample_handler;
+        sigaction(SIGALRM, &sa2, nullptr);
+        struct itimerval it;
+        it.it_interval.tv_sec = std::atol(std::getenv("MEW_SAMPLE_SEC"));
+        it.it_interval.tv_usec = 0;
+        it.it_value = it.it_interval;
+        setitimer(ITIMER_REAL, &it, nullptr);
+    }
 }
 }  // namespace
 
