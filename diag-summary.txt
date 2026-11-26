@@ -1,0 +1,121 @@
+repo=871554520/mew-recomp run=45888616405 sha=2b873a8620b6083d08dd6602f2fb0d8f60b32800 at=2026-11-26T20:22:49Z
+compile_errors=0
+unimpl_api_lines=0
+unimpl_insn_lines=0
+unimpl_func_lines=1
+
+===== UNIMPL API TABLE（聚合表）=====
+===== UNIMPL API TABLE (timeout) distinct=0 total=0 =====
+===== UNIMPL FUNC TABLE (timeout) distinct=1 total=1 =====
+  0x140dabfe0        1
+
+===== runner.err 末尾 30 行 =====
+  [455] FUNC sub_0x140035bd0 (rcx=0x1413baa10 ret=0x140d3e6d1)
+  [456] FUNC sub_0x140050fa0 (rcx=0x1413baa10 ret=0x140d3e6d6)
+  [457] FUNC sub_0x140d6b650 (rcx=0x0 ret=0x140d3e6dd)
+  [458] FUNC sub_0x140d6cde0 (rcx=0x0 ret=0x140d6b65d)
+  [459] FUNC sub_0x140d6ee34 (rcx=0x2 ret=0x140d6ce09)
+  [460] FUNC sub_0x14014e250 (rcx=0x0 ret=0x140d3e6e2)
+  [461] FUNC sub_0x140d6a834 (rcx=0x0 ret=0x140d3e6eb)
+  [462] FUNC sub_0x140d6a36c (rcx=0x0 ret=0x140d3e6eb)
+  [463] FUNC sub_0x140d79928 (rcx=0x0 ret=0x140d6a38a)
+  [464] FUNC sub_0x140d79d14 (rcx=0x0 ret=0x140d6a38f)
+  [465] FUNC sub_0x140d6e80c (rcx=0x0 ret=0x140d79d95)
+  [466] FUNC sub_0x140d6d1f8 (rcx=0x8 ret=0x140d79daf)
+  [467] FUNC sub_0x140d6e80c (rcx=0x0 ret=0x140d79de3)
+  [468] FUNC sub_0x140d6d140 (rcx=0x0 ret=0x140d79df8)
+  [469] FUNC sub_0x140d6a450 (rcx=0x200002920 ret=0x140d6a3ab)
+  [470] FUNC sub_0x140d6e8bc (rcx=0x2 ret=0x140d6a4ab)
+  [471] FUNC sub_0x140d6e8bc (rcx=0x9 ret=0x140d6a4e8)
+  [472] FUNC sub_0x140d6c9dc (rcx=0x200002940 ret=0x140d6a4fe)
+  [473] FUNC sub_0x140d6d140 (rcx=0x0 ret=0x140d6a510)
+  [474] FUNC sub_0x140d6d140 (rcx=0x0 ret=0x140d6a52d)
+  [475] FUNC sub_0x140d6d140 (rcx=0x0 ret=0x140d6a3ca)
+  [476] FUNC sub_0x140d6d140 (rcx=0x200002920 ret=0x140d6a3d2)
+  [477] FUNC sub_0x140050fa0 (rcx=0x1 ret=0x140d3e6f0)
+  [478] FUNC sub_0x140d3f080 (rcx=0x1 ret=0x140d3e6f5)
+  [479] FUNC sub_0x140050fa0 (rcx=0x1 ret=0x140d3e6f5)
+====================================
+
+===== UNIMPL API TABLE (timeout) distinct=0 total=0 =====
+===== UNIMPL FUNC TABLE (timeout) distinct=1 total=1 =====
+  0x140dabfe0        1
+
+===== runner_b（第二次构建，600s/120s 长跑）=====
+  [12209] FUNC sub_0x140052a40 (rcx=0x20 ret=0x1400524e7)
+  [12210] FUNC sub_0x140d3e0a4 (rcx=0x20 ret=0x1400524e7)
+  [12211] FUNC sub_0x140d4cb40 (rcx=0x20 ret=0x140d3e0c3)
+  [12212] FUNC sub_0x140d6d1f8 (rcx=0x20 ret=0x140d3e0c3)
+  [12213] FUNC sub_0x140051920 (rcx=0x7f0a399ffac0 ret=0x14023d14a)
+  [12214] FUNC sub_0x140051a60 (rcx=0x200012bdd ret=0x200012784)
+  [12215] FUNC sub_0x14023d680 (rcx=0x1412f70f0 ret=0x14023d16d)
+  [12216] FUNC sub_0x140d1cf80 (rcx=0x24 ret=0x14023d691)
+  [12217] FUNC sub_0x140051350 (rcx=0x7f0a399ffa80 ret=0x14023d6c5)
+  [12218] FUNC sub_0x1400513a2 (rcx=0x7f0a399ffa80 ret=0x20)
+  [12219] FUNC sub_0x140052a40 (rcx=0x20 ret=0x1400513c8)
+  [12220] FUNC sub_0x140d3e0a4 (rcx=0x20 ret=0x1400513c8)
+  [12221] FUNC sub_0x140d4cb40 (rcx=0x20 ret=0x140d3e0c3)
+  [12222] FUNC sub_0x140d6d1f8 (rcx=0x20 ret=0x140d3e0c3)
+  [12223] FUNC sub_0x1400513ed (rcx=0x200012be0 ret=0x20)
+  [12224] FUNC sub_0x140051920 (rcx=0x7f0a399ffac0 ret=0x14023d18c)
+  [12225] FUNC sub_0x140d4ca78 (rcx=0x140000000 ret=0x14023d2bb)
+  [12226] FUNC sub_0x140d4c8ec (rcx=0x0 ret=0x140d4ca91)
+  [12227] FUNC sub_0x140d4c988 (rcx=0x0 ret=0x140d4c93e)
+  [12228] FUNC sub_0x140d4c6d0 (rcx=0x7f0a399ff980 ret=0x140d4c9b2)
+  [12229] FUNC sub_0x140d6d020 (rcx=0x7f0a399ff910 ret=0x140d4c717)
+  [12230] FUNC sub_0x140d6ee34 (rcx=0x2 ret=0x140d6d044)
+  [12231] FUNC sub_0x140d4c73c (rcx=0x1413bb110 ret=0x140d4ca0f)
+  [12232] FUNC sub_0x140d4caa8 (rcx=0x0 ret=0x140d4ca56)
+====================================
+
+===== runner_nosafe（关 SAFE_MEM，看真崩溃点）=====
+[CRASH] signal=11 fault=0x8 frames=12
+./build-stage3/mew_runner(+0x5c31d4)[0x56502ba681d4]
+/lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x7f7f77445330]
+./build-stage3/mew_runner(_Z8mem_readImET_P6X64Ctxm+0xe9)[0x56502ba7c9a9]
+./build-stage3/mew_runner(_Z13sub_140d6af0cP6X64Ctx+0x39e)[0x56503a942b3a]
+./build-stage3/mew_runner(_Z13sub_140d3e738P6X64Ctx+0x825)[0x56503a635f42]
+./build-stage3/mew_runner(_Z17dispatch_indirectmP6X64Ctxb+0x2be)[0x56502ba6a56f]
+./build-stage3/mew_runner(_Z13sub_140d3e8acP6X64Ctx+0x350)[0x56503a637b24]
+./build-stage3/mew_runner(_Z17dispatch_indirectmP6X64Ctxb+0x2be)[0x56502ba6a56f]
+./build-stage3/mew_runner(main+0x782)[0x56502ba68c0a]
+/lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x7f7f7742a1ca]
+/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x7f7f7742a28b]
+./build-stage3/mew_runner(_start+0x25)[0x56502ba67fe5]
+
+===== CALL RING TRACE (crash) =====
+
+===== SEH 派发统计 =====
+[runner] marker: seh headers linked, dispatch=1
+[seh] init_ex base=0x140000000 size=0x1574000 pdata=0x141424000 entries=55712 ready=1
+[seh] dispatch code=0xe06d7363 flags=0x1 throw_pc=0x140d40a0f rsp=0x7f2a1a3ffcb0 dispatch=1
+[seh] depth=1 pc=0x140d40a0f fn=0x140d40978 handler=none/0x0
+[seh]   pc=0x140d40a0f fn=0x140d40978..0x140d40a1f nohandler=0x0 estab=0x7f2a1a3ffd10 -> rip=0x140d1a156 rsp=0x7f2a1a3ffd18
+[seh] depth=2 pc=0x140d1a156 fn=0x140d1a134 handler=none/0x0
+[seh]   pc=0x140d1a156 fn=0x140d1a134..0x140d1a157 nohandler=0x0 estab=0x7f2a1a3ffd60 -> rip=0x14038648a rsp=0x7f2a1a3ffd68
+[seh] depth=3 pc=0x14038648a fn=0x14038647e handler=none/0x0
+[seh]   pc=0x14038648a fn=0x14038647e..0x14038648b nohandler=0x0 estab=0x7f2a1a3ffd90 -> rip=0x1403860e5 rsp=0x7f2a1a3ffd98
+[seh] depth=4 pc=0x1403860e5 fn=0x140385f80 handler=0x140d4014c
+[seh]   handler 0x140d4014c -> 1
+[seh]   pc=0x1403860e5 fn=0x140385f80..0x140386177 handler=0x140d4014c estab=0x7f2a1a3ffdf0 -> rip=0x140025550 rsp=0x7f2a1a3ffdf8
+[seh] depth=5 pc=0x140025550 fn=0x140025400 handler=0x140d4014c
+[seh]   handler 0x140d4014c -> 1
+[seh]   pc=0x140025550 fn=0x140025400..0x140025573 handler=0x140d4014c estab=0x7f2a1a3ffe90 -> rip=0x140d6aef5 rsp=0x7f2a1a3ffe98
+[seh] depth=6 pc=0x140d6aef5 fn=0x140d6aec8 handler=none/0x0
+[seh]   pc=0x140d6aef5 fn=0x140d6aec8..0x140d6af09 nohandler=0x0 estab=0x7f2a1a3ffec0 -> rip=0x140d3e7b4 rsp=0x7f2a1a3ffec8
+[seh] depth=7 pc=0x140d3e7b4 fn=0x140d3e738 handler=0x140d40a3c
+[seh]   handler 0x140d40a3c -> 1
+[seh]   pc=0x140d3e7b4 fn=0x140d3e738..0x140d3e8a9 handler=0x140d40a3c estab=0x7f2a1a3fff00 -> rip=0x0 rsp=0x7f2a1a3fff08
+
+===== gpak（资源包）路径 =====
+
+===== ABI 违规（前 10）=====
+generated/runner_nosafe.err:[ABI VIOLATION] target=0x140d3e654 caller=0x140dab670 rbx:0x140e44898->0x0 rsi:0x0->0x0 rdi:0x140e448e0->0x140e448e0 rbp:0x0->0x0 rsp_delta=0
+generated/runner_nosafe.err:[ABI VIOLATION] target=0x140dab670 caller=0x140d6af0c rbx:0x140e44898->0x0 rsi:0x0->0x0 rdi:0x140e448e0->0x140e448e0 rbp:0x0->0x0 rsp_delta=0
+
+===== 宿主链接（mew_runner 编译）日志末尾 40 行 =====
+
+===== Gate3 链接日志末尾 15 行 =====
+link probe ok sym=0x562fe08cf0c8
+
+===== 分片编译错误（若有）=====
