@@ -559,13 +559,21 @@ void shim_KERNEL32_IsDebuggerPresent(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_GetCurrentProcessId(X64Ctx* c) { ret0(c, (uint64_t)getpid()); }
 void shim_KERNEL32_GetCurrentThreadId(X64Ctx* c) { ret0(c, (uint64_t)(uintptr_t)pthread_self()); }
 void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
-    if (arg0(c)) {
-        uint8_t* p = (uint8_t*)guest_ptr_from_ctx(c, arg0(c));
-        std::memset(p, 0, 48);
-        *(uint32_t*)(p + 0) = 0;       // 架构 x86
-        *(uint32_t*)(p + 20) = 4096;   // 页大小
-        *(uint32_t*)(p + 24) = 0x10000;
-        *(uint32_t*)(p + 32) = 4;      // 处理器数
+    // SYSTEM_INFO（x64 布局，48 字节）。旧实现把页大小写到了 p+20（那是
+    // lpMaximumApplicationAddress 的中间），且把架构报成 x86；这里按 1 核 ARM64 填。
+    const uint64_t p = arg0(c);
+    if (p) {
+        std::memset(guest_ptr_from_ctx(c, p), 0, 48);
+        mem_write<uint16_t>(c, p + 0, 12);                 // PROCESSOR_ARCHITECTURE_ARM64
+        mem_write<uint32_t>(c, p + 4, 0x4000);             // dwPageSize
+        mem_write<uint64_t>(c, p + 8, 0x10000);            // lpMinimumApplicationAddress
+        mem_write<uint64_t>(c, p + 16, 0x7FFFFFFEFFFFULL); // lpMaximumApplicationAddress
+        mem_write<uint64_t>(c, p + 24, 1);                 // dwActiveProcessorMask
+        mem_write<uint32_t>(c, p + 32, 1);                 // dwNumberOfProcessors
+        mem_write<uint32_t>(c, p + 36, 1);                 // dwProcessorType
+        mem_write<uint32_t>(c, p + 40, 0x10000);           // dwAllocationGranularity
+        mem_write<uint16_t>(c, p + 44, 8);                 // wProcessorLevel
+        mem_write<uint16_t>(c, p + 46, 0);                 // wProcessorRevision
     }
     ret0(c, 0);
 }
@@ -883,24 +891,6 @@ void shim_KERNEL32_GlobalMemoryStatusEx(X64Ctx* c) {
         mem_write<uint64_t>(c, p + 56, 0);
     }
     ret0(c, 1);
-}
-void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
-    // SYSTEM_INFO（x64 布局，48 字节）：把宿主当成 1 核 ARM64
-    const uint64_t p = arg0(c);
-    if (p) {
-        std::memset(guest_ptr_from_ctx(c, p), 0, 48);
-        mem_write<uint16_t>(c, p + 0, 12);                 // PROCESSOR_ARCHITECTURE_ARM64
-        mem_write<uint32_t>(c, p + 4, 0x4000);             // dwPageSize
-        mem_write<uint64_t>(c, p + 8, 0x10000);            // lpMinimumApplicationAddress
-        mem_write<uint64_t>(c, p + 16, 0x7FFFFFFEFFFFULL); // lpMaximumApplicationAddress
-        mem_write<uint64_t>(c, p + 24, 1);                 // dwActiveProcessorMask
-        mem_write<uint32_t>(c, p + 32, 1);                 // dwNumberOfProcessors
-        mem_write<uint32_t>(c, p + 36, 1);                 // dwProcessorType
-        mem_write<uint32_t>(c, p + 40, 0x10000);           // dwAllocationGranularity
-        mem_write<uint16_t>(c, p + 44, 8);                 // wProcessorLevel
-        mem_write<uint16_t>(c, p + 46, 0);                 // wProcessorRevision
-    }
-    ret0(c, 0);
 }
 void shim_KERNEL32_GetNativeSystemInfo(X64Ctx* c) { shim_KERNEL32_GetSystemInfo(c); }
 void shim_KERNEL32_SetThreadExecutionState(X64Ctx* c) { (void)c; ret0(c, 1); }

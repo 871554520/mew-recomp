@@ -30,17 +30,23 @@ jobs:
         run: |
           set -euo pipefail
           rc=0
+          : > /tmp/syntax_all.log
           for f in shims/win32_kernel32.cpp runtime/src/mew_runner.cpp runtime/src/pe_image_loader.cpp; do
-            echo "===== $f ====="
-            if ! g++ -std=c++17 -fsyntax-only -Wall -Wextra \
-                   -Wno-unused-parameter -Wno-unused-variable -Wno-sign-compare \
-                   -I runtime/include -I shims "$f" 2>&1 | tee /tmp/"$(basename "$f")".log; then
-              rc=1
-            fi
-            grep -c 'error:' /tmp/"$(basename "$f")".log 2>/dev/null | sed 's/^/    error 行数: /' || echo "    error 行数: 0"
+            echo "===== $f =====" >> /tmp/syntax_all.log
+            g++ -std=c++17 -fsyntax-only -Wall -Wextra \
+                -Wno-unused-parameter -Wno-unused-variable -Wno-sign-compare \
+                -I runtime/include -I shims "$f" >> /tmp/syntax_all.log 2>&1 || rc=1
           done
+          echo "--- 编译输出 ---"
+          cat /tmp/syntax_all.log
+          echo "error 行数: $(grep -c 'error:' /tmp/syntax_all.log || true)"
+          # 把前 10 条 error 转成 GitHub annotation：日志接口要 admin 权限，
+          # 但 check-runs/annotations 是公开可读的，这样谁能读仓库谁就能看到错在哪。
+          grep -m 10 'error:' /tmp/syntax_all.log | while IFS= read -r line; do
+            echo "::error title=compile::$line"
+          done || true
           if [ "$rc" -ne 0 ]; then
-            echo "::error::语法门禁未通过，逐条看上面的 error 行"
+            echo "::error title=syntax-gate::语法门禁未通过（具体错误见上面的 annotations）"
             exit 1
           fi
           echo "语法门禁通过"
