@@ -41,6 +41,17 @@ struct CallRingTrace {
         idx++;
     }
 
+    // 只打印最后 n 帧（周期采样用）
+    void dump_tail(size_t n) const {
+        size_t start = idx > n ? idx - n : 0;
+        for (size_t i = start; i < idx; ++i) {
+            const auto& e = buf[i & (N - 1)];
+            if (e.tag) std::fprintf(stderr, "    [%zu] API  %s\n", i, e.tag);
+            else std::fprintf(stderr, "    [%zu] FUNC sub_0x%llx (rcx=0x%llx)\n", i,
+                              (unsigned long long)e.va, (unsigned long long)e.rcx);
+        }
+    }
+
     void dump(const char* reason) const {
         std::fprintf(stderr, "\n===== CALL RING TRACE (%s) =====\n", reason);
         size_t start = idx > N ? idx - N : 0;
