@@ -65,3 +65,74 @@ int mew_vararg_android_log_print(const uint64_t* x, const uint64_t* d, const uin
     fputc('\n', stderr);
     return 0;
 }
+
+// ---------------- Linux AArch64 va_list -> Darwin 扁平 va_list ----------------
+// Bionic va_list 是 32 字节结构体；q0..q7 保存区每槽 16 字节（不是 8！）。
+typedef struct {
+    uint8_t* __stack;
+    uint8_t* __gr_top;
+    uint8_t* __vr_top;
+    int      __gr_offs;   // 负偏移，步长 +8；>=0 时转 __stack
+    int      __vr_offs;   // 负偏移，步长 +16；>=0 时转 __stack
+} BionicVaList;
+
+static uint64_t mew_next_int(BionicVaList* b) {
+    if (b->__gr_offs < 0) {
+        uint64_t v = *(uint64_t*)(b->__gr_top + b->__gr_offs);
+        b->__gr_offs += 8;
+        return v;
+    }
+    uint64_t v = *(uint64_t*)b->__stack;
+    b->__stack += 8;
+    return v;
+}
+static uint64_t mew_next_fp(BionicVaList* b) {
+    if (b->__vr_offs < 0) {
+        uint64_t v = *(uint64_t*)(b->__vr_top + b->__vr_offs);   // 每槽 16 字节，只取低 8
+        b->__vr_offs += 16;
+        return v;
+    }
+    uint64_t v = *(uint64_t*)b->__stack;
+    b->__stack += 8;
+    return v;
+}
+// 把 bionic __builtin_va_list（已在调用方栈上）重排成 Darwin 的 flat[]
+int mew_va_build_from_bionic(uint64_t* out, int cap, const char* fmt, BionicVaList* ap) {
+    int n = 0;
+    const char* p = fmt;
+    while (p && *p && n < cap) {
+        if (*p != '%') { p++; continue; }
+        p++;
+        if (*p == '%') { p++; continue; }
+        while (*p && strchr("-+ #0'", *p)) p++;
+        if (*p == '*') { out[n++] = mew_next_int(ap); p++; }
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.') {
+            p++;
+            if (*p == '*') { out[n++] = mew_next_int(ap); p++; }
+            while (*p >= '0' && *p <= '9') p++;
+        }
+        while (*p && strchr("hljztLq", *p)) p++;
+        char conv = *p ? *p++ : 0;
+        int is_fp = (conv=='f'||conv=='F'||conv=='e'||conv=='E'||conv=='g'||conv=='G'||conv=='a'||conv=='A');
+        out[n++] = is_fp ? mew_next_fp(ap) : mew_next_int(ap);
+    }
+    return n;
+}
+
+// vfprintf(FILE*, fmt, va_list)：bionic 的 va_list 是结构体指针
+int mew_vararg_vfprintf(FILE* f, const char* fmt, BionicVaList* ap) {
+    uint64_t flat[32];
+    mew_va_build_from_bionic(flat, 32, fmt, ap);
+    return vfprintf(f, fmt, (va_list)flat);
+}
+int mew_vararg_vsnprintf(char* buf, size_t n, const char* fmt, BionicVaList* ap) {
+    uint64_t flat[32];
+    mew_va_build_from_bionic(flat, 32, fmt, ap);
+    return vsnprintf(buf, n, fmt, (va_list)flat);
+}
+int mew_vararg_vasprintf(char** out, const char* fmt, BionicVaList* ap) {
+    uint64_t flat[32];
+    mew_va_build_from_bionic(flat, 32, fmt, ap);
+    return vasprintf(out, fmt, (va_list)flat);
+}
