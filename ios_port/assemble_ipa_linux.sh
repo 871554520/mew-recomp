@@ -94,12 +94,26 @@ print('    SDL3.framework/Info.plist 已补')
 PY
 fi
 
+# 只给「小文件」做 ldid 签名。
+# 实测坑：ldid 给 78 MB 的 libmew_relinked.dylib 签名后会把它截成 77,245,008 B，
+# 导致 __LINKEDIT 覆盖不到 export trie，dyld 报
+#   "LINKEDIT content 'exports trie' extends beyond end of segment"
+# 侧载工具（TrollStore/AltStore/Sideloadly）本来就会重签，所以大文件跳过完全没问题。
+LDID_MAX_BYTES=$((8 * 1024 * 1024))
 if [ -n "$LDID" ]; then
-    say "ad-hoc 签名（ldid）"
-    "$LDID" -S "$APP/Frameworks/SDL3.framework/SDL3" 2>&1 | tee -a "$REPORT" || true
-    "$LDID" -S "$APP/Frameworks/libbionic_shim.dylib" 2>&1 | tee -a "$REPORT" || true
-    "$LDID" -S "$APP/Frameworks/libmew_relinked.dylib" 2>&1 | tee -a "$REPORT" || true
-    "$LDID" -S "$APP/MewHost" 2>&1 | tee -a "$REPORT" || true
+    say "ad-hoc 签名（ldid，仅 ≤8MB 的文件）"
+    for f in "$APP/Frameworks/SDL3.framework/SDL3" "$APP/Frameworks/libbionic_shim.dylib" "$APP/MewHost"; do
+        sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+        if [ "$sz" -le "$LDID_MAX_BYTES" ]; then
+            "$LDID" -S "$f" 2>&1 | tee -a "$REPORT" || true
+            num "ldid $(basename "$f") ($sz B)"
+        else
+            num "跳过 ldid：$(basename "$f") ($sz B > 8MB)"
+        fi
+    done
+    num "跳过 ldid：libmew_relinked.dylib（大文件会被 ldid 截断）"
+else
+    say "没有 ldid，产出未签名包（侧载工具会重签）"
 fi
 
 # 结构自检：必须是 Payload/Mewgenics.app 且可执行位在 MewHost 上
@@ -148,4 +162,38 @@ PY
 fi
 num "app $(du -sm "$APP" | cut -f1) MB"
 num "ipa $(stat -c%s "$IPA" 2>/dev/null || stat -f%z "$IPA") bytes"
+say "打包后完整性校验"
+python3 - "$IPA" "$DYLIB" <<'PY'
+import sys, zipfile, struct
+ipa, src = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(ipa)
+name = 'Payload/Mewgenics.app/Frameworks/libmew_relinked.dylib'
+d = z.read(name)
+src_size = len(open(src, 'rb').read())
+print('    包内 dylib %d B / 源文件 %d B' % (len(d), src_size))
+assert len(d) == src_size, '包内 dylib 被改动过（ldid 截断？）'
+
+ncmds = struct.unpack_from('<I', d, 16)[0]
+o = 32
+link = None
+ex = None
+for _ in range(ncmds):
+    cmd, csz = struct.unpack_from('<II', d, o)
+    if cmd == 0x19:
+        nm = d[o+8:o+24].rstrip(b'\0').decode()
+        vm, vs, fo, fs = struct.unpack_from('<QQQQ', d, o+24)
+        if nm == '__LINKEDIT':
+            link = (fo, fs)
+    if cmd == 0x80000022:
+        f = struct.unpack_from('<10I', d, o+8)
+        ex = (f[8], f[9])
+    o += csz
+assert link and ex, '找不到 __LINKEDIT 或 dyld_info'
+ex_off, ex_sz = ex
+fo, fs = link
+end = ex_off + ex_sz
+print('    export trie [0x%x, 0x%x)  __LINKEDIT [0x%x, 0x%x)' % (ex_off, end, fo, fo+fs))
+assert end <= fo + fs, 'export trie 超出 __LINKEDIT（dyld 会拒绝加载）'
+print('    LINKEDIT 覆盖 export trie ✓')
+PY
 say "完成：$IPA"
