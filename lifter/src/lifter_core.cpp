@@ -1076,19 +1076,36 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             else if (mn == "cdq") e.out << "  write_reg(ctx,2,(uint64_t)(int64_t)((int64_t)(int32_t)read_reg(ctx,0,4) >> 31),4);\n";
             else e.out << "  write_reg(ctx,2,(uint64_t)((int64_t)read_reg(ctx,0,8) >> 63),8);\n";
         } else if (mn == "imul") {
-            if (insn.operand_count == 1) {
+            // 注意：不能只信 insn.operand_count。实测 49 0F AF D8（imul rbx,r8 两操作数）
+            // 会被报成 3 个操作数，第 3 个是 UNUSED —— 旧代码走进 3 操作数分支后
+            // 把它当成"立即数 0"，生成 rbx = r8 * 0，_calloc_base 于是申请 1 字节
+            // （PTD 要 0x3C8），后续堆块全部重叠、CRT 初始化器 abort。
+            // Zydis 会把隐式写出的 RFLAGS 也放进操作数数组（REGISTER 类型但既不是
+            // GPR 也不是 XMM），它的 gprId/xmmId 都是 -1、valExpr 退化成 "0"。
+            // 所以这里只接受"真实可读写"的操作数。
+            const auto imulOpUsable = [](const ZydisDecodedOperand& o) {
+                if (o.type == ZYDIS_OPERAND_TYPE_IMMEDIATE) return true;
+                if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) return true;
+                if (o.type == ZYDIS_OPERAND_TYPE_REGISTER) return gprId(o.reg.value) >= 0 || xmmId(o.reg.value) >= 0;
+                return false;
+            };
+            int opn = (int)insn.operand_count;
+            while (opn > 1 && !imulOpUsable(ops[opn - 1])) --opn;
+            if (opn <= 1) {
                 e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
                       << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
                          " write_reg(ctx,0,(uint64_t)p,8); write_reg(ctx,2,(uint64_t)(p>>64),8); }\n";
-            } else if (insn.operand_count == 2) {
+            } else if (opn == 2) {
                 int id = gprId(ops[0].reg.value);
-                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << ",8) * (int64_t)"
-                      << valExpr(pe, insn, ops[1], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+                int w = ops[0].size / 8;
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << "," << w
+                      << ") * (int64_t)" << valExpr(pe, insn, ops[1], next_rip, e) << ")," << w << ");\n";
             } else {
                 int id = gprId(ops[0].reg.value);
+                int w = ops[0].size / 8;
                 e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)"
                       << valExpr(pe, insn, ops[1], next_rip, e) << " * (int64_t)"
-                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << w << ");\n";
             }
         } else if (mn == "shl" || mn == "shr" || mn == "sar") {
             std::string a = valExpr(pe, insn, ops[0], next_rip, e);
@@ -2283,19 +2300,36 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             else if (mn == "cdq") e.out << "  write_reg(ctx,2,(uint64_t)(int64_t)((int64_t)(int32_t)read_reg(ctx,0,4) >> 31),4);\n";
             else e.out << "  write_reg(ctx,2,(uint64_t)((int64_t)read_reg(ctx,0,8) >> 63),8);\n";
         } else if (mn == "imul") {
-            if (insn.operand_count == 1) {
+            // 注意：不能只信 insn.operand_count。实测 49 0F AF D8（imul rbx,r8 两操作数）
+            // 会被报成 3 个操作数，第 3 个是 UNUSED —— 旧代码走进 3 操作数分支后
+            // 把它当成"立即数 0"，生成 rbx = r8 * 0，_calloc_base 于是申请 1 字节
+            // （PTD 要 0x3C8），后续堆块全部重叠、CRT 初始化器 abort。
+            // Zydis 会把隐式写出的 RFLAGS 也放进操作数数组（REGISTER 类型但既不是
+            // GPR 也不是 XMM），它的 gprId/xmmId 都是 -1、valExpr 退化成 "0"。
+            // 所以这里只接受"真实可读写"的操作数。
+            const auto imulOpUsable = [](const ZydisDecodedOperand& o) {
+                if (o.type == ZYDIS_OPERAND_TYPE_IMMEDIATE) return true;
+                if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) return true;
+                if (o.type == ZYDIS_OPERAND_TYPE_REGISTER) return gprId(o.reg.value) >= 0 || xmmId(o.reg.value) >= 0;
+                return false;
+            };
+            int opn = (int)insn.operand_count;
+            while (opn > 1 && !imulOpUsable(ops[opn - 1])) --opn;
+            if (opn <= 1) {
                 e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
                       << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
                          " write_reg(ctx,0,(uint64_t)p,8); write_reg(ctx,2,(uint64_t)(p>>64),8); }\n";
-            } else if (insn.operand_count == 2) {
+            } else if (opn == 2) {
                 int id = gprId(ops[0].reg.value);
-                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << ",8) * (int64_t)"
-                      << valExpr(pe, insn, ops[1], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+                int w = ops[0].size / 8;
+                e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)read_reg(ctx," << id << "," << w
+                      << ") * (int64_t)" << valExpr(pe, insn, ops[1], next_rip, e) << ")," << w << ");\n";
             } else {
                 int id = gprId(ops[0].reg.value);
+                int w = ops[0].size / 8;
                 e.out << "  write_reg(ctx," << id << ",(uint64_t)((int64_t)"
                       << valExpr(pe, insn, ops[1], next_rip, e) << " * (int64_t)"
-                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << ops[0].size / 8 << ");\n";
+                      << valExpr(pe, insn, ops[2], next_rip, e) << ")," << w << ");\n";
             }
         } else if (mn == "shl" || mn == "shr" || mn == "sar") {
             std::string a = valExpr(pe, insn, ops[0], next_rip, e);
