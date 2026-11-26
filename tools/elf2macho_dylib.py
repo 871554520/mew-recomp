@@ -306,45 +306,45 @@ class MachO:
                     sys.stderr.write('[warn] 未处理重定位类型 %d @0x%x\n' % (t, r['off']))
 
     # ---- 生成 Mach-O ----
-    def emit(self, init_array_hook=True):
+    def emit(self):
         elf = self.elf
         segs = self.segments
         page = self.PAGE
-        # 文件布局：header 页 + 各段（段起点文件偏移 = 段 page_va）
-        # 段内容保持在 ELF 的精确相对偏移上：文件偏移 = 段 page_va + lead + (段内偏移)
-        filesz_total = max(s['page_va'] + s['lead'] + s['msz'] for s in segs)
-        # __LINKEDIT 放最后
-        ncmds_est = 8 + 3 + 1
-        cmds_size_est = 72 * 4 + 24 * ncmds_est + 0x400 + 0x400
-        header_room = align(cmds_size_est, page)
-        seg0_shift = header_room
-        # 因为 header 占一个 page，所有段整体后移 seg0_shift，保持相对布局
-        # 这样 code 段从 seg0_shift 开始；相对引用不变。
-        self._shift = seg0_shift
-        # 数据：拷贝各段
-        buf = bytearray(seg0_shift)
+        shift = align(0x1000, page)          # 预留给 header/load commands 的整页
+        self._shift = shift
+
+        # ---------- 1) 段放置 ----------
+        # 规则：ELF VA -> 新地址 统一 +shift；段的 vm/fileoff 页对齐，内容偏移 lead。
+        #       __TEXT 从 0 起把 header 包进去。
+        buf = bytearray(shift)
         placed = []
-        for i, s in enumerate(segs):
-            start = seg0_shift + s['page_va']          # 段页起点（文件偏移）
-            content = start + s['lead']                 # 内容起点
-            need = content + s['fsz'] - len(buf)
+        for i, s_ in enumerate(segs):
+            lead = s_['lead']
+            if i == 0:
+                vm = 0
+                fileoff = 0
+                content = shift
+                fsz = shift + s_['fsz']
+                msz = align(shift + s_['msz'], page)
+            else:
+                vm = shift + s_['page_va']
+                fileoff = vm
+                content = vm + lead
+                fsz = lead + s_['fsz']
+                msz = align(lead + s_['msz'], page)
+            need = content + s_['fsz'] - len(buf)
             if need > 0:
                 buf.extend(b'\0' * need)
-            src = elf.d[elf.loads[i]['off']: elf.loads[i]['off'] + s['fsz']]
+            src = elf.d[elf.loads[i]['off']: elf.loads[i]['off'] + s_['fsz']]
             buf[content:content + len(src)] = src
-            # bss 补到 memsz
-            tail = content + s['msz']
-            if tail > len(buf):
-                buf.extend(b'\0' * (tail - len(buf)))
-            placed.append(dict(vm=s['page_va'] + seg0_shift, fileoff=start,
-                               content_off=content, lead=s['lead'], fsz=s['fsz'], msz=s['msz']))
-        # 虚拟地址 = 文件偏移（因为整体放在 base 0 + slide）
-        for p_ in placed:
-            p_['vm'] = p_['fileoff']
-        image_end = len(buf)
-        linkedit_off = align(image_end, page)
-        if linkedit_off > len(buf):
-            buf.extend(b'\0' * (linkedit_off - len(buf)))
+            if content + s_['msz'] > len(buf):
+                buf.extend(b'\0' * (content + s_['msz'] - len(buf)))
+            if vm + msz > len(buf):
+                buf.extend(b'\0' * (vm + msz - len(buf)))
+            placed.append(dict(vm=vm, fileoff=fileoff, content_off=content, lead=lead,
+                               fsz=fsz, msz=msz))
+        elf_base = shift                     # ELF VA 0 在新镜像中的地址
+        self.elf_base = elf_base
 
         def seg_of_va(va):
             for i, p_ in enumerate(placed):
@@ -352,19 +352,19 @@ class MachO:
                     return i, va - p_['vm']
             return None, None
 
-        # ---- rebase / bind 字节流 ----
-        # 简化：所有 rebase 都用 SET_SEGMENT_AND_OFFSET_ULEB + DO_REBASE_IMM_TIMES
+        # ---------- 2) rebase / bind ----------
         rebase_blob = bytearray()
         for va, add in sorted(self.rebases):
-            si, so = seg_of_va(va)
-            if si is None or si == 0:
-                struct.pack_into('<Q', buf, va, (add + self._shift) & 0xFFFFFFFFFFFFFFFF)
+            si, so = seg_of_va(va + elf_base)
+            if si is None:
+                continue
+            if si == 0:
+                # 只读段里的内部指针：写死即可（不行 rebase，dyld 不允许改 __TEXT）
+                struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
                 continue
             rebase_blob += bytes([0x21]) + uleb(si) + uleb(so) + bytes([0x51])
-            struct.pack_into('<Q', buf, va, (add + self._shift) & 0xFFFFFFFFFFFFFFFF)
+            struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
 
-
-        # 修正上面 bind 流里多写的占位字节（保持简单：重建一份干净流）
         bind_blob = bytearray()
         shim_syms = []
         for va, sym, add, kind in sorted(self.binds):
@@ -381,25 +381,23 @@ class MachO:
                 else:
                     dll, sym_out = '@rpath/libbionic_shim.dylib', shim_name(sym)
                     shim_syms.append(sym)
+            si, so = seg_of_va(va + elf_base)
+            if si is None:
+                continue
             bind_blob += bytes([0x11, self.ordinal[dll]])
             if add:
                 bind_blob += bytes([0x60]) + sleb(add)
             bind_blob += bytes([0x40, 0]) + sym_out.encode() + b'\0'
             bind_blob += bytes([0x51])
-            si2, so2 = None, None
-            for i, p_ in enumerate(placed):
-                if p_['vm'] <= va < p_['vm'] + p_['msz']:
-                    si2, so2 = i, va - p_['vm']
-                    break
-            if si2 is None:
-                self.skipped_binds = getattr(self, 'skipped_binds', 0) + 1
-                continue
-            bind_blob += bytes([0x21]) + uleb(si2) + uleb(so2)
+            bind_blob += bytes([0x21]) + uleb(si) + uleb(so)
             bind_blob += bytes([0x90])
-            struct.pack_into('<Q', buf, va, 0)
+            struct.pack_into('<Q', buf, va + elf_base, 0)
 
-        # ---- 符号表（__LINKEDIT） ----
-        strtab = bytearray(b'\0')
+        # ---------- 3) __LINKEDIT：symtab / strtab / export trie ----------
+        linkedit_start = align(len(buf), page)
+        buf.extend(b'\0' * (linkedit_start - len(buf)))
+
+        strtab = bytearray(b' \0')            # Mach-O 要求 0 号为空
         symtab = bytearray()
 
         def add_str(s):
@@ -407,111 +405,87 @@ class MachO:
             strtab.extend(s.encode() + b'\0')
             return off
 
-        for name, addr, typ in sorted(self.exports):
+        for name, addr, typ in sorted(set(self.exports)):
             n = add_str('_' + name)
-            n_type = 0x0f if typ == 2 else 0x0f   # N_SECT|N_EXT
-            symtab += struct.pack('<IBBHQ', n, n_type, 1, 1, addr)
+            n_type = 0x0F if (typ & 0x0f) == 2 else 0x0E   # N_WEAK_DEF / N_SECT|N_EXT
+            symtab += struct.pack('<IBBHQ', n, n_type, 1, 1, addr + elf_base)
 
-        symoff = linkedit_off
+        symoff = len(buf)
         buf.extend(symtab)
         stroff = len(buf)
         buf.extend(strtab)
-        end = align(len(buf), page)
-        buf.extend(b'\0' * (end - len(buf)))
-
-        # ---- export trie ----
-        trie_off = align(len(buf), 8)
-        trie = _build_trie(sorted(set(self.exports)))
+        buf.extend(b'\0' * (align(len(buf), 8) - len(buf)))
+        trie_off = len(buf)
+        trie = _build_trie(sorted(set((n, a + elf_base, t) for n, a, t in self.exports)))
         buf.extend(trie)
-        buf.extend(b'\0' * (align(len(buf), page) - len(buf)))
-
-        # 重新排布 linkedit（简单：把 symtab/strtab/trie 都放在最终位置）
-        # （上面已经 append，故此处 linkedit_off 指向 symoff）
-        # ---- load commands ----
-        seg_cmds = bytearray()
-        for i, p_ in enumerate(placed):
-            name = self.seg_names[i] if i < len(self.seg_names) else '__SEG%d' % i
-            nsec = 0
-            secs = b''
-            if i == 0:
-                # __TEXT 里给 .eh_frame 单独建节，供 Darwin unwinder 找到
-                eh = self.elf.ehframe
-                if eh:
-                    secs += struct.pack('<16s16sQQIIIIIIII', b'__text', b'__TEXT',
-                                        p_['content_off'], align(self.elf.sect('.text')['size'] if self.elf.sect('.text') else 0, 4),
-                                        p_['fileoff'], 4, 0, 0, S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS, 0, 0, 0)
-                    nsec += 1
-                    # .eh_frame 节（在 __TEXT 内，地址就是 ELF 的绝对偏移）
-                    eho = p_['fileoff'] + (eh['va'] - (p_['vm'] - p_['fileoff']))
-                    secs += struct.pack('<16s16sQQIIIIIIII', b'__eh_frame', b'__TEXT',
-                                        eho, eh['fsz'], eho, 3, 0, 0, S_REGULAR, 0, 0, 0)
-                    nsec += 1
-            ncmds = 72 + nsec * 80
-            seg_cmds += struct.pack('<II16sQQQQIIII',
-                                    LC_SEGMENT_64, ncmds, name.encode(),
-                                    p_['vm'], p_['msz'], p_['fileoff'], p_['fsz'],
-                                    7 if i == 0 else (3 if i == 1 else 3),
-                                    5 if i == 0 else 3, nsec, 0)
-            seg_cmds += secs
-
-        def filetime_body(s, ln):
-            # LC_LOAD_DYLIB 结构: cmd, cmdsize, name_offset(24), timestamp, current, compat
-            body = struct.pack('<IIII', 24, 2, 0x10000, 0x10000)
-            out = body + s
-            return out + b'\0' * (ln - 24 - len(out))
-
-        cmds = bytearray()
-        ncmd = 0
-        cmds += seg_cmds
-        ncmd += len(placed)
-        # LC_ID_DYLIB
-        idn = '@rpath/libmew_relinked.dylib'
-        idb = filetime_body(idn.encode() + b'\0', align(24 + len(idn) + 1, 8))
-        cmds += struct.pack('<III', LC_ID_DYLIB, align(24 + len(idn) + 1, 8), 24) + idb
-        ncmd += 1
-        for d in self.dlls:
-            b = filetime_body(d.encode() + b'\0', align(24 + len(d) + 1, 8))
-            cmds += struct.pack('<III', LC_LOAD_DYLIB, align(24 + len(d) + 1, 8), 24) + b
-            ncmd += 1
-        # LC_DYLD_INFO_ONLY
         rb_off = len(buf)
         buf.extend(rebase_blob)
         bd_off = len(buf)
         buf.extend(bind_blob)
-        buf.extend(b'\0' * (align(len(buf), 8) - len(buf)))
-        cmds += struct.pack('<IIIIIIIIII', LC_DYLD_INFO_ONLY, 48, rb_off, len(rebase_blob),
-                            bd_off, len(bind_blob), 0, 0, 0, 0)
-        ncmd += 1
-        # LC_SYMTAB
+        buf.extend(b'\0' * (align(len(buf), page) - len(buf)))
+        linkedit_size = len(buf) - linkedit_start
+
+        # ---------- 4) load commands ----------
+        def sect(name, segname, addr, size, off, flags, align_pow=2):
+            return struct.pack('<16s16sQQIIIIIIII', name.encode(), segname.encode(),
+                               addr, size, off, align_pow, 0, 0, flags, 0, 0, 0)
+
+        seg_cmds = bytearray()
+        for i, p_ in enumerate(placed):
+            name = self.seg_names[i] if i < len(self.seg_names) else '__SEG%d' % i
+            secs = bytearray()
+            if i == 0:
+                ts = elf.sect('.text')
+                ehp = elf.ehframe
+                if ts:
+                    secs += sect('__text', '__TEXT', elf_base + ts['addr'], ts['size'],
+                                 elf_base + ts['addr'], S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS, 4)
+                if ehp:
+                    secs += sect('__eh_frame', '__TEXT', elf_base + ehp['va'], ehp['fsz'],
+                                 elf_base + ehp['va'], S_REGULAR, 3)
+            nsec = len(secs) // 80
+            prot = 5 if i == 0 else 3
+            maxprot = 5 if i == 0 else 3
+            seg_cmds += struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, 72 + len(secs), name.encode(),
+                                    p_['vm'], p_['msz'], p_['fileoff'], p_['fsz'],
+                                    maxprot, prot, nsec, 0)
+            seg_cmds += secs
+        # __LINKEDIT
+        seg_cmds += struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, 72, b'__LINKEDIT',
+                                linkedit_start, linkedit_size, linkedit_start, linkedit_size, 7, 5, 0, 0)
+
+        def dylib_cmd(cmd, path):
+            body = path.encode() + b'\0'
+            ln = align(24 + len(body), 8)
+            return struct.pack('<IIIIII', cmd, ln, 24, 2, 0x10000, 0x10000) + body + b'\0' * (ln - 24 - len(body))
+
+        cmds = bytearray(seg_cmds)
+        cmds += dylib_cmd(LC_ID_DYLIB, '@rpath/libmew_relinked.dylib')
+        for d in self.dlls:
+            cmds += dylib_cmd(LC_LOAD_DYLIB, d)
+        cmds += struct.pack('<IIIIIIIIII', LC_DYLD_INFO_ONLY, 48,
+                            rb_off, len(rebase_blob), bd_off, len(bind_blob), 0, 0, 0, 0)
         cmds += struct.pack('<IIIIII', LC_SYMTAB, 24, symoff, len(symtab) // 16, stroff, len(strtab))
-        ncmd += 1
-        # LC_UUID
         cmds += struct.pack('<II', LC_UUID, 24) + bytes(range(16))
-        ncmd += 1
-        # LC_BUILD_VERSION
         plat = PLATFORM_IOS if self.platform == 'ios' else PLATFORM_MACOS
         cmds += struct.pack('<IIIIII', LC_BUILD_VERSION, 24, plat, 0x000F0000, 0, 0)
-        ncmd += 1
-        # __LINKEDIT 段
-        le_start = align(min([symoff, bd_off]), page)
-        le_end = align(len(buf), page)
-        cmds += struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, 72, b'__LINKEDIT',
-                            le_start, le_end - le_start, le_start, le_end - le_start, 7, 5, 0, 0)
-        ncmd += 1
+        ncmd = 0
+        o = 0
+        while o < len(cmds):
+            ncmd += 1
+            o += struct.unpack_from('<I', cmds, o + 4)[0]
 
-        if len(cmds) > self._shift:
-            raise SystemExit('load commands 超出预留 header 空间: %d > %d' % (len(cmds), self._shift))
+        if len(cmds) > shift:
+            raise SystemExit('load commands 超出 header 预留: %d > %d' % (len(cmds), shift))
 
-        # ---- header ----
         hdr = struct.pack('<IIIIIIII', MH_MAGIC_64, CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
                           MH_DYLIB, ncmd, len(cmds),
                           MH_DYLDLINK | MH_TWOLEVEL | MH_NO_REEXPORTED_DYLIBS, 0)
         buf[0:len(hdr)] = hdr
         buf[len(hdr):len(hdr) + len(cmds)] = cmds
-        return bytes(buf), dict(placed=placed, symoff=symoff, strtab=len(strtab),
-                                trie_off=trie_off, trie_len=len(trie),
-                                rebases=len(self.rebases), binds=len(self.binds),
-                                exports=len(self.exports), shim=len(set(shim_syms)))
+        return bytes(buf), dict(placed=placed, rebases=len(self.rebases), binds=len(self.binds),
+                                exports=len(self.exports), shim=len(set(shim_syms)),
+                                elf_base=elf_base, ncmds=ncmd)
 
 def _build_trie(entries):
     """标准前缀压缩 export trie（entries: [(name, addr, type)]）。"""
