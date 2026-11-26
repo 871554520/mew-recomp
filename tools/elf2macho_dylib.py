@@ -454,12 +454,20 @@ class MachO:
             # 节的 offset+size 必须落在段的 filesize 之内（否则 LLVM/dyld 报
             # "size field of section 0 greater than the segment"），所以只覆盖文件部分；
             # 段 memsz>filesz 的 .bss 尾部由 dyld 自动零填，不需要额外节。
-            if i == 1:
-                secs += sect('__data', '__DATA_CONST', p_['vm'] + p_['lead'], p_['fsz'] - p_['lead'],
-                             p_['fileoff'] + p_['lead'], S_REGULAR, 3)
-            elif i == 2:
-                secs += sect('__data', '__DATA', p_['vm'] + p_['lead'], p_['fsz'] - p_['lead'],
-                             p_['fileoff'] + p_['lead'], S_REGULAR, 3)
+            if i in (1, 2):
+                segname = '__DATA_CONST' if i == 1 else '__DATA'
+                base = p_['vm']
+                lead = p_['lead']
+                # 1) 前导填充区 [vm, vm+lead)
+                if lead > 0:
+                    secs += sect('__pad', segname, base, lead, p_['fileoff'], S_REGULAR, 3)
+                # 2) 文件部分
+                secs += sect('__data', segname, base + lead, p_['fsz'] - lead,
+                             p_['fileoff'] + lead, S_REGULAR, 3)
+                # 3) bss 尾部（memsz > filesz）：S_ZEROFILL，offset 必须为 0
+                bss = p_['msz'] - p_['fsz']
+                if bss > 0:
+                    secs += sect('__bss', segname, base + p_['fsz'], bss, 0, S_ZEROFILL, 3)
             nsec = len(secs) // 80
             prot = 5 if i == 0 else 3
             maxprot = 5 if i == 0 else 3
