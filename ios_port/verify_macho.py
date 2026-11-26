@@ -208,18 +208,15 @@ def main(path):
                 fail.append('trie terminal 长度不符 @0x%x' % q)
         nc = d[p]
         p += 1
-        kids = []
-        for _ in range(nc):
+        kids, offs = [], []
+        for _ in range(nc):          # 每个子节点：边名字紧接它自己的偏移
             e = d.index(b'\0', p)
             kids.append(d[p:e])
             p = e + 1
-        offs = []
-        for _ in range(nc):
             v, p = uleb(d, p)
             offs.append(v)
-        for v in offs:
-            if v <= q - trie_off:
-                fail.append('trie 子节点偏移未递增 @0x%x -> 0x%x' % (q - trie_off, v))
+            if trie_off + v >= trie_off + trie_sz:
+                fail.append('trie 子节点偏移越界 @0x%x -> 0x%x' % (q - trie_off, v))
         return tsz, addr, kids, offs, p
 
     def find(name):
