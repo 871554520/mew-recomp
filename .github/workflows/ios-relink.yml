@@ -1,0 +1,68 @@
+name: iOS relink (ELF -> Mach-O dylib, structure validation)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/elf2macho_dylib.py
+      - .github/workflows/ios-relink.yml
+
+jobs:
+  relink:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble APK + extract libmain.so
+        run: |
+          set -e
+          cat ios_port/vendor/apk_part_*.bin > /tmp/app.apk
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('/tmp/app.apk')
+          open('/tmp/libmain.so','wb').write(z.read('lib/arm64-v8a/libmain.so'))
+          print('libmain.so ok')
+          PY
+          ls -l /tmp/libmain.so
+
+      - name: Convert (macOS variant, for host testing later)
+        run: |
+          set -e
+          python3 tools/elf2macho_dylib.py /tmp/libmain.so -o /tmp/libmew_relinked_darwin.dylib --platform macos --verbose | tail -20
+          ls -l /tmp/libmew_relinked_darwin.dylib
+
+      - name: Convert (iOS variant)
+        run: |
+          set -e
+          python3 tools/elf2macho_dylib.py /tmp/libmain.so -o /tmp/libmew_relinked.dylib --platform ios | tail -20
+          ls -l /tmp/libmew_relinked.dylib
+
+      - name: Validate Mach-O structure
+        run: |
+          set +e
+          D=/tmp/libmew_relinked_darwin.dylib
+          echo "===== file ====="; file $D
+          echo "===== otool -h ====="; otool -h $D
+          echo "===== otool -l (head) ====="; otool -l $D | head -80
+          echo "===== otool -L ====="; otool -L $D
+          echo "===== nm -gU (head) ====="; nm -gU $D | head -20
+          echo "===== nm count ====="; nm -gU $D | wc -l
+          echo "===== dyld_info ====="; (dyld_info -fixups $D | head -40) 2>&1 | tail -45
+          echo "===== codesign ====="
+          codesign --force --sign - $D && echo "codesign OK"
+          codesign -dv $D 2>&1 | head -10
+          echo "===== dlopen 尝试（预期因缺 SDL3/shim 失败，仅看报错是否合理）====="
+          cat > /tmp/t.c <<'C'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          int main(int c, char** v){ void* h = dlopen(v[1], RTLD_NOW); printf("dlopen=%p err=%s\n", h, dlerror()); if(h){ void* p=dlsym(h,"SDL_main"); printf("SDL_main=%p\n", p);} return 0; }
+          C
+          clang -o /tmp/t /tmp/t.c && /tmp/t $D 2>&1 | head -10
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-relink
+          path: |
+            /tmp/libmew_relinked*.dylib
