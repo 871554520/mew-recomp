@@ -324,7 +324,7 @@ class MachO:
                 vm = 0
                 fileoff = 0
                 content = shift
-                fsz = shift + s_['fsz']
+                fsz = align(shift + s_['fsz'], page)   # 尾部补零到页界，避免 codesign 抱怨 __TEXT 空洞
                 msz = align(shift + s_['msz'], page)
             else:
                 vm = shift + s_['page_va']
