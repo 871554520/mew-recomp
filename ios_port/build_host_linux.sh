@@ -21,12 +21,30 @@ say() { echo "==> [$(date +%H:%M:%S)] $*" | tee -a "$REPORT"; }
 num() { echo "    $*" | tee -a "$REPORT"; }
 
 CC="${CC:-clang}"
+# Ubuntu 的 lld 包把 ld64.lld 放在 /usr/lib/llvm-*/bin/ 下，不一定在 PATH 里，
+# 这里把 clang 所在目录和 llvm 版本目录都试一遍。
+if [ -z "${LD64:-}" ]; then
+    CC_BIN="$(dirname "$(command -v "$CC")")"
+    for c in "$(command -v ld64.lld 2>/dev/null)" \
+             "$CC_BIN/ld64.lld" \
+             /usr/lib/llvm-*/bin/ld64.lld \
+             /usr/bin/ld64.lld; do
+        if [ -n "$c" ] && [ -x "$c" ]; then LD64="$c"; break; fi
+    done
+fi
 LD64="${LD64:-ld64.lld}"
 
 say "工具链"
 $CC --version | head -1 | tee -a "$REPORT"
-command -v "$LD64" >/dev/null || { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lld clang; }
-$LD64 --version 2>&1 | head -2 | tee -a "$REPORT" || true
+num "ld64 = $LD64"
+if ! "$LD64" --version >/dev/null 2>&1; then
+    say "找不到可用的 ld64.lld，尝试安装 lld"
+    sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lld clang
+    for c in /usr/lib/llvm-*/bin/ld64.lld /usr/bin/ld64.lld; do
+        [ -x "$c" ] && LD64="$c" && break
+    done
+fi
+"$LD64" --version 2>&1 | head -2 | tee -a "$REPORT" || true
 
 say "编译（arm64-apple-ios15.0，无 SDK 头）"
 $CC -target arm64-apple-ios15.0 -O2 -fno-stack-protector -fno-builtin \
