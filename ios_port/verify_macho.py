@@ -38,7 +38,7 @@ def main(path):
     if ft != 6:
         fail.append('filetype != MH_DYLIB')
     o = 32
-    segs, sy, di = [], None, None
+    segs, sects, sy, di = [], [], None, None
     for i in range(ncmds):
         cmd, sz = struct.unpack_from('<II', d, o)
         if cmd == LC_SEGMENT_64:
@@ -46,6 +46,12 @@ def main(path):
             vm, vs, fo, fs = struct.unpack_from('<QQQQ', d, o + 24)
             maxp, initp, ns = struct.unpack_from('<III', d, o + 56)
             segs.append((name, vm, vs, fo, fs, initp, ns))
+            so = o + 72
+            for _k in range(ns):
+                sn = d[so:so + 16].rstrip(b'\0').decode()
+                sa, ssz = struct.unpack_from('<QQ', d, so + 32)
+                sects.append((name, sn, sa, ssz))
+                so += 80
         elif cmd == LC_SYMTAB:
             sy = struct.unpack_from('<IIIIII', d, o)
         elif cmd == LC_DYLD_INFO_ONLY:
@@ -74,54 +80,106 @@ def main(path):
     if di:
         rb_off, rb_sz, bd_off, bd_sz = di[2], di[3], di[4], di[5]
         trie_off, trie_sz = di[10], di[11]
+        def in_section(segidx, addr):
+            """addr 是否落在该段某个节的 [addr, addr+size) 里。"""
+            segname = segs[segidx][0]
+            for sn_seg, sn, sa, ssz in sects:
+                if sn_seg == segname and sa <= addr < sa + ssz:
+                    return True
+            return False
+
         def count_rebase(off, size):
             p, end, n = off, off + size, 0
+            seg = soff = None
             while p < end:
                 b = d[p]; p += 1
                 op, imm = b & 0xF0, b & 0x0F
                 if b == 0:
+                    if p != end:
+                        fail.append('rebase 流提前 DONE，剩 %d 字节' % (end - p))
                     break
                 if op == 0x20:            # SET_SEGMENT_AND_OFFSET_ULEB
-                    _, p = uleb(d, p)
+                    soff, p = uleb(d, p)
+                    seg = imm
                 elif op == 0x30:          # ADD_ADDR_ULEB
-                    _, p = uleb(d, p)
+                    v, p = uleb(d, p); soff += v
                 elif op == 0x40:          # ADD_ADDR_IMM_SCALED
-                    pass
+                    soff += imm * 8
                 elif op == 0x50:          # DO_REBASE_IMM_TIMES
-                    n += imm if imm else 1
+                    cnt = imm if imm else 1
+                    n += cnt
+                    if seg is None or not in_section(seg, segs[seg][1] + soff):
+                        fail.append('rebase 落点无节覆盖 seg=%s off=0x%x' % (seg, soff or 0))
+                    soff += 8 * cnt
                 elif op == 0x60:          # DO_REBASE_ULEB_TIMES
                     v, p = uleb(d, p); n += v
+                    if seg is None or not in_section(seg, segs[seg][1] + soff):
+                        fail.append('rebase 落点无节覆盖 seg=%s off=0x%x' % (seg, soff or 0))
+                    soff += 8 * v
                 elif op == 0x70:          # DO_REBASE_ADD_ADDR_ULEB
-                    _, p = uleb(d, p); n += 1
+                    v, p = uleb(d, p); n += 1
+                    if seg is None or not in_section(seg, segs[seg][1] + soff):
+                        fail.append('rebase 落点无节覆盖 seg=%s off=0x%x' % (seg, soff or 0))
+                    soff += 8 + v
                 elif op == 0x80:          # DO_REBASE_ULEB_TIMES_SKIPPING_ULEB
-                    v, p = uleb(d, p); _, p = uleb(d, p); n += v
+                    v, p = uleb(d, p); sk, p = uleb(d, p); n += v
+                    if seg is None or not in_section(seg, segs[seg][1] + soff):
+                        fail.append('rebase 落点无节覆盖 seg=%s off=0x%x' % (seg, soff or 0))
+                    soff += v * (8 + sk)
             return n
 
+        bind_syms, bind_ords = [], set()
         def count_bind(off, size):
+            """严格状态机式 bind 解码：DO_BIND 缺符号/段、落点没有节覆盖、
+            或流中出现多余字节导致提前 DONE，都算结构错误。"""
             p, end, n = off, off + size, 0
+            seg = soff = sym = ordv = None
             while p < end:
                 b = d[p]; p += 1
                 op, imm = b & 0xF0, b & 0x0F
-                if b == 0:
+                if op == 0x00:            # DONE
+                    if p != end:
+                        fail.append('bind 流在 +%d 就 DONE，后面还剩 %d 字节（多半是 opcode 多写了字节）'
+                                    % (p - off, end - p))
                     break
-                if op == 0x20:            # SET_DYLIB_ORDINAL_ULEB
-                    _, p = uleb(d, p)
+                if op == 0x10:            # SET_DYLIB_ORDINAL_IMM
+                    if imm == 0:
+                        fail.append('bind 里出现序号 0')
+                    ordv = imm
+                elif op == 0x20:          # SET_DYLIB_ORDINAL_ULEB
+                    ordv, p = uleb(d, p)
+                elif op == 0x30:          # SET_DYLIB_SPECIAL_IMM
+                    ordv = imm - 16 if imm else 0
                 elif op == 0x40:          # SET_SYMBOL_TRAILING_FLAGS_IMM + cstring
-                    e = d.index(b'\0', p); p = e + 1
+                    e = d.index(b'\0', p); sym = d[p:e].decode(); p = e + 1
+                elif op == 0x50:          # SET_TYPE_IMM
+                    pass
                 elif op == 0x60:          # SET_ADDEND_SLEB
                     while d[p] & 0x80:
                         p += 1
                     p += 1
                 elif op == 0x70:          # SET_SEGMENT_AND_OFFSET_ULEB
-                    _, p = uleb(d, p)
+                    soff, p = uleb(d, p)
+                    seg = imm             # 段号在 opcode 低 4 位
                 elif op == 0x80:          # ADD_ADDR_ULEB
-                    _, p = uleb(d, p)
-                elif op == 0x90:          # DO_BIND
-                    n += imm if imm else 1
-                elif op == 0xA0:          # DO_BIND_ADD_ADDR_ULEB
-                    _, p = uleb(d, p); n += 1
-                elif op == 0xC0:
-                    v, p = uleb(d, p); _, p = uleb(d, p); n += v
+                    v, p = uleb(d, p); soff += v
+                elif op in (0x90, 0xA0, 0xC0):
+                    if sym is None or seg is None or soff is None:
+                        fail.append('bind DO_BIND 缺符号或段（+%d）' % (p - off))
+                    else:
+                        if seg >= len(segs):
+                            fail.append('bind 段号越界 %d' % seg)
+                        elif not in_section(seg, segs[seg][1] + soff):
+                            fail.append('bind 落点 0x%x 没有任何节覆盖'
+                                        % (segs[seg][1] + soff))
+                        bind_syms.append(sym)
+                        bind_ords.add(ordv)
+                    if op == 0x90:
+                        n += imm if imm else 1
+                    elif op == 0xA0:
+                        v, p = uleb(d, p); soff += v; n += 1
+                    else:
+                        v, p = uleb(d, p); _, p = uleb(d, p); soff += v; n += v
             return n
 
         n_rb = count_rebase(rb_off, rb_sz)
@@ -133,6 +191,8 @@ def main(path):
             fail.append('bind 里出现无下划线的 memcpy')
         print('bind 含 _memcpy=%s  含无下划线 memcpy=%s'
               % (b'_memcpy\x00' in blob, b'\x00memcpy\x00' in blob))
+        print('bind 序号集合=%s  前 3 个符号=%s'
+              % (sorted(x for x in bind_ords if x is not None), bind_syms[:3]))
     else:
         fail.append('no LC_DYLD_INFO_ONLY')
 
