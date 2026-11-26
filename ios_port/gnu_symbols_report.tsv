@@ -1,0 +1,1334 @@
+# libmain.so 的未定义符号（共 1332 个：SDL 82%，bionic 237 个）
+symbol	class	note
+SDL_AcquireCameraFrame	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AcquireGPUCommandBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AcquireGPUSwapchainTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddAtomicInt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddGamepadMapping	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddGamepadMappingsFromFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddGamepadMappingsFromIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddSurfaceAlternateImage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AddVulkanRenderSemaphores	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AsyncIOFromFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AttachVirtualJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AudioDevicePaused	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_AudioStreamDevicePaused	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BeginGPUComputePass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BeginGPUCopyPass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BeginGPURenderPass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindAudioStreams	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUComputePipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUComputeSamplers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUComputeStorageBuffers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUComputeStorageTextures	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUFragmentSamplers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUFragmentStorageBuffers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUFragmentStorageTextures	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUGraphicsPipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUIndexBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUVertexBuffers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUVertexSamplers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUVertexStorageBuffers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BindGPUVertexStorageTextures	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurface9Grid	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurfaceScaled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurfaceTiled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurfaceTiledWithScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurfaceUnchecked	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BlitSurfaceUncheckedScaled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_BroadcastCondition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CalculateGPUTextureFormatSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CancelGPUCommandBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CaptureMouse	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClaimWindowForGPUDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CleanupTLS	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearClipboardData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearComposition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearError	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClearSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ClickTrayEntry	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseAsyncIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseAudioDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseCamera	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseGamepad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseSensor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CloseStorage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CompareAndSwapAtomicInt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CompareAndSwapAtomicPointer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CompareAndSwapAtomicU32	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ComposeCustomBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertAudioSamples	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertEventToRenderCoordinates	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertPixels	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertPixelsAndColorspace	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ConvertSurfaceAndColorspace	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CopyFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CopyGPUBufferToBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CopyGPUTextureToTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CopyProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CopyStorageFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateAsyncIOQueue	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateColorCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateCondition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateDirectory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateEnvironment	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUComputePipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUDeviceWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUGraphicsPipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUSampler	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUShader	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateGPUTransferBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateHapticEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateMutex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreatePalette	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreatePopupWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateProcess	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateProcessWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateRWLock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateRendererWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSemaphore	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSoftwareRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateStorageDirectory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSurfaceFrom	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSurfacePalette	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateSystemCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTextureFromSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTextureWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTray	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTrayMenu	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateTraySubmenu	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateWindowAndRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CreateWindowWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_CursorVisible	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DateTimeToTime	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Delay	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DelayNS	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DelayPrecise	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyAsyncIOQueue	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyCondition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyEnvironment	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyGPUDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyHapticEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyMutex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyPalette	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyProcess	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyRWLock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroySemaphore	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroySurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyTray	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DestroyWindowSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DetachThread	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DetachVirtualJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DisableScreenSaver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DispatchGPUCompute	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DispatchGPUComputeIndirect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DownloadFromGPUBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DownloadFromGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DrawGPUIndexedPrimitives	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DrawGPUIndexedPrimitivesIndirect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DrawGPUPrimitives	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DrawGPUPrimitivesIndirect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_DuplicateSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EGL_GetCurrentConfig	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EGL_GetCurrentDisplay	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EGL_GetWindowSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EnableScreenSaver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EndGPUComputePass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EndGPUCopyPass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EndGPURenderPass	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_EventEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FillSurfaceRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FillSurfaceRects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlashWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlipSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlushAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlushEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlushEvents	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlushIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_FlushRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_CreateContext	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_DestroyContext	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_ExtensionSupported	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_GetAttribute	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_GetCurrentContext	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_GetCurrentWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_GetProcAddress	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_GetSwapInterval	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_LoadLibrary	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_MakeCurrent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_ResetAttributes	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_SetAttribute	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_SetSwapInterval	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_SwapWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GL_UnloadLibrary	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GPUSupportsProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GPUSupportsShaderFormats	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GPUTextureFormatTexelBlockSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GPUTextureSupportsFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GPUTextureSupportsSampleCount	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadConnected	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadEventsEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadHasAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadHasButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadHasSensor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GamepadSensorEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GenerateMipmapsForGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAppMetadataProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAssertionReport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAsyncIOResult	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAsyncIOSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAtomicInt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAtomicPointer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAtomicU32	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioDeviceChannelMap	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioDeviceFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioDeviceGain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioDeviceName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioFormatName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioPlaybackDevices	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioRecordingDevices	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamAvailable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamFrequencyRatio	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamGain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamInputChannelMap	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamOutputChannelMap	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetAudioStreamQueued	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetBasePath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetBooleanProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCPUCacheLineSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraPermissionState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraPosition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameraSupportedFormats	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCameras	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetClipboardData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetClipboardMimeTypes	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetClipboardText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetClosestFullscreenDisplayMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentAudioDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentCameraDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentDirectory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentDisplayMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentDisplayOrientation	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentRenderOutputSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentThreadID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentTime	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCurrentVideoDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDateTimeLocalePreferences	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDayOfWeek	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDayOfYear	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDaysInMonth	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDefaultCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDesktopDisplayMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayBounds	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayContentScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayForPoint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayForRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayForWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplayUsableBounds	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetDisplays	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetEnvironment	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetEnvironmentVariable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetEnvironmentVariables	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetError	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetEventFilter	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetFloatProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetFullscreenDisplayModes	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGPUDeviceDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGPUDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGPUShaderFormats	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGPUSwapchainTextureFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadAppleSFSymbolsNameForAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadAppleSFSymbolsNameForButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadAxisFromString	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadBindings	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadButtonFromString	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadButtonLabel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadButtonLabelForType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadConnectionState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadFirmwareVersion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadFromID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadFromPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadMapping	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadMappingForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadMappings	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadPath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadPathForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadPlayerIndexForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadPowerInfo	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadProduct	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadProductForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadProductVersion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadProductVersionForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadSensorData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadSensorDataRate	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadSerial	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadSteamHandle	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadStringForAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadStringForButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadStringForType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadTouchpadFinger	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadTypeForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadTypeFromString	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadVendor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepadVendorForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGamepads	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGlobalMouseState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGlobalProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetGrabbedWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticEffectStatus	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticFeatures	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticFromID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHapticNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHaptics	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetHintBoolean	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetIOProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetIOSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetIOStatus	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickAxisInitialState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickBall	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickConnectionState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickFirmwareVersion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickFromID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickFromPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickHat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickPath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickPathForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickPlayerIndexForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickPowerInfo	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickProduct	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickProductForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickProductVersion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickProductVersionForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickSerial	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickTypeForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickVendor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoystickVendorForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetJoysticks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyFromName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyFromScancode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyboardFocus	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyboardNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyboardState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetKeyboards	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetLogOutputFunction	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetLogPriority	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMasksForPixelFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMaxHapticEffects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMaxHapticEffectsPlaying	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMemoryFunctions	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetModState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMouseFocus	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMouseNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetMouseState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNaturalDisplayOrientation	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumAllocations	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumAudioDrivers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumCameraDrivers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumGPUDrivers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumGamepadTouchpadFingers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumGamepadTouchpads	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumHapticAxes	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumJoystickAxes	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumJoystickBalls	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumJoystickButtons	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumJoystickHats	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumLogicalCPUCores	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumRenderDrivers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumVideoDrivers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetNumberProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetOriginalMemoryFunctions	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPathInfo	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPerformanceCounter	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPerformanceFrequency	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPixelFormatDetails	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPixelFormatForMasks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPixelFormatName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPlatform	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPointerProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPowerInfo	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPrefPath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPreferredLocales	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPrimaryDisplay	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPrimarySelectionText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetProcessInput	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetProcessOutput	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetProcessProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetPropertyType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRGB	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRGBA	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRealGamepadType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRealGamepadTypeForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectAndLineIntersection	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectAndLineIntersectionFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectEnclosingPoints	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectEnclosingPointsFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectIntersection	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectIntersectionFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectUnion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRectUnionFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRelativeMouseState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderClipRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderColorScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderDrawBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderDrawColor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderDrawColorFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderLogicalPresentation	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderLogicalPresentationRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderMetalCommandEncoder	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderMetalLayer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderOutputSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderSafeArea	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderTarget	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderVSync	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderViewport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRenderer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRendererFromTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRendererName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRendererProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetRevision	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSIMDAlignment	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSandbox	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetScancodeFromKey	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetScancodeFromName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetScancodeName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSemaphoreValue	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorFromID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorNameForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorNonPortableType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorNonPortableTypeForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensorTypeForID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSensors	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSilenceValueForFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetStorageFileSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetStoragePathInfo	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetStorageSpaceRemaining	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetStringProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceAlphaMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceClipRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceColorKey	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceColorMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceColorspace	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceImages	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfacePalette	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSurfaceProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSystemRAM	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetSystemTheme	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTLS	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextInputArea	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureAlphaMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureAlphaModFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureColorMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureColorModFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureScaleMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTextureSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetThreadID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetThreadName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetThreadState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTicks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTicksNS	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTouchDeviceName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTouchDeviceType	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTouchDevices	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTouchFingers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayEntries	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayEntryChecked	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayEntryEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayEntryLabel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayEntryParent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayMenu	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayMenuParentEntry	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTrayMenuParentTray	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetTraySubmenu	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetUserFolder	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetVersion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetVideoDriver	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowAspectRatio	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowBordersSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowDisplayScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowFlags	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowFromEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowFromID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowFullscreenMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowICCProfile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowID	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowKeyboardGrab	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowMaximumSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowMinimumSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowMouseGrab	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowMouseRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowOpacity	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowParent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowPixelDensity	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowPixelFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowPosition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowRelativeMouseMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowSafeArea	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowSizeInPixels	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowSurfaceVSync	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindowTitle	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GetWindows	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GlobDirectory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_GlobStorageDirectory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HapticEffectSupported	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HapticRumbleSupported	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasARMSIMD	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasAVX	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasAVX2	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasAVX512F	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasAltiVec	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasClipboardData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasClipboardText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasEvents	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasGamepad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasKeyboard	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasLASX	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasLSX	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasMMX	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasMouse	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasNEON	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasPrimarySelectionText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasRectIntersection	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasRectIntersectionFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasSSE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasSSE2	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasSSE3	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasSSE41	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasSSE42	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HasScreenKeyboardSupport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HideCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_HideWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IOFromConstMem	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IOFromDynamicMem	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IOFromFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IOFromMem	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Init	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_InitHapticRumble	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_InitSubSystem	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_InsertGPUDebugLabel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_InsertTrayEntryAt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsAudioDevicePhysical	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsAudioDevicePlayback	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsGamepad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsJoystickHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsJoystickVirtual	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsMainThread	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsMouseHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsTV	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_IsTablet	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_JoystickConnected	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_JoystickEventsEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_KillProcess	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadBMP	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadBMP_IO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadFileAsync	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadFile_IO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadObject	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadWAV	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LoadWAV_IO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockJoysticks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockMutex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockRWLockForReading	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockRWLockForWriting	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockSpinlock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_LockTextureToSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MapGPUTransferBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MapRGB	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MapRGBA	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MapSurfaceRGB	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MapSurfaceRGBA	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MaximizeWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MemoryBarrierAcquireFunction	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MemoryBarrierReleaseFunction	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Metal_CreateView	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Metal_DestroyView	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Metal_GetLayer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MinimizeWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_MixAudio	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenAudioDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenAudioDeviceStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenCamera	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenFileStorage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenGamepad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenHapticFromJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenHapticFromMouse	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenSensor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenStorage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenTitleStorage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenURL	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OpenUserStorage	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_OutOfMemory	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PauseAudioDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PauseAudioStreamDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PauseHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PeepEvents	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PlayHapticRumble	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PollEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PopGPUDebugGroup	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PremultiplyAlpha	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PremultiplySurfaceAlpha	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PumpEvents	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PushEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PushGPUComputeUniformData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PushGPUDebugGroup	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PushGPUFragmentUniformData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PushGPUVertexUniformData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_PutAudioStreamData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_QueryGPUFence	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_Quit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_QuitSubSystem	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RaiseWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadAsyncIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadProcess	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS16BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS16LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS32BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS32LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS64BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS64LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadS8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadStorageFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadSurfacePixel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadSurfacePixelFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU16BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU16LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU32BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU32LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU64BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU64LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReadU8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RegisterEvents	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseCameraFrame	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUComputePipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUFence	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUGraphicsPipeline	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUSampler	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUShader	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseGPUTransferBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReleaseWindowFromGPUDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReloadGamepadMappings	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RemovePath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RemoveStoragePath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RemoveSurfaceAlternateImages	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RemoveTimer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RemoveTrayEntry	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenamePath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenameStoragePath	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderClear	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderClipEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderCoordinatesFromWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderCoordinatesToWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderDebugText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderFillRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderFillRects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderGeometry	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderGeometryRaw	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderLine	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderLines	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderPoint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderPoints	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderPresent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderReadPixels	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderRects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderTexture9Grid	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderTextureAffine	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderTextureRotated	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderTextureTiled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RenderViewportSet	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ReportAssertion	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResetAssertionReport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResetHint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResetHints	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResetKeyboard	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResetLogPriorities	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RestoreWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResumeAudioDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResumeAudioStreamDevice	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ResumeHaptic	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RumbleGamepad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RumbleGamepadTriggers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RumbleJoystick	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RumbleJoystickTriggers	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_RunHapticEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SaveBMP	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SaveBMP_IO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SaveFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SaveFile_IO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ScaleSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ScreenKeyboardShown	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ScreenSaverEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SeekIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SendGamepadEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SendJoystickEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SendJoystickVirtualSensorData	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAppMetadata	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAppMetadataProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAtomicInt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAtomicPointer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAtomicU32	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioDeviceGain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioStreamFormat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioStreamFrequencyRatio	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioStreamGain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioStreamInputChannelMap	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetAudioStreamOutputChannelMap	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetBooleanProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetClipboardText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetCurrentThreadPriority	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetEnvironmentVariable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetError	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetEventEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetFloatProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUAllowedFramesInFlight	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUBufferName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUScissor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUStencilReference	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUSwapchainParameters	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUTextureName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGPUViewport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGamepadEventsEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGamepadLED	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGamepadMapping	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGamepadPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetGamepadSensorEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetHapticAutocenter	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetHapticGain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetHint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetHintWithPriority	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetInitialized	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickEventsEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickLED	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickPlayerIndex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickVirtualAxis	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickVirtualBall	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickVirtualButton	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickVirtualHat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetJoystickVirtualTouchpad	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetLogPriorities	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetLogPriority	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetLogPriorityPrefix	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetModState	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetNumberProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetPaletteColors	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetPointerProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetPrimarySelectionText	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderClipRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderColorScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderDrawBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderDrawColor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderDrawColorFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderLogicalPresentation	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderScale	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderTarget	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderVSync	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetRenderViewport	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetScancodeName	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetStringProperty	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceAlphaMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceClipRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceColorKey	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceColorMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceColorspace	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfacePalette	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetSurfaceRLE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextInputArea	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureAlphaMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureAlphaModFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureBlendMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureColorMod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureColorModFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTextureScaleMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTrayEntryChecked	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTrayEntryEnabled	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTrayEntryLabel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTrayIcon	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetTrayTooltip	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowAlwaysOnTop	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowAspectRatio	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowBordered	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowFocusable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowFullscreen	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowFullscreenMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowIcon	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowKeyboardGrab	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowMaximumSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowMinimumSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowModal	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowMouseGrab	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowMouseRect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowOpacity	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowParent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowPosition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowRelativeMouseMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowResizable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowShape	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowSize	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowSurfaceVSync	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SetWindowTitle	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShouldInit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShouldQuit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShowCursor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShowMessageBox	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShowSimpleMessageBox	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShowWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ShowWindowSystemMenu	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SignalAsyncIOQueue	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SignalCondition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SignalSemaphore	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StartTextInput	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StartTextInputWithProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StepBackUTF8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StepUTF8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StopHapticEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StopHapticEffects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StopHapticRumble	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StopTextInput	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StorageReady	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_StretchSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SubmitGPUCommandBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SubmitGPUCommandBufferAndAcquireFence	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SurfaceHasAlternateImages	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SurfaceHasColorKey	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SurfaceHasRLE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_SyncWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TellIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TextInputActive	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TimeFromWindows	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TimeToDateTime	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TimeToWindows	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TryLockMutex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TryLockRWLockForReading	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TryLockRWLockForWriting	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TryLockSpinlock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_TryWaitSemaphore	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UCS4ToUTF8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnbindAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnbindAudioStreams	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnloadObject	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockAudioStream	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockJoysticks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockMutex	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockProperties	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockRWLock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockSpinlock	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnlockTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnmapGPUTransferBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UnsetEnvironmentVariable	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateGamepads	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateHapticEffect	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateJoysticks	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateNVTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateSensors	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateTrays	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateWindowSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateWindowSurfaceRects	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UpdateYUVTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UploadToGPUBuffer	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_UploadToGPUTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitAndAcquireGPUSwapchainTexture	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitAsyncIOResult	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitCondition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitConditionTimeout	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitEvent	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitEventTimeout	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitForGPUFences	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitForGPUIdle	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitForGPUSwapchain	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitProcess	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitSemaphore	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitSemaphoreTimeout	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WaitThread	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WarpMouseGlobal	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WarpMouseInWindow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WasInit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WindowHasSurface	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WindowSupportsGPUPresentMode	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WindowSupportsGPUSwapchainComposition	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteAsyncIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteIO	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS16BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS16LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS32BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS32LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS64BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS64LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteS8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteStorageFile	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteSurfacePixel	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteSurfacePixelFloat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU16BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU16LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU32BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU32LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU64BE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU64LE	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_WriteU8	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_abs	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_acos	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_acosf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_aligned_alloc	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_aligned_free	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_asin	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_asinf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atan	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atan2	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atan2f	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atanf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atof	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_atoi	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_bsearch	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_calloc	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ceil	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ceilf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_copysign	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_copysignf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_cos	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_cosf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_crc16	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_crc32	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_exp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_expf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_fabs	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_fabsf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_floor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_floorf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_fmod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_fmodf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_free	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_getenv	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_getenv_unsafe	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_ble_scan	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_close	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_device_change_count	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_enumerate	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_exit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_free_enumeration	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_get_device_info	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_get_feature_report	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_get_input_report	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_get_report_descriptor	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_init	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_open_path	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_read	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_read_timeout	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_send_feature_report	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_set_nonblocking	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_hid_write	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_iconv	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_iconv_close	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_iconv_open	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_iconv_string	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isalnum	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isalpha	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isblank	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_iscntrl	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isdigit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isgraph	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isinf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isinff	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_islower	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isnan	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isnanf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isprint	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ispunct	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isspace	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isupper	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_isxdigit	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_itoa	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_lltoa	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_log	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_log10	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_log10f	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_logf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_malloc	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_memcmp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_memset4	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_modf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_modff	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_murmur3_32	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_pow	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_powf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_qsort	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_qsort_r	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_rand	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_rand_bits	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_rand_bits_r	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_rand_r	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_randf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_randf_r	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_realloc	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_round	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_roundf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_scalbn	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_scalbnf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_setenv_unsafe	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_sin	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_sinf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_sqrt	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_sqrtf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_srand	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strcasecmp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strcasestr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strchr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strcmp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strdup	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strlcat	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strlcpy	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strlen	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strlwr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strncasecmp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strncmp	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strndup	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strnlen	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strnstr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strpbrk	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strrchr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strrev	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strstr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strtod	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strtok_r	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strtoll	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strtoull	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_strupr	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_tan	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_tanf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_tolower	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_toupper	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_trunc	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_truncf	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_uitoa	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_ulltoa	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_unsetenv_unsafe	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_utf8strlcpy	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_utf8strlen	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+SDL_utf8strnlen	SDL3	SDL3 for iOS 提供同名导出（含 SDL_GPU API）
+__ctype_get_mb_cur_max	direct	
+__cxa_atexit	direct	
+__cxa_finalize	direct	
+__stack_chk_fail	direct	
+_exit	direct	
+abort	direct	
+access	direct	
+acos	direct	
+asin	direct	
+atan	direct	
+atan2	direct	
+atof	direct	
+atoi	direct	
+atoll	direct	
+btowc	direct	
+calloc	direct	
+chdir	direct	
+clock_gettime	direct	
+close	direct	
+closedir	direct	
+closelog	direct	
+cos	direct	
+exp	direct	
+exp2	direct	
+fchmod	direct	
+fchmodat	direct	
+fclose	direct	
+fflush	direct	
+fopen	direct	
+fprintf	direct	
+fputc	direct	
+fputs	direct	
+fread	direct	
+free	direct	
+frexp	direct	
+fseek	direct	
+fseeko	direct	
+fsync	direct	
+ftello	direct	
+ftruncate	direct	
+fwrite	direct	
+getcwd	direct	
+getenv	direct	
+getpid	direct	
+gmtime_r	direct	
+link	direct	
+localtime_r	direct	
+log	direct	
+log2	direct	
+longjmp	direct	
+lseek	direct	
+madvise	direct	
+malloc	direct	
+mbrlen	direct	
+mbrtowc	direct	
+mbsnrtowcs	direct	
+mbsrtowcs	direct	
+mbtowc	direct	
+memchr	direct	
+memcmp	direct	
+memcpy	direct	
+memmove	direct	
+memset	direct	
+mkdir	direct	
+mmap	direct	
+munmap	direct	
+nanosleep	direct	
+open	direct	
+openat	direct	
+openlog	direct	
+posix_memalign	direct	
+pow	direct	
+printf	direct	
+pthread_attr_init	direct	
+pthread_attr_setdetachstate	direct	
+pthread_attr_setstacksize	direct	
+pthread_cond_broadcast	direct	
+pthread_cond_destroy	direct	
+pthread_cond_init	direct	
+pthread_cond_signal	direct	
+pthread_cond_timedwait	direct	
+pthread_cond_wait	direct	
+pthread_create	direct	
+pthread_detach	direct	
+pthread_exit	direct	
+pthread_getspecific	direct	
+pthread_join	direct	
+pthread_key_create	direct	
+pthread_key_delete	direct	
+pthread_mutex_destroy	direct	
+pthread_mutex_init	direct	
+pthread_mutex_lock	direct	
+pthread_mutex_trylock	direct	
+pthread_mutex_unlock	direct	
+pthread_mutexattr_destroy	direct	
+pthread_mutexattr_init	direct	
+pthread_mutexattr_settype	direct	
+pthread_once	direct	
+pthread_rwlock_rdlock	direct	
+pthread_rwlock_unlock	direct	
+pthread_rwlock_wrlock	direct	
+pthread_self	direct	
+pthread_setspecific	direct	
+putchar	direct	
+puts	direct	
+read	direct	
+readlink	direct	
+realloc	direct	
+realpath	direct	
+remove	direct	
+rename	direct	
+rmdir	direct	
+sched_yield	direct	
+setenv	direct	
+setjmp	direct	
+setlocale	direct	
+sin	direct	
+sleep	direct	
+snprintf	direct	
+sscanf	direct	
+stderr	direct	
+stdout	direct	
+strcasecmp	direct	
+strchr	direct	
+strcmp	direct	
+strdup	direct	
+strerror	direct	
+strerror_r	direct	
+strlen	direct	
+strncasecmp	direct	
+strncmp	direct	
+strrchr	direct	
+strstr	direct	
+strtod	direct	
+strtof	direct	
+strtok_r	direct	
+strtol	direct	
+strtold	direct	
+strtoll	direct	
+strtoul	direct	
+strtoull	direct	
+swprintf	direct	
+symlink	direct	
+sysconf	direct	
+syslog	direct	
+tan	direct	
+time	direct	
+timegm	direct	
+towlower	direct	
+towupper	direct	
+truncate	direct	
+unlink	direct	
+unlinkat	direct	
+usleep	direct	
+utimensat	direct	
+vasprintf	direct	
+vfprintf	direct	
+vsnprintf	direct	
+vsscanf	direct	
+wcrtomb	direct	
+wcslen	direct	
+wcsnrtombs	direct	
+wcstod	direct	
+wcstof	direct	
+wcstol	direct	
+wcstold	direct	
+wcstoll	direct	
+wcstoul	direct	
+wcstoull	direct	
+wctob	direct	
+wmemchr	direct	
+wmemcmp	direct	
+ANativeWindow_getHeight	shim-android	
+ANativeWindow_getWidth	shim-android	
+ANativeWindow_setBuffersGeometry	shim-android	
+__android_log_print	shim-android	
+__android_log_write	shim-android	
+__assert2	shim-android	
+__cxa_thread_atexit_impl	shim-android	
+__errno	shim-android	
+__open_2	shim-android	
+__register_atfork	shim-android	
+__sF	shim-android	
+__system_property_get	shim-android	
+android_set_abort_message	shim-android	
+dl_iterate_phdr	shim-android	
+fallocate	shim-android	
+getauxval	shim-android	
+sendfile	shim-android	
+syscall	shim-android	
+__fwrite_chk	shim-fortify	
+__memcpy_chk	shim-fortify	
+__memmove_chk	shim-fortify	
+__pread_chk	shim-fortify	
+__pwrite_chk	shim-fortify	
+__read_chk	shim-fortify	
+__strcat_chk	shim-fortify	
+__strchr_chk	shim-fortify	
+__strlen_chk	shim-fortify	
+__strncat_chk	shim-fortify	
+__strrchr_chk	shim-fortify	
+__vsnprintf_chk	shim-fortify	
+__vsprintf_chk	shim-fortify	
+__write_chk	shim-fortify	
+freelocale	shim-locale	
+iswalpha_l	shim-locale	
+iswblank_l	shim-locale	
+iswcntrl_l	shim-locale	
+iswdigit_l	shim-locale	
+iswlower_l	shim-locale	
+iswprint_l	shim-locale	
+iswpunct_l	shim-locale	
+iswspace_l	shim-locale	
+iswupper_l	shim-locale	
+iswxdigit_l	shim-locale	
+localeconv	shim-locale	
+newlocale	shim-locale	
+nl_langinfo	shim-locale	
+strcoll_l	shim-locale	
+strftime_l	shim-locale	
+strtold_l	shim-locale	
+strtoll_l	shim-locale	
+strtoull_l	shim-locale	
+strxfrm_l	shim-locale	
+towlower_l	shim-locale	
+towupper_l	shim-locale	
+uselocale	shim-locale	
+wcscoll_l	shim-locale	
+wcsxfrm_l	shim-locale	
+fdopendir	shim-struct	
+fstat	shim-struct	
+lstat	shim-struct	
+opendir	shim-struct	
+pathconf	shim-struct	
+readdir	shim-struct	
+stat	shim-struct	
+statvfs	shim-struct	
