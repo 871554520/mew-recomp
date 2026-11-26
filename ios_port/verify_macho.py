@@ -77,6 +77,18 @@ def main(path):
             fail.append('段 %s 未 16KB 对齐' % n)
     print('段数量=%d 全部 16KB 对齐=%s' % (len(segs), not any('对齐' in f for f in fail)))
 
+    # __LINKEDIT 必须覆盖 rebase/bind/export trie —— 真机 dyld 报的就是这条
+    le = [x for x in segs if x[0] == '__LINKEDIT']
+    if le and di:
+        _n, _vm, _vs, le_fo, le_fs, _ip, _ns = le[0]
+        _ex_off, _ex_sz = di[10], di[11]
+        _rb_off, _rb_sz, _bd_off, _bd_sz = di[2], di[3], di[4], di[5]
+        end = max(_ex_off + _ex_sz, _rb_off + _rb_sz, _bd_off + _bd_sz)
+        print('__LINKEDIT fileoff=0x%x filesize=0x%x end=0x%x；内容最远到 0x%x'
+              % (le_fo, le_fs, le_fo + le_fs, end))
+        if end > le_fo + le_fs:
+            fail.append('__LINKEDIT 未覆盖 dyld 内容（超出 %d 字节）' % (end - (le_fo + le_fs)))
+
     if di:
         rb_off, rb_sz, bd_off, bd_sz = di[2], di[3], di[4], di[5]
         trie_off, trie_sz = di[10], di[11]
