@@ -581,16 +581,13 @@ def _walk_trie(trie):
             raise ValueError('child_count 越界 @0x%x' % off)
         nc = trie[p]
         p += 1
-        kids = []
         for _ in range(nc):
             e = trie.index(b'\0', p)
-            kids.append(trie[p:e])
+            nm = trie[p:e]
             p = e + 1
-        max_end = max(max_end, p)
-        for nm in kids:
             co, p = _uleb_read(trie, p)
-            if co <= off:
-                raise ValueError('子节点偏移未递增: 0x%x -> 0x%x' % (off, co))
+            if co >= len(trie):
+                raise ValueError('子节点偏移越界: 0x%x -> 0x%x' % (off, co))
             stack.append((co, prefix + nm.decode('utf-8', 'surrogateescape')))
         max_end = max(max_end, p)
     if max_end != len(trie):
@@ -670,8 +667,10 @@ def _build_trie(entries):
         out += payloads[i]               # ← 紧跟 terminal_size
         out.append(len(kids))
         for k in kids:
+            # 每个子节点：边名字（含 \0）紧接它自己的偏移，逐子交替；
+            # 不能把所有名字写在一起再把所有偏移写在后面（那样 LLVM/dyld
+            # 会把下一个名字的开头当成偏移 uleb 读，整棵树走歪）。
             out += k.encode() + b'\0'
-        for k in kids:
             out += uleb(pos[idx[id(nodes[i][k])]])
     trie = bytes(out)
     if len(trie) != total:
