@@ -365,19 +365,34 @@ void shim_KERNEL32_TlsSetValue(X64Ctx* c) {
 
 void shim_KERNEL32_InitializeCriticalSection(X64Ctx* c) {
     pthread_mutex_t* m = new pthread_mutex_t;
-    pthread_mutex_init(m, nullptr);
+    // Windows 的 CRITICAL_SECTION 是可重入锁；pthread 默认互斥锁不可重入。
+    // 用默认属性会让"同一执行流二次 EnterCriticalSection"永久自旋
+    //（实测锁表下标 7：_lock(7) 之后再 _lock(7)，15 次采样栈完全不变）。
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(m, &attr);
+    pthread_mutexattr_destroy(&attr);
     if (arg0(c)) mem_write<uint64_t>(c, arg0(c), (uint64_t)((int64_t)(uintptr_t)m - c->mem_bias));
     ret0(c, 1);
 }
 
 void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
     uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    static int logged = 0;
+    if (logged++ < 40)
+        std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx)\n",
+                     (unsigned long long)arg0(c), (unsigned long long)m);
     if (m) pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
     ret0(c, 1);
 }
 
 void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
     uint64_t m = arg0(c) ? mem_read<uint64_t>(c, arg0(c)) : 0;
+    static int logged = 0;
+    if (logged++ < 40)
+        std::fprintf(stderr, "[shim] LeaveCS(cs=0x%llx mutex=0x%llx)\n",
+                     (unsigned long long)arg0(c), (unsigned long long)m);
     if (m) pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
     ret0(c, 1);
 }
@@ -538,6 +553,7 @@ uint64_t synth_va_for(const char* name);
 RecompFn lookup_api(const char* name) {
     static const DynApi kApis[] = {
         {"InitializeCriticalSectionAndSpinCount", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
+        {"InitializeCriticalSection", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"InitializeCriticalSectionEx", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"EnterCriticalSection", shim_KERNEL32_EnterCriticalSection},
         {"LeaveCriticalSection", shim_KERNEL32_LeaveCriticalSection},
