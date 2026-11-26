@@ -151,7 +151,20 @@ static uint64_t setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx
             std::memcpy(guest_ptr(img, blk), guest_ptr(img, start), (size_t)rawBytes);
     }
     if (addrIdx) *reinterpret_cast<uint32_t*>(guest_ptr(img, addrIdx)) = 0;  // _tls_index = 0
-    if (blk) *reinterpret_cast<uint64_t*>(guest_ptr(img, ctx->gs_base + 0x58)) = blk;
+
+    // 关键：x64 的 TEB+0x58 是 **ThreadLocalStoragePointer**，指向一个 64 项的指针数组，
+    // 模块自己的 TLS 块要挂在 数组[_tls_index] 上。MSVC 生成的访问序列是
+    //     mov  rax, gs:[58h]
+    //     mov  r14, [rax + _tls_index*8]     ← 这里才拿到模块 TLS 块
+    // 上一版直接把块指针写进 0x58，少了一层间接，导致回调 #1 里
+    //     mov rdi, [r14+0x20]                ← r14 其实是模板首 8 字节，崩溃读 0x20
+    uint64_t slots = g_guest_heap.alloc(64 * 8, /*zero_init=*/true);
+    if (slots) {
+        *reinterpret_cast<uint64_t*>(guest_ptr(img, slots)) = blk;      // slot[0] = 模块 TLS 块
+        *reinterpret_cast<uint64_t*>(guest_ptr(img, ctx->gs_base + 0x58)) = slots;
+    }
+    std::fprintf(stderr, "[tls] ThreadLocalStoragePointer=0x%llx slots[0]=0x%llx\n",
+                 (unsigned long long)slots, (unsigned long long)blk);
     std::fprintf(stderr,
                  "[tls] 目录 rva=0x%x 模板=0x%llx..0x%llx zero=0x%llx block=0x%llx index=0 callbacks=0x%llx\n",
                  tlsRva, (unsigned long long)start, (unsigned long long)end,

@@ -470,19 +470,25 @@ void shim_KERNEL32_TlsFree(X64Ctx* c) {
 //（stage3 实测：0x140d6d140 里 `mov [rax],ebx` 写到 0xc06b57238）。
 // 现在两个 API 直接读写伪 TEB 的 TlsSlots，和编译器生成的访问路径对齐；
 // 索引 >=64 的仍然落在宿主数组里（Windows 那边是 TlsExpansionSlots）。
+// TEB+0x58 = ThreadLocalStoragePointer → 指向 64 项指针数组；模块的 TLS 块挂在
+// 数组[_tls_index] 上（和 MSVC 生成的 `mov rax,gs:[58h]; mov r14,[rax+idx*8]` 对齐）。
 static uint64_t tls_slot_addr(X64Ctx* c, uint32_t idx) {
-    return c->gs_base + 0x58 + (uint64_t)idx * 8;
+    uint64_t arr = mem_read<uint64_t>(c, c->gs_base + 0x58);
+    if (!arr) return 0;
+    return arr + (uint64_t)idx * 8;
 }
 
 void shim_KERNEL32_TlsGetValue(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c) & 1023;
-    if (i < 64) { ret0(c, mem_read<uint64_t>(c, tls_slot_addr(c, i))); return; }
+    uint64_t a = (i < 64) ? tls_slot_addr(c, i) : 0;
+    if (a) { ret0(c, mem_read<uint64_t>(c, a)); return; }
     ret0(c, g_tls[i]);
 }
 
 void shim_KERNEL32_TlsSetValue(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c) & 1023;
-    if (i < 64) mem_write<uint64_t>(c, tls_slot_addr(c, i), arg1(c));
+    uint64_t a = (i < 64) ? tls_slot_addr(c, i) : 0;
+    if (a) mem_write<uint64_t>(c, a, arg1(c));
     else g_tls[i] = arg1(c);
     ret0(c, 1);
 }
