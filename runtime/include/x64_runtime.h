@@ -607,6 +607,9 @@ inline void mew_probe_qword(const char* tag, uint64_t va) {
                      (unsigned long long)(CTX)->r14, (unsigned long long)(CTX)->r15);    \
         mew_probe_qword("[rsi]", (CTX)->rsi);                                    \
         mew_probe_qword("[rdi+0x88]", (CTX)->rdi + 0x88);                        \
+        mew_probe_qword("[rdi+0x90]", (CTX)->rdi + 0x90);                        \
+        mew_probe_qword("[rdi+0x3a8]", (CTX)->rdi + 0x3a8);                      \
+        mew_probe_qword("[flags 0x1412f2f80]", 0x1412f2f80ULL);                  \
         mew_probe_qword("[rbx]", (CTX)->rbx);                                    \
         mew_dump_guest_str("rcx_str", (CTX)->rcx);                               \
         mew_dump_guest_str("rdx_str", (CTX)->rdx);                               \
