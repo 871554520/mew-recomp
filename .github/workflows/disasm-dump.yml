@@ -1,0 +1,130 @@
+name: Disasm dump (objdump)
+
+on:
+  workflow_dispatch:
+    inputs:
+      vas:
+        description: '逗号分隔的 VA 列表（默认：abort 链）'
+        required: false
+        default: '0x140d64d48,0x140d79870,0x140d79600,0x140d79928,0x140d79cec,0x140d6ceb4,0x140d6ee34,0x140d6d140,0x140d6772c,0x140d70b10,0x140d70c00,0x140d7a3b4'
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch exe
+        run: |
+          curl -fL --retry 5 --retry-delay 3 -o Mewgenics.exe \
+            https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
+          ls -l Mewgenics.exe
+      - name: objdump ranges
+        run: |
+          mkdir -p out
+          : > out/disasm.txt
+          VAS="${{ inputs.vas }}"
+          for VA in $(echo "$VAS" | tr ',' ' '); do
+            END=$(python3 -c "print(hex(int('$VA',16)+0x180))")
+            echo "==================== $VA - $END ====================" >> out/disasm.txt
+            objdump -d -M intel --no-show-raw-insn \
+              --start-address=$VA --stop-address=$END Mewgenics.exe \
+              | sed -n '/^[ ]*[0-9a-f]* </,$p' >> out/disasm.txt
+          done
+          wc -l out/disasm.txt
+      - name: pdata + imports + init table
+        run: |
+          python3 - <<'PY' > out/meta.txt 2>&1
+          import struct
+          d=open('Mewgenics.exe','rb').read()
+          pe=struct.unpack_from('<I',d,0x3c)[0]
+          nsec=struct.unpack_from('<H',d,pe+6)[0]
+          optsz=struct.unpack_from('<H',d,pe+20)[0]
+          opt=pe+24
+          base=struct.unpack_from('<Q',d,opt+24)[0]
+          secs=[];st=opt+optsz
+          for i in range(nsec):
+              p=st+i*40
+              name=d[p:p+8].rstrip(b'\0').decode('latin1')
+              vs,va,rs,raw=struct.unpack_from('<IIII',d,p+8)
+              secs.append((name,va,vs,raw,rs))
+          def off(va):
+              rva=va-base
+              for n,v,vs,raw,rs in secs:
+                  if v<=rva<v+max(vs,rs): return raw+(rva-v)
+              return None
+          pd=[s for s in secs if s[0]=='.pdata'][0]
+          ents=[]
+          n=(pd[2] or pd[4])//12
+          for i in range(n):
+              b,e,u=struct.unpack_from('<III',d,pd[3]+i*12)
+              ents.append((base+b,base+e))
+          ents.sort()
+          print('image_base=0x%x pdata_entries=%d'%(base,len(ents)))
+          probes=[0x140d64d48,0x140d64d7d,0x140d79870,0x140d79600,0x140d79928,
+                  0x140d79cec,0x140d6ceb4,0x140d6ee34,0x140d6d140,0x140d6772c,
+                  0x140d70b10,0x140d70c00,0x140d7a3b4,0x140d7a3e9,0x140d7722c,
+                  0x140d7711d,0x140d770dc,0x140d6f0b4]
+          for p in probes:
+              hit=[x for x in ents if x[0]<=p<x[1]]
+              print('probe=0x%x owner=%s'%(p, '0x%x-0x%x'%hit[0] if hit else 'NONE'))
+          # .rdata 初始化表 0x140eaa8e0..0x140eaa9e0
+          o=off(0x140eaa8e0)
+          print('\n== __acrt initializer table 0x140eaa8e0..0x140eaa9e0 ==')
+          if o:
+              for i in range(16):
+                  a,b=struct.unpack_from('<QQ',d,o+i*16)
+                  print('  [%2d] init=0x%x uninit=0x%x'%(i,a,b))
+          # 导入表：IAT 槽 VA -> name
+          dd=struct.unpack_from('<IIII',d,opt+112+1*8)  # import dir idx 1
+          irva,isz=dd[0],dd[1]
+          names={}
+          o=off(base+irva) if irva else None
+          while o:
+              ilt,ts,fc,nm,iat=struct.unpack_from('<IIIII',d,o)
+              if not nm: break
+              mod=''
+              mo=off(base+nm)
+              if mo is not None: mod=d[mo:d.index(b'\0',mo)].decode('latin1')
+              t=ilt or iat
+              to=off(base+t); k=0
+              while to is not None:
+                  v=struct.unpack_from('<Q',d,to+k*8)[0]
+                  if not v: break
+                  if v>>63: names[base+iat+k*8]='#%d'%(v&0xffff)
+                  else:
+                      so=off(base+(v&0x7fffffff))
+                      if so: names[base+iat+k*8]=mod+'!'+d[so+2:d.index(b'\0',so+2)].decode('latin1')
+                  k+=1
+              o+=20
+          print('\n== imports resolved: %d IAT slots =='%len(names))
+          # 对给定的导入地址反查
+          for q in (0x1413bb298,0x1413bb1f8,0x1412f31c0):
+              print('  data_va 0x%x'%q)
+          import json
+          open('out/iat.json','w').write(json.dumps({('0x%x'%k):v for k,v in names.items()}))
+          for k,v in sorted(names.items()):
+              if v.startswith('KERNEL32!') or v.startswith('api-ms'):
+                  pass
+          print('  (IAT 明细见 out/iat.json)')
+          PY
+          head -40 out/meta.txt
+      - name: Annotate IAT refs in disasm
+        run: |
+          python3 - <<'PY'
+          import json,re
+          iat=json.load(open('out/iat.json'))
+          lines=open('out/disasm.txt').read().splitlines()
+          out=[]
+          for l in lines:
+              m=re.search(r'#\s*(0x[0-9a-f]+)',l)
+              if m and m.group(1) in iat:
+                  l=l+'   <<< '+iat[m.group(1)]
+              out.append(l)
+          open('out/disasm.txt','w').write('\n'.join(out)+'\n')
+          PY
+          grep -c '<<<' out/disasm.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disasm-out
+          path: out/
