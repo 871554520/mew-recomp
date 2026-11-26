@@ -362,7 +362,7 @@ class MachO:
                 # 只读段里的内部指针：写死即可（不行 rebase，dyld 不允许改 __TEXT）
                 struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
                 continue
-            rebase_blob += bytes([0x21]) + uleb(si) + uleb(so) + bytes([0x51])
+            rebase_blob += bytes([0x20 | (si & 0xF)]) + uleb(so) + bytes([0x51])   # SET_SEGMENT_AND_OFFSET_ULEB(seg=si) + DO_REBASE_IMM_TIMES(1)
             struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
 
         bind_blob = bytearray()
@@ -387,9 +387,9 @@ class MachO:
             bind_blob += bytes([0x11, self.ordinal[dll]])
             if add:
                 bind_blob += bytes([0x60]) + sleb(add)
-            bind_blob += bytes([0x40, 0]) + sym_out.encode() + b'\0'
+            bind_blob += bytes([0x40]) + sym_out.encode() + b'\0'   # flags=0, 名字紧随
             bind_blob += bytes([0x51])
-            bind_blob += bytes([0x21]) + uleb(si) + uleb(so)
+            bind_blob += bytes([0x70 | (si & 0xF)]) + uleb(so)   # SET_SEGMENT_AND_OFFSET_ULEB
             bind_blob += bytes([0x90])
             struct.pack_into('<Q', buf, va + elf_base, 0)
 
