@@ -17,6 +17,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-${ROOT}/out}"
 PROD="${OUT}/products"
 REPORT="${OUT}/assemble_report.txt"
+# 版本号唯一来源：IPA 文件名与 Info.plist 必须同源，否则真机上核对版本会误判（P2-1）
+VER="${IPA_VERSION:-0.10.0}"
 mkdir -p "$OUT"
 : > "$REPORT"
 say() { echo "==> [$(date +%H:%M:%S)] $*" | tee -a "$REPORT"; }
@@ -69,6 +71,27 @@ cp "$PLIST" "$APP/Info.plist"
 cp "$DYLIB" "$APP/Frameworks/libmew_relinked.dylib"
 cp "$SHIM" "$APP/Frameworks/libbionic_shim.dylib"
 cp -R "$SDLFW" "$APP/Frameworks/"
+
+# 版本同源：把 Info.plist 的版本改成 $VER。
+# CFBundleVersion 用 major*1000+minor*10+patch 保证单调递增（0.9.0→90，0.10.0→100，
+# 1.0.0→1000），否则侧载工具按数字比较会把新版本当降级。
+python3 - "$APP/Info.plist" "$VER" <<'PY'
+import sys, plistlib
+path, ver = sys.argv[1], sys.argv[2]
+parts = [int(x) for x in (ver.split('.') + ['0', '0'])[:3]]
+p = plistlib.load(open(path, 'rb'))
+p['CFBundleShortVersionString'] = ver
+p['CFBundleVersion'] = str(parts[0] * 1000 + parts[1] * 10 + parts[2])
+with open(path, 'wb') as f:
+    plistlib.dump(p, f)          # 显式关闭：后面的步骤要读这个文件
+print('    Info.plist 版本 %s (build %s)' % (ver, p['CFBundleVersion']))
+PY
+
+# SDL3.framework 的 Headers 只在编译期用，运行时不需要；打进去白占 ~3.4 MB（P2-2）
+if [ -d "$APP/Frameworks/SDL3.framework/Headers" ]; then
+    rm -rf "$APP/Frameworks/SDL3.framework/Headers"
+    num "已剔除 SDL3.framework/Headers（运行时不需要）"
+fi
 
 # 图标（iOS 要求放在 .app 根目录，文件名与 CFBundleIconFiles 对应）
 ICONDIR="${ROOT}/ios_port/ios_app/icons"
@@ -127,8 +150,8 @@ test -f "$APP/Frameworks/SDL3.framework/SDL3" && num "SDL3.framework ✓"
 python3 - "$APP/Info.plist" <<'PY' | tee -a "$REPORT"
 import sys, plistlib
 p = plistlib.load(open(sys.argv[1], 'rb'))
-for k in ('CFBundleExecutable', 'CFBundleIdentifier', 'UIFileSharingEnabled',
-          'LSSupportsOpeningDocumentsInPlace'):
+for k in ('CFBundleExecutable', 'CFBundleIdentifier', 'CFBundleShortVersionString',
+          'CFBundleVersion', 'UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace'):
     print('    %-34s %s' % (k, p.get(k)))
 PY
 
@@ -137,7 +160,7 @@ PAY="${OUT}/Payload"
 rm -rf "$PAY"
 mkdir -p "$PAY"
 cp -R "$APP" "$PAY/"
-IPA="${OUT}/Mewgenics-relink-v0.3.0-unsigned.ipa"
+IPA="${OUT}/Mewgenics-relink-v${VER}-unsigned.ipa"
 rm -f "$IPA"
 if command -v zip >/dev/null; then
     (cd "$OUT" && zip -qry "$IPA" Payload)

@@ -23,6 +23,8 @@ void sample_handler(int) {
 void timeout_handler(int) {
     std::fprintf(stderr, "\n[TIMEOUT] terminated by watchdog\n");
     call_trace().dump("timeout");
+    // 聚合表放在最末：workflow 只 tail 40 行，这张表要落在尾巴上才看得见
+    mew_unimpl_dump("timeout");
     std::fflush(stderr);
     _exit(124);
 }
@@ -173,5 +175,6 @@ int main(int argc, char** argv) {
     }
     std::printf("runner: entry returned rax=%llu resumes=%d\n",
                 (unsigned long long)ctx.rax, rounds);
+    mew_unimpl_dump("exit");
     return 0;
 }

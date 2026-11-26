@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <algorithm>
 #include <vector>
+#include <map>
+#include <mutex>
 
 struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
 
@@ -512,6 +514,65 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 
 // ---------------- 阶段 3 占位与日志 ----------------
 // MEW_UNIMPL_CONTINUE=1 时只记录并返回（用于批量收集缺失项），否则中止
+//
+// 长跑（rc=124 被 timeout 杀掉）时逐行打印会淹掉日志、也没法一眼看出「还差哪些 API」。
+// 所以每条占位同时记进聚合表，退出/收到 SIGTERM 前打一张按次数排序的表。
+inline std::mutex& mew_unimpl_mu() {
+    static std::mutex m;
+    return m;
+}
+inline std::map<std::string, unsigned long long>& mew_unimpl_api_counts() {
+    static std::map<std::string, unsigned long long> m;
+    return m;
+}
+inline std::map<unsigned long long, unsigned long long>& mew_unimpl_func_counts() {
+    static std::map<unsigned long long, unsigned long long> m;
+    return m;
+}
+
+inline void mew_unimpl_note_api(const char* name) {
+    std::lock_guard<std::mutex> lk(mew_unimpl_mu());
+    mew_unimpl_api_counts()[name]++;
+}
+inline void mew_unimpl_note_func(unsigned long long va) {
+    std::lock_guard<std::mutex> lk(mew_unimpl_mu());
+    mew_unimpl_func_counts()[va]++;
+}
+
+// 打一张表：distinct 数 + 总次数 + 前若干项。
+// 这个函数会在 SIGTERM 处理器里被调用（timeout 杀掉长跑进程前抢救统计），
+// 所以刻意做到「不分配内存」：不加 vector、不排序，直接按 map 顺序打，条目数封顶。
+// 互斥锁用 try_lock：拿不到就跳过，绝不把超时信号变成死锁。
+inline void mew_unimpl_dump(const char* why) {
+    std::unique_lock<std::mutex> lk(mew_unimpl_mu(), std::try_to_lock);
+    if (!lk.owns_lock()) {
+        std::fprintf(stderr, "\n[UNIMPL TABLE] skipped (%s): 统计锁被占用\n", why ? why : "?");
+        std::fflush(stderr);
+        return;
+    }
+    auto& a = mew_unimpl_api_counts();
+    unsigned long long atotal = 0;
+    for (const auto& kv : a) atotal += kv.second;
+    std::fprintf(stderr, "\n===== UNIMPL API TABLE (%s) distinct=%zu total=%llu =====\n",
+                 why ? why : "?", a.size(), atotal);
+    size_t shown = 0;
+    for (const auto& kv : a) {
+        if (shown++ >= 20) { std::fprintf(stderr, "  ... 其余 %zu 项略\n", a.size() - 20); break; }
+        std::fprintf(stderr, "  %-52s %llu\n", kv.first.c_str(), kv.second);
+    }
+    auto& f = mew_unimpl_func_counts();
+    unsigned long long ftotal = 0;
+    for (const auto& kv : f) ftotal += kv.second;
+    std::fprintf(stderr, "===== UNIMPL FUNC TABLE (%s) distinct=%zu total=%llu =====\n",
+                 why ? why : "?", f.size(), ftotal);
+    shown = 0;
+    for (const auto& kv : f) {
+        if (shown++ >= 10) { std::fprintf(stderr, "  ... 其余 %zu 项略\n", f.size() - 10); break; }
+        std::fprintf(stderr, "  0x%-16llx %llu\n", kv.first, kv.second);
+    }
+    std::fflush(stderr);
+}
+
 #define UNIMPL_INSN(RIP, MNEM)                                                   \
     do {                                                                         \
         std::fprintf(stderr, "[UNIMPL INSN] rip=0x%llx mnemonic=%s\n",           \
@@ -522,6 +583,7 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 
 #define UNIMPL_API(NAME)                                                         \
     do {                                                                         \
+        mew_unimpl_note_api(NAME);                                               \
         std::fprintf(stderr, "[UNIMPL API] %s\n", (NAME));                       \
         if (mew_unimpl_continue()) { ctx->rax = 0; return; }                     \
         std::abort();                                                            \
@@ -529,6 +591,7 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 
 #define UNIMPL_FUNC(VA)                                                          \
     do {                                                                         \
+        mew_unimpl_note_func((unsigned long long)(VA));                          \
         std::fprintf(stderr, "[UNIMPL FUNC] va=0x%llx\n",                        \
                      (unsigned long long)(VA));                                  \
         if (mew_unimpl_continue()) return;                                       \
@@ -549,6 +612,7 @@ inline bool mew_pop_if_retaddr(X64Ctx* c) {
 
 #define UNIMPL_FUNC_M(VA, MNEMS)                                                 \
     do {                                                                         \
+        mew_unimpl_note_func((unsigned long long)(VA));                          \
         std::fprintf(stderr, "[UNIMPL FUNC] va=0x%llx missing=%s\n",             \
                      (unsigned long long)(VA), (MNEMS));                         \
         if (mew_unimpl_continue()) {                                             \

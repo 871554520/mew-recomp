@@ -116,6 +116,38 @@ struct GuestHeapPool {
         return it == alloc_sizes.end() ? 0 : it->second;
     }
 
+    // 调用方当初请求的字节数（HeapSize 用；块的实际物理大小是 size_of）
+    size_t requested(uint64_t addr) {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto it = alloc_req.find(addr);
+        return it == alloc_req.end() ? 0 : it->second;
+    }
+
+    // 尝试原地扩容：只有「最新一块」才有资格（游标就在它尾巴上）。
+    // 成功返回 true；失败不动任何状态，调用方自行决定退化路线。
+    bool grow_in_place(uint64_t addr, size_t new_aligned, bool zero_new) {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto it = alloc_sizes.find(addr);
+        if (it == alloc_sizes.end()) return false;
+        size_t old = it->second;
+        if (new_aligned <= old) return true;                       // 够大，不缩
+        if (addr + old != reinterpret_cast<uint64_t>(base) + cursor) return false;  // 不是最新块
+        size_t need = new_aligned - old;
+        if (cursor + need > POOL_SIZE) return false;
+        if (zero_new) std::memset(base + cursor, 0, need);
+        cursor += need;
+        it->second = new_aligned;
+        for (auto& e : live)
+            if (e.first == addr) { e.second = new_aligned; break; }
+        return true;
+    }
+
+    // 原地扩容后修正「请求字节数」，让后续 HeapSize 拿到新值
+    void set_requested(uint64_t addr, size_t n) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (alloc_sizes.count(addr)) alloc_req[addr] = n;
+    }
+
     // 阶段 5 调试期只从登记表移除，不真正回收：彻底杜绝 use-after-free 与野指针崩。
     void free_block(uint64_t addr) {
         std::lock_guard<std::mutex> lk(mtx);

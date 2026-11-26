@@ -276,6 +276,111 @@ void shim_KERNEL32_HeapFree(X64Ctx* c) {
     }
 }
 
+// ---------------- Heap 家族其余成员 ----------------
+// 实测证据（run 45873066277）：HeapAlloc(16) 成功后 CRT 紧接着调 HeapReAlloc，
+// 而 HeapReAlloc 当时只有自动生成的弱占位（打印 [UNIMPL API] 后返回 0），
+// 调用方把 NULL 存进链表槽，下一轮读 [NULL+0x10] 就成了 fault=0x10。
+// 结论：这一族必须是真实现，不能靠「返回非零假装成功」。
+namespace {
+constexpr uint32_t kHeapZeroMemory    = 0x8u;
+constexpr uint32_t kHeapInPlaceOnly   = 0x10u;
+}  // namespace
+
+void shim_KERNEL32_HeapReAlloc(X64Ctx* c) {
+    const uint32_t flags = (uint32_t)arg1(c);
+    const uint64_t mem = arg2(c);
+    size_t n = (size_t)arg3(c);
+    static int logged = 0;
+    const bool verbose = logged++ < 30;
+
+    // 语义对齐 Windows：lpMem == NULL 等价于 HeapAlloc；dwBytes == 0 也要给有效指针
+    if (!mem) {
+        uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & kHeapZeroMemory) != 0);
+        if (verbose)
+            std::fprintf(stderr, "[shim] HeapReAlloc(NULL, %zu, flags=0x%x)=0x%llx (as alloc) caller=0x%llx\n",
+                         n, flags, (unsigned long long)g, (unsigned long long)cur_fn_va());
+        ret0(c, g);
+        return;
+    }
+    if (!g_guest_heap.owns(mem)) {
+        std::fprintf(stderr, "[shim] HeapReAlloc(0x%llx, %zu) refused: outside guest heap pool\n",
+                     (unsigned long long)mem, n);
+        ret0(c, 0);
+        return;
+    }
+    if (n == 0) n = 1;
+    const size_t old_cap = g_guest_heap.size_of(mem);  // 已对齐的物理大小
+    size_t new_cap = (n + 15ULL) & ~static_cast<size_t>(15ULL);
+    if (!new_cap) new_cap = 16;
+
+    // 先试原地扩：只有「最新一块」能扩，bump 堆永远不缩
+    if (g_guest_heap.grow_in_place(mem, new_cap, (flags & kHeapZeroMemory) != 0)) {
+        g_guest_heap.set_requested(mem, n);
+        if (verbose)
+            std::fprintf(stderr, "[shim] HeapReAlloc(0x%llx -> %zu) in-place ok caller=0x%llx\n",
+                         (unsigned long long)mem, n, (unsigned long long)cur_fn_va());
+        ret0(c, mem);
+        return;
+    }
+    if (flags & kHeapInPlaceOnly) {
+        if (verbose)
+            std::fprintf(stderr, "[shim] HeapReAlloc(0x%llx -> %zu) refused: IN_PLACE_ONLY\n",
+                         (unsigned long long)mem, n);
+        ret0(c, 0);
+        return;
+    }
+
+    // 退化成 HeapAlloc + memcpy + 释放旧块（旧块内存不回收，杜绝 use-after-free）
+    uint64_t p = g_guest_heap.alloc(n, false);
+    const size_t cp = old_cap < n ? old_cap : n;
+    if (cp) {
+        std::memcpy(reinterpret_cast<void*>((uintptr_t)(p + c->mem_bias)),
+                    reinterpret_cast<const void*>((uintptr_t)(mem + c->mem_bias)), cp);
+    }
+    if ((flags & kHeapZeroMemory) && cp < n) {
+        std::memset(reinterpret_cast<void*>((uintptr_t)(p + c->mem_bias + cp)), 0, n - cp);
+    }
+    g_guest_heap.free_block(mem);
+    if (verbose)
+        std::fprintf(stderr, "[shim] HeapReAlloc(0x%llx -> %zu)=0x%llx (moved) caller=0x%llx\n",
+                     (unsigned long long)mem, n, (unsigned long long)p,
+                     (unsigned long long)cur_fn_va());
+    ret0(c, p);
+}
+
+void shim_KERNEL32_HeapSize(X64Ctx* c) {
+    uint64_t mem = arg2(c);
+    size_t n = mem ? g_guest_heap.requested(mem) : 0;
+    static int logged = 0;
+    if (logged++ < 10)
+        std::fprintf(stderr, "[shim] HeapSize(0x%llx)=%zu caller=0x%llx\n",
+                     (unsigned long long)mem, n, (unsigned long long)cur_fn_va());
+    ret0(c, n ? (uint64_t)n : (uint64_t)-1);
+}
+
+void shim_KERNEL32_HeapValidate(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_HeapCompact(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_HeapCreate(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_HeapDestroy(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_HeapSetInformation(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_HeapQueryInformation(X64Ctx* c) {
+    // (hHeap, HeapInformationClass, HeapInformation, HeapInformationLength, lpReturnLength)
+    const uint64_t info = arg2(c);
+    const size_t  len  = (size_t)arg3(c);
+    if (info && len) std::memset(guest_ptr_from_ctx(c, info), 0, len);
+    if (arg4(c)) mem_write<uint32_t>(c, arg4(c), 0);
+    ret0(c, 1);
+}
+
+void shim_KERNEL32_FreeEnvironmentStringsW(X64Ctx* c) {
+    // 与 GetEnvironmentStringsW 配对：那边是一次 guest_alloc 的常驻块，这里只需承认
+    static int logged = 0;
+    if (logged++ < 5)
+        std::fprintf(stderr, "[shim] FreeEnvironmentStringsW(0x%llx) caller=0x%llx\n",
+                     (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
+    ret0(c, 1);
+}
+
 // ---------------- 文件 ----------------
 void shim_KERNEL32_CreateFileW(X64Ctx* c) {
     std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
@@ -607,6 +712,14 @@ RecompFn lookup_api(const char* name) {
         {"VirtualProtect", shim_KERNEL32_VirtualProtect},
         {"HeapAlloc", shim_KERNEL32_HeapAlloc},
         {"HeapFree", shim_KERNEL32_HeapFree},
+        {"HeapReAlloc", shim_KERNEL32_HeapReAlloc},
+        {"HeapSize", shim_KERNEL32_HeapSize},
+        {"HeapValidate", shim_KERNEL32_HeapValidate},
+        {"HeapCompact", shim_KERNEL32_HeapCompact},
+        {"HeapCreate", shim_KERNEL32_HeapCreate},
+        {"HeapDestroy", shim_KERNEL32_HeapDestroy},
+        {"HeapSetInformation", shim_KERNEL32_HeapSetInformation},
+        {"HeapQueryInformation", shim_KERNEL32_HeapQueryInformation},
         {"GetProcessHeap", shim_KERNEL32_GetProcessHeap},
         {"CloseHandle", shim_KERNEL32_CloseHandle},
         {"ReadFile", shim_KERNEL32_ReadFile},
@@ -643,6 +756,7 @@ RecompFn lookup_api(const char* name) {
         {"GetCommandLineA", shim_KERNEL32_GetCommandLineA},
         {"GetCommandLineW", shim_KERNEL32_GetCommandLineW},
         {"GetEnvironmentStringsW", shim_KERNEL32_GetEnvironmentStringsW},
+        {"FreeEnvironmentStringsW", shim_KERNEL32_FreeEnvironmentStringsW},
         {"GetStartupInfoW", shim_KERNEL32_GetStartupInfoW},
         {"IsProcessorFeaturePresent", shim_KERNEL32_IsProcessorFeaturePresent},
         {"GetStdHandle", shim_KERNEL32_GetStdHandle},
@@ -996,19 +1110,41 @@ void shim_KERNEL32_RtlUnwind(X64Ctx* c) {
 }
 
 void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
-    // (cp, dwFlags, lpWide, cchWide, lpMulti, cbMulti, lpDefault, pfUsed)
-    uint64_t src = arg2(c);
-    int cch = (int)arg3(c);
-    uint64_t dst = 0;
-    int cbMulti = 0;
-    if (cch < 0) {
+    // (CodePage, dwFlags, lpWideCharStr, cchWideChar,
+    //  lpMultiByteStr, cbMultiByte, lpDefaultChar, lpUsedDefaultChar)
+    // 旧实现只返回 len+1、从不住缓冲区，真正拿它填路径的调用方会读到空串（P2-5）。
+    const uint32_t cp   = (uint32_t)arg0(c);
+    const uint64_t src  = arg2(c);
+    const int      in_cch = (int)arg3(c);
+    const uint64_t dst  = arg4(c);
+    const int      cb   = (int)arg5(c);
+    if (arg7(c)) mem_write<int32_t>(c, arg7(c), 0);   // lpUsedDefaultChar = FALSE
+    if (!src) { ret0(c, 0); return; }
+
+    const bool nul_term = in_cch < 0;
+    size_t units = 0;
+    if (nul_term) {
         const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, src);
-        size_t n = 0;
-        while (p && p[n]) ++n;
-        cch = (int)n;
+        while (p && p[units]) ++units;
+        ++units;                                      // 长度含结尾 NUL
+    } else {
+        units = (size_t)in_cch;
     }
-    std::string s = utf16_to_utf8((const uint16_t*)guest_ptr_from_ctx(c, src), (size_t)(cch < 0 ? 0 : cch));
-    // 第 5/6 个参数在栈上，这里简化：若目标指针为 0 只返回所需长度
-    (void)dst; (void)cbMulti;
-    ret0(c, (uint64_t)s.size() + 1);
+    // 注意：这里恒按 UTF-8 输出。游戏内路径/设置全是 ASCII，CP_ACP 与 UTF-8 同结果；
+    // 若将来出现非 ASCII 的 ANSI 调用，日志里会看到 cp 与长度，再按代码页分支。
+    std::string s = utf16_to_utf8((const uint16_t*)guest_ptr_from_ctx(c, src), units);
+    if (nul_term) s.push_back('\0');
+    const int need = (int)s.size();
+    static int logged = 0;
+    if (logged++ < 10)
+        std::fprintf(stderr, "[shim] WideCharToMultiByte(cp=%u, cch=%d, cb=%d) = %d caller=0x%llx\n",
+                     cp, in_cch, cb, need, (unsigned long long)cur_fn_va());
+    if (!dst || cb == 0) { ret0(c, (uint64_t)need); return; }   // 只问所需长度
+    if (need <= cb) {
+        std::memcpy(guest_ptr_from_ctx(c, dst), s.data(), (size_t)need);
+        ret0(c, (uint64_t)need);
+    } else {
+        std::memcpy(guest_ptr_from_ctx(c, dst), s.data(), (size_t)cb);  // 满额拷贝后按失败返回
+        ret0(c, 0);
+    }
 }
