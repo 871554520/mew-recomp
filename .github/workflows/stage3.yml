@@ -90,7 +90,7 @@ jobs:
 
       - name: Dump hot functions (debug)
         run: |
-          for VA in 140d6ca68 140d6cae8 140d6cb90 140d6cf58 140d6d0e0; do
+          for VA in 140d6ee24 140d6ee34 140d6ee3c 140d6ca68 140d6cb90; do
             echo "===== sub_$VA ====="
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -200
           done | tee generated/hot_functions.txt
@@ -230,7 +230,7 @@ jobs:
       - name: Stage 5 - run launcher (log driven)
         run: |
           set +e
-          MEW_STACK_REPAIR=1 MEW_ABI_GUARD=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 90 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
+          MEW_ABI_GUARD=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 90 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
           echo "--- unimpl/api log (first 40) ---"
@@ -262,7 +262,7 @@ jobs:
       - name: Stage 5 alt - run WITHOUT safe-mem (native backtrace of the real crash)
         run: |
           set +e
-          MEW_STACK_REPAIR=1 MEW_ABI_GUARD=1 MEW_UNIMPL_CONTINUE=1 timeout 120 ./build-stage3/mew_runner Mewgenics.exe \
+          MEW_ABI_GUARD=1 MEW_UNIMPL_CONTINUE=1 timeout 120 ./build-stage3/mew_runner Mewgenics.exe \
             > generated/runner_nosafe.out 2> generated/runner_nosafe.err
           echo "nosafe rc=$?"
           echo '--- crash backtrace ---'
