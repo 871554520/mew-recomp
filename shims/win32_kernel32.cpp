@@ -1042,6 +1042,261 @@ void shim_KERNEL32_CompareStringA(X64Ctx* c) {
 }
 void shim_KERNEL32_LCMapStringEx(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
 
+// ---------------- USER32 / GDI32：假窗口 + 有界消息循环（阶段 A） ----------------
+// 依据见 Mewgenics-方案二-窗口与GL垫片设计-2026-11-27.md：
+//   * 导入表里没有 SDL3.dll —— SDL 静态链进游戏，窗口仍走 USER32；
+//   * 没有 wglCreateContext —— GL 入口靠 LoadLibraryW("opengl32.dll") +
+//     GetProcAddress("wglCreateContext") 动态取，所以 wgl 的接入点是 KERNEL32
+//     的动态加载垫片，不是导入表。
+// 阶段 A 只做「假窗口 + 有界消息循环」：让引擎初始化跑穿、跑到资源加载，
+// 跑满 MEW_MAX_FRAMES（默认 60）后投递 WM_QUIT 让引擎自己退出，
+// 这样能拿到退出路径的日志，不必再靠 timeout 杀进程。
+namespace {
+constexpr uint64_t kFakeHwnd = 0x10001;
+constexpr uint64_t kFakeHdc  = 0x20001;
+constexpr uint32_t WM_PAINT_  = 0x000F;
+constexpr uint32_t WM_TIMER_  = 0x0113;
+constexpr uint32_t WM_QUIT_   = 0x0012;
+constexpr uint32_t WM_CLOSE_  = 0x0010;
+
+struct WinState { int w; int h; int frames; bool quit_sent; const char* title; };
+WinState& win() {
+    static WinState s = {1280, 720, 0, false, ""};
+    return s;
+}
+int max_frames() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("MEW_MAX_FRAMES");
+        v = e ? std::atoi(e) : 60;
+        if (v <= 0) v = 60;
+    }
+    return v;
+}
+// MSG（x64，48 字节）：hwnd(0) message(8) wParam(16) lParam(24) time(32) pt(36,40) lPrivate(44)
+void fill_msg(X64Ctx* c, uint64_t dst, uint32_t msg) {
+    if (!dst) return;
+    std::memset(guest_ptr_from_ctx(c, dst), 0, 48);
+    mem_write<uint64_t>(c, dst + 0, kFakeHwnd);
+    mem_write<uint32_t>(c, dst + 8, msg);
+    mem_write<uint32_t>(c, dst + 32, (uint32_t)(win().frames * 16));
+}
+void fill_rect(X64Ctx* c, uint64_t dst, int l, int t, int r, int b) {
+    if (!dst) return;
+    mem_write<int32_t>(c, dst + 0, l);
+    mem_write<int32_t>(c, dst + 4, t);
+    mem_write<int32_t>(c, dst + 8, r);
+    mem_write<int32_t>(c, dst + 12, b);
+}
+}  // namespace
+
+void shim_USER32_CreateWindowExW(X64Ctx* c) {
+    const int w = (int)arg6(c), h = (int)arg7(c);
+    if (w > 0) win().w = w;
+    if (h > 0) win().h = h;
+    win().title = (const char*)guest_ptr_from_ctx(c, arg2(c));
+    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx\n",
+                 win().w, win().h, win().title ? win().title : "(n/a)",
+                 (unsigned long long)kFakeHwnd);
+    ret0(c, kFakeHwnd);
+}
+void shim_USER32_CreateWindowExA(X64Ctx* c) { shim_USER32_CreateWindowExW(c); }
+void shim_USER32_RegisterClassW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_RegisterClassExW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_RegisterClassA(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_DestroyWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_IsWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_ShowWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowPos(X64Ctx* c) {
+    // (hwnd, hWndInsertAfter, x, y, cx, cy, flags)：cx=第 5 个=arg4，cy=第 6 个=arg5
+    const int cx = (int)arg4(c), cy = (int)arg5(c);
+    if (cx > 0) win().w = cx;
+    if (cy > 0) win().h = cy;
+    ret0(c, 1);
+}
+void shim_USER32_GetClientRect(X64Ctx* c) {
+    fill_rect(c, arg1(c), 0, 0, win().w, win().h);
+    ret0(c, 1);
+}
+void shim_USER32_GetWindowRect(X64Ctx* c) {
+    fill_rect(c, arg1(c), 0, 0, win().w, win().h);
+    ret0(c, 1);
+}
+void shim_USER32_GetDC(X64Ctx* c) { (void)c; ret0(c, kFakeHdc); }
+void shim_USER32_ReleaseDC(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_GetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
+void shim_USER32_GetActiveWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
+void shim_USER32_SetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetActiveWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
+void shim_USER32_EnableWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_GetWindowLongW(X64Ctx* c) {
+    // GWL_STYLE(-16) 给个带 WS_VISIBLE 的普通风格，其余 0
+    if ((int)arg1(c) == -16) { ret0(c, 0x10CF0000ULL); return; }
+    ret0(c, 0);
+}
+void shim_USER32_GetWindowLongPtrW(X64Ctx* c) { shim_USER32_GetWindowLongW(c); }
+void shim_USER32_SetWindowLongW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_SetWindowLongPtrW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetWindowThreadProcessId(X64Ctx* c) {
+    if (arg1(c)) mem_write<uint32_t>(c, arg1(c), 1);
+    ret0(c, kFakeHwnd);
+}
+void shim_USER32_GetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetWindowTextA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetWindowTextLengthW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_SetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_ScreenToClient(X64Ctx* c) { (void)c; ret0(c, 1); }   // 恒等变换
+void shim_USER32_ClientToScreen(X64Ctx* c) { (void)c; ret0(c, 1); }
+
+// ---- 消息循环：有界 ----
+// PeekMessageW/GetMessageW 每调用一次推进一「帧」，跑满 MEW_MAX_FRAMES 后投 WM_QUIT
+void shim_USER32_PeekMessageW(X64Ctx* c) {
+    if (win().frames < max_frames()) {
+        win().frames++;
+        fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
+        ret0(c, 1);
+        return;
+    }
+    if (!win().quit_sent) {
+        win().quit_sent = true;
+        fill_msg(c, arg0(c), WM_QUIT_);
+        std::fprintf(stderr, "[shim] 消息循环到达 MEW_MAX_FRAMES=%d，投递 WM_QUIT\n",
+                     max_frames());
+        ret0(c, 1);
+        return;
+    }
+    ret0(c, 0);
+}
+void shim_USER32_GetMessageW(X64Ctx* c) {
+    if (win().frames < max_frames()) {
+        win().frames++;
+        fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
+        ret0(c, 1);
+        return;
+    }
+    if (!win().quit_sent) {
+        win().quit_sent = true;
+        fill_msg(c, arg0(c), WM_QUIT_);
+        std::fprintf(stderr, "[shim] 消息循环到达 MEW_MAX_FRAMES=%d，投递 WM_QUIT\n",
+                     max_frames());
+        ret0(c, 1);
+        return;
+    }
+    ret0(c, 0);   // GetMessageW 返回 0 = 收到 WM_QUIT，引擎退出主循环
+}
+void shim_USER32_DispatchMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_TranslateMessage(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_DefWindowProcW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_DefWindowProcA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_CallWindowProcW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_PostMessageW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_PostThreadMessageW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SendMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_SendMessageA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetMessageExtraInfo(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetMessageTime(X64Ctx* c) { (void)c; ret0(c, (uint64_t)(win().frames * 16)); }
+void shim_USER32_GetMessagePos(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_RegisterWindowMessageA(X64Ctx* c) {
+    static uint32_t n = 0xC000;
+    ret0(c, n++);
+}
+void shim_USER32_MessageBoxA(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 5)
+        std::fprintf(stderr, "[shim] MessageBoxA: %s\n",
+                     (const char*)guest_ptr_from_ctx(c, arg1(c)));
+    ret0(c, 1);
+}
+
+// ---- 输入：一律「没有按键」 ----
+void shim_USER32_GetAsyncKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetKeyboardState(X64Ctx* c) {
+    const uint64_t p = arg0(c);
+    if (p) std::memset(guest_ptr_from_ctx(c, p), 0, 256);
+    ret0(c, 1);
+}
+void shim_USER32_GetRawInputDeviceList(X64Ctx* c) {
+    if (arg1(c)) mem_write<uint32_t>(c, arg1(c), 0);   // 0 个设备
+    ret0(c, 0);
+}
+void shim_USER32_GetRawInputDeviceInfoA(X64Ctx* c) {
+    if (arg2(c)) mem_write<uint32_t>(c, arg2(c), 0);
+    ret0(c, (uint64_t)-1);
+}
+void shim_USER32_PtInRect(X64Ctx* c) {
+    // BOOL PtInRect(const RECT *lprc, POINT pt) —— pt 是**按值**传的 8 字节（x 低 32、y 高 32）
+    const uint64_t r = arg0(c);
+    if (!r) { ret0(c, 0); return; }
+    const int l = mem_read<int32_t>(c, r + 0), t = mem_read<int32_t>(c, r + 4);
+    const int rr = mem_read<int32_t>(c, r + 8), bb = mem_read<int32_t>(c, r + 12);
+    const int x = (int)(uint32_t)(arg1(c) & 0xFFFFFFFFu);
+    const int y = (int)(uint32_t)(arg1(c) >> 32);
+    ret0(c, (x >= l && x < rr && y >= t && y < bb) ? 1 : 0);
+}
+void shim_USER32_IntersectRect(X64Ctx* c) {
+    const uint64_t d = arg0(c), a = arg1(c), b = arg2(c);
+    if (!d || !a || !b) { ret0(c, 0); return; }
+    int l = std::max(mem_read<int32_t>(c, a + 0), mem_read<int32_t>(c, b + 0));
+    int t = std::max(mem_read<int32_t>(c, a + 4), mem_read<int32_t>(c, b + 4));
+    int r = std::min(mem_read<int32_t>(c, a + 8), mem_read<int32_t>(c, b + 8));
+    int bo = std::min(mem_read<int32_t>(c, a + 12), mem_read<int32_t>(c, b + 12));
+    if (r <= l || bo <= t) { fill_rect(c, d, 0, 0, 0, 0); ret0(c, 0); return; }
+    fill_rect(c, d, l, t, r, bo);
+    ret0(c, 1);
+}
+void shim_USER32_ClipCursor(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_GetClipCursor(X64Ctx* c) { fill_rect(c, arg0(c), 0, 0, win().w, win().h); ret0(c, 1); }
+void shim_USER32_SetCapture(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
+void shim_USER32_ReleaseCapture(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetCursorPos(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_LockWorkStation(X64Ctx* c) { (void)c; ret0(c, 1); }
+
+// ---- 显示 / 系统参数 ----
+void shim_USER32_ChangeDisplaySettingsExW(X64Ctx* c) { (void)c; ret0(c, 0); }  // DISP_CHANGE_SUCCESSFUL
+void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_EnumDisplayMonitors(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_MonitorFromWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
+void shim_USER32_GetMonitorInfoW(X64Ctx* c) {
+    const uint64_t p = arg1(c);
+    if (p) {
+        std::memset(guest_ptr_from_ctx(c, p), 0, 40);
+        mem_write<uint32_t>(c, p + 0, 40);
+        fill_rect(c, p + 4, 0, 0, win().w, win().h);
+        fill_rect(c, p + 20, 0, 0, win().w, win().h);
+        mem_write<uint32_t>(c, p + 36, 1);   // MONITORINFOF_PRIMARY
+    }
+    ret0(c, 1);
+}
+void shim_USER32_SystemParametersInfoW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_SystemParametersInfoA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_AdjustWindowRectEx(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowRgn(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetLayeredWindowAttributes(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_FlashWindowEx(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetParent(X64Ctx* c) { ret0(c, kFakeHwnd); }
+void shim_USER32_GetWindowPlacement(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetKeyboardLayout(X64Ctx* c) { (void)c; ret0(c, 0x0409); }
+void shim_USER32_ToUnicode(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_LoadCursorW(X64Ctx* c) { (void)c; ret0(c, 0x30001); }
+void shim_USER32_SetCursor(X64Ctx* c) { (void)c; ret0(c, 0x30001); }
+void shim_USER32_SetWindowsHookExW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_UnhookWindowsHookEx(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_DrawTextW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetDlgItem(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_EndDialog(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_CreateIconFromResource(X64Ctx* c) { (void)c; ret0(c, 0); }
+
+// ---- 剪贴板：一律「没有数据」 ----
+void shim_USER32_OpenClipboard(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_CloseClipboard(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_EmptyClipboard(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetClipboardData(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_SetClipboardData(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_EnumClipboardFormats(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_IsClipboardFormatAvailable(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_GetClipboardSequenceNumber(X64Ctx* c) { (void)c; ret0(c, 0); }
+
 // ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
 namespace {
 
