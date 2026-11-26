@@ -435,21 +435,44 @@ class MachO:
             n_type = 0x0F if (typ & 0x0f) == 2 else 0x0E   # N_WEAK_DEF / N_SECT|N_EXT
             symtab += struct.pack('<IBBHQ', n, n_type, 1, 1, addr + elf_base)
 
+        # __LINKEDIT 内部顺序必须按 Apple 约定：rebase → bind → export trie → SYMTAB → STRTAB。
+        # STRTAB **必须在最末尾**：ldid / codesign 会把 LC_CODE_SIGNATURE 追加在
+        # 「他们认为的数据末尾」；如果 STRTAB 后面还有 export/rebase/bind，签名时
+        # 会被整段截掉（实测 78,544,896 → 77,245,008，dyld 报
+        # "LINKEDIT content 'exports trie' extends beyond end of segment"）。
+        rb_off = len(buf)
+        buf.extend(rebase_blob)
+        bd_off = len(buf)
+        buf.extend(bind_blob)
+        trie_off = len(buf)
+        # Darwin 约定：export trie 里的 C 符号名带前导 '_'
+        trie = _build_trie(sorted(set(('_' + n, a + elf_base, t) for n, a, t in self.exports)))
+        buf.extend(trie)
         symoff = len(buf)
         buf.extend(symtab)
         stroff = len(buf)
         buf.extend(strtab)
         buf.extend(b'\0' * (align(len(buf), 8) - len(buf)))
-        trie_off = len(buf)
-        # Darwin 约定：export trie 里的 C 符号名带前导 '_'
-        trie = _build_trie(sorted(set(('_' + n, a + elf_base, t) for n, a, t in self.exports)))
-        buf.extend(trie)
-        rb_off = len(buf)
-        buf.extend(rebase_blob)
-        bd_off = len(buf)
-        buf.extend(bind_blob)
+        str_end = len(buf)
         buf.extend(b'\0' * (align(len(buf), page) - len(buf)))
         linkedit_size = len(buf) - linkedit_start
+
+        # ---------- __LINKEDIT 一致性自检（真机 dyld 就是这么挑刺的） ----------
+        _le_end = linkedit_start + linkedit_size
+        for _nm, _off, _sz in (('rebase', rb_off, len(rebase_blob)),
+                               ('bind', bd_off, len(bind_blob)),
+                               ('export', trie_off, len(trie)),
+                               ('symtab', symoff, len(symtab)),
+                               ('strtab', stroff, len(strtab))):
+            if _off < linkedit_start or _off + _sz > _le_end:
+                raise RuntimeError('__LINKEDIT 未覆盖 %s：0x%x..0x%x 超出段尾 0x%x'
+                                   % (_nm, _off, _off + _sz, _le_end))
+        # STRTAB 必须是 linkedit 里最后一块有内容的东西（后面只允许 0 填充）
+        _after = buf[str_end:]
+        if any(_after):
+            raise RuntimeError('STRTAB 之后还有非零数据，签名工具会把它截掉')
+        if not (stroff >= symoff and symoff >= trie_off and trie_off >= bd_off and bd_off >= rb_off):
+            raise RuntimeError('__LINKEDIT 内部顺序不是 rebase→bind→trie→symtab→strtab')
 
         # ---------- 4) load commands ----------
         def sect(name, segname, addr, size, off, flags, align_pow=2):
