@@ -1,1 +1,1 @@
-t=1795723587 v0.11.0 round-B: 补 libmewcompat（TLSDESC resolver + SDL_StretchSurface）+ 装前门禁 verify_bundle + arg6/arg7 编译修复
+t=1795725479 v0.11.2 round-C: 55 个新垫片 + arg6/arg7 + init_array 就位，跑 stage3 看聚合表
