@@ -1,10 +1,9 @@
 name: iOS port P0 (load libmain.so on macOS arm64)
 
 on:
+  # 只留手动触发：B 路线（构建期 ELF→Mach-O）不需要 macOS 上跑运行期 ELF 加载器，
+  # 之前每次 push ios_port/** 都会往 macOS 队列里塞一个必然被取消的 run。
   workflow_dispatch:
-  push:
-    paths:
-      - ios_port/**
 
 jobs:
   p0:
