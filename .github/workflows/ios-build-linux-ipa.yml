@@ -156,11 +156,17 @@ jobs:
         run: |
           set +e
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git make clang libssl-dev libplist-dev zlib1g-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git make clang lld libssl-dev libplist-dev zlib1g-dev
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
           make -C /tmp/ldid -j"$(nproc)"
           sudo cp /tmp/ldid/ldid /usr/local/bin/ldid 2>/dev/null && ldid -h >/dev/null 2>&1 && echo "ldid 可用"
           exit 0
+
+      - name: 编兼容库 libmewcompat.dylib（Linux，无 SDK）
+        run: |
+          set -euo pipefail
+          chmod +x ios_port/build_compat_linux.sh
+          OUT="$PWD/out" bash ios_port/build_compat_linux.sh
 
       - name: 组装 IPA（Linux）
         run: |

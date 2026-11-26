@@ -19,8 +19,11 @@ static inline uint64_t arg1(X64Ctx* c) { return c->rdx; }
 static inline uint64_t arg2(X64Ctx* c) { return c->r8; }
 static inline uint64_t arg3(X64Ctx* c) { return c->r9; }
 // 第 5/6 个参数在栈上：call 之后 rsp 指向返回地址，+0x28 = 第 5 个参数
+// （Win64 调用约定：返回地址 8 字节 + 32 字节 home space，第 5 个参数落在 +0x28）
 static inline uint64_t arg4(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x28); }
 static inline uint64_t arg5(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x30); }
+static inline uint64_t arg6(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x38); }
+static inline uint64_t arg7(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x40); }
 static inline void ret0(X64Ctx* c, uint64_t v) { c->rax = v; }
 
 template <typename T>

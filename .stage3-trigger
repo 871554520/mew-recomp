@@ -1,1 +1,1 @@
-t=1795722288 v0.10.0 准备 round-A: HeapReAlloc/HeapSize/FreeEnvironmentStringsW 真实现 + UNIMPL API 聚合表 + IPA 版本同源/剔头文件
+t=1795723587 v0.11.0 round-B: 补 libmewcompat（TLSDESC resolver + SDL_StretchSurface）+ 装前门禁 verify_bundle + arg6/arg7 编译修复

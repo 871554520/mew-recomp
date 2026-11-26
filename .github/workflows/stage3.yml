@@ -493,6 +493,15 @@ jobs:
             echo
             echo '===== ABI 违规（前 10）====='
             grep 'ABI VIOLATION' generated/runner_nosafe.err generated/runner_b.err 2>/dev/null | head -10
+            echo
+            echo '===== 宿主链接（mew_runner 编译）日志末尾 40 行 ====='
+            tail -40 generated/runner_build.log 2>/dev/null
+            echo
+            echo '===== Gate3 链接日志末尾 15 行 ====='
+            tail -15 generated/link.log 2>/dev/null
+            echo
+            echo '===== 分片编译错误（若有）====='
+            grep -m 10 'error:' generated/compile.log 2>/dev/null
           } > diag-summary.txt
           wc -l diag-summary.txt
           git config user.name "ci-diag"

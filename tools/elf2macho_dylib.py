@@ -11,8 +11,15 @@
         SDL_*                 -> SDL3.framework
         PASSTHROUGH（数学/内存/字符串）-> /usr/lib/libSystem.B.dylib
         其余 bionic/POSIX/Android -> @rpath/libbionic_shim.dylib（符号名加 _bionic_ 前缀）
-  * TLSDESC -> 绑定到 libbionic_shim 的 _bionic_tlsdesc_resolver
+  * TLSDESC -> 绑定到 libmewcompat 的 _bionic_tlsdesc_resolver
+        （搬到 libmewcompat 而不是 shim：Release 里的 shim 是早期构建，导出表里没有它，
+          已是实测事实；见 ios_port/compat/mewcompat.c）
+  * COMPAT_SYMBOLS（SDL_StretchSurface 一类 SDL 3.4 才有的 API）-> libmewcompat
   * 导出表（export trie）里放上所有已定义全局符号，保证 dlsym(SDL_main) 可用。
+
+注意：改依赖列表等于改 bind 序号，改完必须跑 ios_port/verify_bundle.py 复核
+「每条 bind 的符号都在所属依赖的导出表里」——否则真机只会在 dlopen 时
+报一句 symbol not found。
 
 用法:
     python3 tools/elf2macho_dylib.py libmain.so -o libmew_relinked.dylib \
@@ -37,6 +44,12 @@ R_AARCH64_GLOB_DAT = 1025
 R_AARCH64_JUMP_SLOT = 1026
 R_AARCH64_RELATIVE = 1027
 R_AARCH64_TLSDESC = 1031
+
+# 游戏需要、但 SDL3 3.2.0 没导出的符号：转由 libmewcompat 提供。
+# （游戏自带的安卓 SDL3 是 3.2.12 开发版，这些 API 在里面已有）
+COMPAT_SYMBOLS = {
+    'SDL_StretchSurface',   # SDL 3.4 起公开；语义 = 带缩放模式的拉伸 blit
+}
 
 # ---------------- Mach-O 常量 ----------------
 MH_MAGIC_64 = 0xFEEDFACF
@@ -270,10 +283,14 @@ class MachO:
         self.segments = segs
         # 文件名
         self.seg_names = ['__TEXT', '__DATA_CONST', '__DATA']
-        # 依赖库
+        # 依赖库（顺序即 bind 序号：1 起；LC_ID_DYLIB 不算依赖）
         self.dlls = ['/usr/lib/libSystem.B.dylib',
                      '@rpath/SDL3.framework/SDL3',
-                     '@rpath/libbionic_shim.dylib']
+                     '@rpath/libbionic_shim.dylib',
+                     # 兼容库：补两个现有库没导出的强绑定符号
+                     #   _bionic_tlsdesc_resolver（shim 的 Release 产物里没有）
+                     #   _SDL_StretchSurface（SDL 3.2.0 没有，游戏要的是 3.2.12+）
+                     '@rpath/libmewcompat.dylib']
         for i, n in enumerate(self.dlls):
             self.ordinal[n] = i + 1
 
@@ -389,7 +406,7 @@ class MachO:
         shim_syms = []
         for va, sym, add, kind in sorted(self.binds):
             if kind == R_AARCH64_TLSDESC:
-                dll, sym_out = '@rpath/libbionic_shim.dylib', '_bionic_tlsdesc_resolver'
+                dll, sym_out = '@rpath/libmewcompat.dylib', '_bionic_tlsdesc_resolver'
                 # 描述符第二个 8 字节 = .tbss 槽偏移（add 就是上面算好的 tls_off）
                 slot2 = va + 8 + elf_base
                 if slot2 + 8 <= len(buf):
@@ -399,7 +416,11 @@ class MachO:
             else:
                 k = route(sym)
                 if k == 'sdl':
-                    dll, sym_out = '@rpath/SDL3.framework/SDL3', '_' + sym
+                    if sym in COMPAT_SYMBOLS:
+                        # SDL 3.4 才有的 API：交给 libmewcompat（转调 SDL_BlitSurfaceScaled）
+                        dll, sym_out = '@rpath/libmewcompat.dylib', '_' + sym
+                    else:
+                        dll, sym_out = '@rpath/SDL3.framework/SDL3', '_' + sym
                 elif k == 'system':
                     dll, sym_out = '/usr/lib/libSystem.B.dylib', '_' + sym
                 else:

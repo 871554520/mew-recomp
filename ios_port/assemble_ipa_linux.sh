@@ -18,7 +18,7 @@ OUT="${OUT:-${ROOT}/out}"
 PROD="${OUT}/products"
 REPORT="${OUT}/assemble_report.txt"
 # 版本号唯一来源：IPA 文件名与 Info.plist 必须同源，否则真机上核对版本会误判（P2-1）
-VER="${IPA_VERSION:-0.10.0}"
+VER="${IPA_VERSION:-0.11.0}"
 mkdir -p "$OUT"
 : > "$REPORT"
 say() { echo "==> [$(date +%H:%M:%S)] $*" | tee -a "$REPORT"; }
@@ -27,10 +27,12 @@ num() { echo "    $*" | tee -a "$REPORT"; }
 DYLIB="${OUT}/libmew_relinked.dylib"
 HOST="${PROD}/MewHost"
 SHIM="${PROD}/libbionic_shim.dylib"
+# 兼容库：补 _bionic_tlsdesc_resolver 与 _SDL_StretchSurface 两个强绑定符号
+COMPAT="${PROD}/libmewcompat.dylib"
 SDLFW="${PROD}/SDL3.framework"
 PLIST="${ROOT}/ios_port/ios_app/Info.plist"
 
-for f in "$DYLIB" "$HOST" "$SHIM"; do
+for f in "$DYLIB" "$HOST" "$SHIM" "$COMPAT"; do
     [ -f "$f" ] || { echo "缺少必需产物: $f" | tee -a "$REPORT"; exit 2; }
     num "$(basename "$f") $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f") bytes"
 done
@@ -70,6 +72,7 @@ cp "$HOST" "$APP/MewHost"
 cp "$PLIST" "$APP/Info.plist"
 cp "$DYLIB" "$APP/Frameworks/libmew_relinked.dylib"
 cp "$SHIM" "$APP/Frameworks/libbionic_shim.dylib"
+cp "$COMPAT" "$APP/Frameworks/libmewcompat.dylib"
 cp -R "$SDLFW" "$APP/Frameworks/"
 
 # 版本同源：把 Info.plist 的版本改成 $VER。
@@ -125,7 +128,7 @@ fi
 LDID_MAX_BYTES=$((8 * 1024 * 1024))
 if [ -n "$LDID" ]; then
     say "ad-hoc 签名（ldid，仅 ≤8MB 的文件）"
-    for f in "$APP/Frameworks/SDL3.framework/SDL3" "$APP/Frameworks/libbionic_shim.dylib" "$APP/MewHost"; do
+    for f in "$APP/Frameworks/SDL3.framework/SDL3" "$APP/Frameworks/libbionic_shim.dylib" "$APP/Frameworks/libmewcompat.dylib" "$APP/MewHost"; do
         sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
         if [ "$sz" -le "$LDID_MAX_BYTES" ]; then
             "$LDID" -S "$f" 2>&1 | tee -a "$REPORT" || true
@@ -154,6 +157,14 @@ for k in ('CFBundleExecutable', 'CFBundleIdentifier', 'CFBundleShortVersionStrin
           'CFBundleVersion', 'UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace'):
     print('    %-34s %s' % (k, p.get(k)))
 PY
+
+# 装机前门禁：只检查 Mach-O 结构不够——dyld 在加载期会把每条 bind 都解析掉，
+# 少一个符号就是 "symbol not found"，dlopen 返回 0（v0.9.0 卡在 [host 3b] 的真因）。
+say "装机前门禁：依赖闭合 + bind 符号解析（verify_bundle.py）"
+python3 "$ROOT/ios_port/verify_bundle.py" "$APP" 2>&1 | tee -a "$REPORT" || {
+    echo "::error::verify_bundle 未通过：这个包装到真机必然 dlopen 失败，拒绝出包（详见上面 FAIL 行）" | tee -a "$REPORT"
+    exit 6
+}
 
 say "打包 .ipa"
 PAY="${OUT}/Payload"
