@@ -55,6 +55,8 @@ extern const void* _dyld_get_image_header(unsigned);
 #define O_RDONLY 0
 #define F_OK 0
 
+#include "shader_es3.h"   // 50 个 shader 的 GLSL ES 3.00 版本（tools/gen_shader_es3.py 生成）
+
 #define MEW_SDL_MAIN_OFFSET 0x4075e60ULL
 #define MEW_DYLIB_NAME "libmew_relinked.dylib"
 #define LOG_MAX 8388608L
@@ -262,6 +264,33 @@ static void prepare_writable_dirs(void) {
         g_docs, g_docs, g_game);
 }
 
+// ---------------- 用 ES 3.00 版 shader 覆盖 ----------------
+// 游戏自带的是桌面 GLSL `#version 150`，在 iOS 的 GLES 3.0 上下文里编不过，
+// 真机表现为一片 "[msgbox] WARNING: Error while compiling xxx.shader"。而资源
+// 管理器是**先找散文件、找不到才回落 resources.gpak**（日志里那些
+// `CreateFileW shaders/default.shader ... failed 2` 就是这次探测），所以把改写好的
+// 版本写到 <cwd>/shaders/ 下，游戏就会用我们这份。
+static int write_shaders(void) {
+    char dir[2048];
+    snprintf(dir, sizeof dir, "%s/shaders", g_game);
+    mkdir(dir, 0755);
+    int ok = 0, bad = 0;
+    for (const mew_es3_shader* s = kMewEs3Shaders; s->name; ++s) {
+        char path[2200];
+        snprintf(path, sizeof path, "%s/%s", g_game, s->name);
+        unlink(path);                                  // 保证每次都是最新的
+        int fd = open(path, O_WRONLY | O_CREAT, 0644);
+        if (fd < 0) { ++bad; continue; }
+        size_t len = mew_strlen(s->src);
+        ssize_t w = write(fd, s->src, len);
+        close(fd);
+        if (w == (ssize_t)len) ++ok; else ++bad;
+    }
+    say("[host 3f] shader 覆盖：写入 %d 个 GLSL ES 3.00 版本（失败 %d）-> %s\n",
+        ok, bad, dir);
+    return ok;
+}
+
 static int app_main(int argc, char** argv) {
     (void)argc; (void)argv;
     const char* dir = exe_dir();
@@ -342,6 +371,7 @@ static int app_main(int argc, char** argv) {
 
     // 必须在起游戏之前：SQLite 存档库要的目录不存在就直接 unable to open database file
     prepare_writable_dirs();
+    write_shaders();
 
     say("[host 3] before dlopen(%s)\n", MEW_DYLIB_NAME);
     char p3[4200];
