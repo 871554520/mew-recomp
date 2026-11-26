@@ -131,17 +131,39 @@ inline void init_image(uint64_t base, uint64_t size) {
                  (unsigned long long)im.base, (unsigned long long)im.pdata, im.pdata_count);
 }
 
+// loader 直接把异常目录交进来（映射镜像不含 PE 头，读不到 BaseReloc/DataDirectory）
+inline uint64_t& saved_pdata() { static uint64_t v = 0; return v; }
+inline uint32_t& saved_pdata_bytes() { static uint32_t v = 0; return v; }
+
+inline void init_image_va(uint64_t base, uint64_t size, uint64_t pdata_va, uint32_t bytes) {
+    ImageInfo& im = image();
+    im.base = base;
+    im.size = size;
+    im.pdata = pdata_va;
+    im.pdata_count = bytes / 12;
+    im.ready = (base && pdata_va && bytes >= 12);
+    saved_pdata() = pdata_va;
+    saved_pdata_bytes() = bytes;
+    std::fprintf(stderr, "[seh] init_ex base=0x%llx size=0x%llx pdata=0x%llx entries=%u ready=%d\n",
+                 (unsigned long long)base, (unsigned long long)size,
+                 (unsigned long long)pdata_va, im.pdata_count, (int)im.ready);
+}
+
 // 懒初始化：镜像固定钉在 0x140000000（bias=0），所以这里可以兜底自举，
 // 不依赖 runner 先调用 init_image。
 inline void ensure_ready() {
     if (image().ready) return;
+    if (saved_pdata() && saved_pdata_bytes()) {
+        init_image_va(image().base ? image().base : 0x140000000ULL, image().size,
+                      saved_pdata(), saved_pdata_bytes());
+        return;
+    }
     const uint64_t base = 0x140000000ULL;
     if (!rd32(base + 0x3c)) {
-        std::fprintf(stderr, "[seh] ensure_ready: no PE at 0x140000000\n");
+        std::fprintf(stderr, "[seh] ensure_ready: 头未映射且无 loader pdata\n");
         return;
     }
     init_image(base, 0);
-    std::fprintf(stderr, "[seh] ensure_ready: ready=%d\n", (int)image().ready);
 }
 
 struct FuncEntry {
