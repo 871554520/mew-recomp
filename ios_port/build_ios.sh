@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# 一次 macOS runner 跑完全程：APK 分片 → Mach-O 重链接 → 编 SDL3(iOS) → 编 bionic shim
+# → 编宿主 → 组 .app → ad-hoc 签名 → 打包 .ipa。
+#
+# 设计意图：macOS 队列很贵，所以不在多轮里来回排队；每一阶段的数字都打到日志和
+# 报告文件里，任何一步失败都能单独定位（不会整轮白跑）。
+set -euo pipefail
+
+ARCH=arm64
+MIN_IOS=15.0
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="${ROOT}/out"
+REPORT="${OUT}/build_report.txt"
+mkdir -p "$OUT"
+: > "$REPORT"
+
+say() { echo "==> $*" | tee -a "$REPORT"; }
+num() { echo "    $*" | tee -a "$REPORT"; }
+
+SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+CLANG="$(xcrun -sdk iphoneos --find clang)"
+say "SDK        $SDK"
+say "clang      $CLANG"
+num "$("$CLANG" --version | head -1)"
+
+# ---------- 1) APK 分片 → libmain.so ----------
+say "stage 1/7 组装 APK 分片"
+cat "${ROOT}"/ios_port/vendor/apk_part_*.bin > "${OUT}/app.apk"
+APK="${OUT}/app.apk" LMO="${OUT}/libmain.so" python3 <<'PY' | tee -a "$REPORT"
+import os, zipfile
+apk, out = os.environ['APK'], os.environ['LMO']
+z = zipfile.ZipFile(apk)
+open(out, 'wb').write(z.read('lib/arm64-v8a/libmain.so'))
+print('    apk        %d bytes' % os.path.getsize(apk))
+print('    libmain.so %d bytes' % os.path.getsize(out))
+PY
+
+# ---------- 2) ELF → Mach-O ----------
+say "stage 2/7 ELF→Mach-O 重链接"
+python3 "${ROOT}/tools/elf2macho_dylib.py" "${OUT}/libmain.so" \
+        -o "${OUT}/libmew_relinked.dylib" --platform ios 2>&1 | tee -a "$REPORT"
+python3 "${ROOT}/ios_port/verify_macho.py" "${OUT}/libmew_relinked.dylib" 2>&1 | tee -a "$REPORT"
+
+# ---------- 3) SDL3 (iOS) ----------
+say "stage 3/7 编译 SDL3 for iOS"
+SDL_TAG="${SDL_TAG:-release-3.2.0}"
+if [ -d "${OUT}/SDL/.git" ]; then
+    git -C "${OUT}/SDL" fetch --depth 1 origin "refs/tags/${SDL_TAG}:refs/tags/${SDL_TAG}" || true
+else
+    git clone --depth 1 --branch "$SDL_TAG" https://github.com/libsdl-org/SDL.git "${OUT}/SDL"
+fi
+num "SDL commit $(git -C "${OUT}/SDL" rev-parse --short HEAD)"
+cmake -S "${OUT}/SDL" -B "${OUT}/sdlbuild" \
+      -DCMAKE_SYSTEM_NAME=iOS \
+      -DCMAKE_OSX_ARCHITECTURES=$ARCH \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=$MIN_IOS \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_FRAMEWORK=ON \
+      -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+      > "${OUT}/sdl_cmake.log" 2>&1 || { tail -30 "${OUT}/sdl_cmake.log"; exit 1; }
+cmake --build "${OUT}/sdlbuild" --config Release -j "$(sysctl -n hw.ncpu)" \
+      > "${OUT}/sdl_build.log" 2>&1 || { tail -40 "${OUT}/sdl_build.log"; exit 1; }
+SDLF="$(find "${OUT}/sdlbuild" -name 'SDL3.framework' -maxdepth 5 | head -1 || true)"
+SDLDYLIB=""
+if [ -z "$SDLF" ]; then
+    SDLDYLIB="$(find "${OUT}/sdlbuild" -name 'libSDL3*.dylib' | head -1 || true)"
+    say "没产出 framework，改用 dylib 手工拼 framework: ${SDLDYLIB:-none}"
+fi
+num "SDL3 artifact: ${SDLF:-$SDLDYLIB}"
+
+# ---------- 4) bionic shim ----------
+say "stage 4/7 编译 libbionic_shim.dylib"
+SHIMDIR="${ROOT}/ios_port/shim"
+mkdir -p "${OUT}/shimbuild"
+"$CLANG" -target "${ARCH}-apple-ios${MIN_IOS}" -isysroot "$SDK" -O2 -fPIC \
+    -I "$SHIMDIR" -I "$SDLF/Headers" \
+    -dynamiclib -install_name @rpath/libbionic_shim.dylib \
+    "${SHIMDIR}"/bionic_pthread.c "${SHIMDIR}"/bionic_posix.c \
+    "${SHIMDIR}"/bionic_android.c "${SHIMDIR}"/bionic_tlsdesc.c \
+    "${SHIMDIR}"/bionic_varargs.c "${SHIMDIR}"/bionic_varargs.S \
+    -o "${OUT}/shimbuild/libbionic_shim.dylib" 2>&1 | tail -40 | tee -a "$REPORT"
+num "libbionic_shim.dylib $(stat -f%z "${OUT}/shimbuild/libbionic_shim.dylib") bytes"
+num "shim 导出符号 $(nm -gU "${OUT}/shimbuild/libbionic_shim.dylib" | wc -l | tr -d ' ') 个"
+
+# ---------- 5) 宿主 ----------
+say "stage 5/7 编译 MewHost"
+"$CLANG" -target "${ARCH}-apple-ios${MIN_IOS}" -isysroot "$SDK" -O2 \
+    -o "${OUT}/shimbuild/MewHost" "${ROOT}/ios_port/host_main.c" \
+    -Wl,-rpath,@executable_path/Frameworks 2>&1 | tail -20 | tee -a "$REPORT"
+num "MewHost $(stat -f%z "${OUT}/shimbuild/MewHost") bytes"
+
+# ---------- 6) 组 app + ad-hoc 签名 ----------
+say "stage 6/7 组 .app 并 ad-hoc 签名"
+APP="${OUT}/Mewgenics.app"
+rm -rf "$APP"
+mkdir -p "$APP/Frameworks"
+cp "${OUT}/shimbuild/MewHost" "$APP/MewHost"
+cp "${ROOT}/ios_port/ios_app/Info.plist" "$APP/Info.plist"
+cp "${OUT}/libmew_relinked.dylib" "$APP/Frameworks/libmew_relinked.dylib"
+cp "${OUT}/shimbuild/libbionic_shim.dylib" "$APP/Frameworks/libbionic_shim.dylib"
+if [ -n "$SDLF" ]; then
+    cp -R "$SDLF" "$APP/Frameworks/"
+else
+    mkdir -p "$APP/Frameworks/SDL3.framework/Headers"
+    cp "$SDLDYLIB" "$APP/Frameworks/SDL3.framework/SDL3"
+fi
+SDLFW="$APP/Frameworks/SDL3.framework/Info.plist" python3 <<'PY' | tee -a "$REPORT"
+import os, plistlib
+plistlib.dump({
+    'CFBundleIdentifier': 'org.libsdl.SDL3',
+    'CFBundleName': 'SDL3',
+    'CFBundleExecutable': 'SDL3',
+    'CFBundlePackageType': 'FMWK',
+    'CFBundleShortVersionString': '3.2.0',
+    'CFBundleVersion': '1',
+    'MinimumOSVersion': '15.0',
+}, open(os.environ['SDLFW'], 'wb'))
+print('    SDL3.framework/Info.plist 已写')
+PY
+
+codesign --force --sign - --timestamp=none "$APP/Frameworks/SDL3.framework" 2>&1 | tee -a "$REPORT"
+for f in "$APP/Frameworks/libbionic_shim.dylib" "$APP/Frameworks/libmew_relinked.dylib" "$APP/MewHost"; do
+    codesign --force --sign - --timestamp=none "$f" 2>&1 | tee -a "$REPORT"
+done
+codesign --force --sign - --timestamp=none "$APP" 2>&1 | tee -a "$REPORT"
+codesign -dvv "$APP/MewHost" 2>&1 | grep -E 'Identifier|Format|CodeDirectory' | tee -a "$REPORT" || true
+say "otool -L MewHost"
+otool -L "$APP/MewHost" | tee -a "$REPORT"
+say "otool -L libmew_relinked.dylib（前 12 行，确认 @rpath 就位）"
+otool -L "$APP/Frameworks/libmew_relinked.dylib" | head -12 | tee -a "$REPORT"
+
+# ---------- 7) 打 ipa ----------
+say "stage 7/7 打包 ad-hoc .ipa"
+PAY="${OUT}/Payload"
+rm -rf "$PAY"
+mkdir -p "$PAY"
+cp -R "$APP" "$PAY/"
+IPA="${OUT}/Mewgenics-relink-v0.1.0-unsigned.ipa"
+rm -f "$IPA"
+(cd "$OUT" && zip -qry "$IPA" Payload)
+num "app $(du -sm "$APP" | cut -f1) MB"
+num "ipa $(stat -f%z "$IPA") bytes"
+
+say "汇总"
+num "libmew_relinked.dylib $(stat -f%z "${OUT}/libmew_relinked.dylib") bytes"
+ls -l "$OUT"/*.ipa | tee -a "$REPORT"
