@@ -150,17 +150,28 @@ int mew_vararg_sscanf(const uint64_t* x, const uint64_t* stack_args) {
         if (*p != '%') { p++; continue; }
         p++;
         if (*p == '%') { p++; continue; }         // 字面量 %
-        if (*p == '*') { p++; }                    // 赋值抑制：不消费参数
+        int suppress = (*p == '*');                // %*d：赋值抑制，不消费参数
+        if (suppress) p++;
         while (*p && strchr("-+ #0'", *p)) p++;
         while (*p >= '0' && *p <= '9') p++;
         if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }
         while (*p && strchr("hljztLq", *p)) p++;
-        if (*p) p++;                               // 跳过转换字符
-        uint64_t v;
-        if (xi < 6) v = x[2 + xi];                 // x0=str, x1=fmt
-        else v = stack_args[si < 16 ? si : 15];
-        if (xi < 6) xi++; else si++;
-        flat[n++] = v;
+        if (*p == '[') {                           // %[...] 字符集扫描
+            p++;
+            if (*p == '^') p++;
+            if (*p == ']') p++;
+            while (*p && *p != ']') p++;
+            if (*p == ']') p++;
+        } else if (*p) {
+            p++;                                   // 普通转换字符
+        }
+        if (!suppress) {
+            uint64_t v;
+            if (xi < 6) v = x[2 + xi];             // x0=str, x1=fmt
+            else v = stack_args[si < 16 ? si : 15];
+            if (xi < 6) xi++; else si++;
+            flat[n++] = v;
+        }
     }
     return vsscanf(str, fmt, (va_list)flat);
 }
