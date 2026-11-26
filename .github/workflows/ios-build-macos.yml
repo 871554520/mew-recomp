@@ -1,0 +1,70 @@
+name: iOS build (relink + shim + host + IPA)
+
+# 只在手动触发：macOS runner 排队很贵，不能每次 push ios_port/** 就塞一轮。
+# 想跑就去 Actions 页面点 Run workflow，或者我有意改这个文件时顺手带一次。
+on:
+  workflow_dispatch:
+    inputs:
+      sdl_tag:
+        description: 'SDL3 tag（默认 release-3.2.0）'
+        required: false
+        default: 'release-3.2.0'
+  push:
+    paths:
+      - .github/workflows/ios-build-macos.yml
+concurrency:
+  group: ios-build-macos
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境自检
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          cmake --version | head -1
+          python3 --version
+          bash --version | head -1
+
+      - name: 脚本语法自检（先拦语法错，别浪费这一轮排队）
+        run: |
+          set -euo pipefail
+          bash -n ios_port/build_ios.sh
+          echo "build_ios.sh 语法 OK"
+
+      - name: 全流程构建
+        env:
+          SDL_TAG: ${{ github.event.inputs.sdl_tag || 'release-3.2.0' }}
+        run: |
+          set -euo pipefail
+          chmod +x ios_port/build_ios.sh
+          ./ios_port/build_ios.sh
+
+      - name: 失败也要留现场
+        if: always()
+        run: |
+          echo "===== out/ ====="; ls -l out 2>/dev/null || true
+          echo "===== build_report ====="; tail -80 out/build_report.txt 2>/dev/null || true
+          echo "===== sdl_build tail ====="; tail -40 out/sdl_build.log 2>/dev/null || true
+          echo "===== dmesg/otool 摘要 ====="
+          for f in out/Mewgenics.app/MewHost out/Mewgenics.app/Frameworks/*.dylib; do
+            [ -e "$f" ] || continue
+            echo "--- $f"; otool -L "$f" | head -12 || true
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-build-${{ github.run_id }}
+          path: |
+            out/*.ipa
+            out/build_report.txt
+            out/libmew_relinked.dylib
+          if-no-files-found: warn
+          retention-days: 7
