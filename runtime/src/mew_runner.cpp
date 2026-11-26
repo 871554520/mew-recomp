@@ -70,6 +70,8 @@ void install_crash_handler() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::fprintf(stderr, "[runner] marker: seh headers linked, dispatch=%d\n",
+                 (int)seh::seh_dispatch_enabled());
     install_crash_handler();
     const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
     uint64_t call_va = 0;
