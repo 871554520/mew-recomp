@@ -4,13 +4,16 @@
 #include <string.h>
 #include <stdint.h>
 
-// 取第 i 个整数/浮点参数：前 8 个在寄存器槽，第 9 个起在调用方栈上
-static uint64_t pick(const uint64_t* reg, int* idx, const uint64_t* stack, int stack_n) {
+// 取下一个参数：前 8 个在寄存器槽；第 9 个起落在调用方栈上，
+// 整数与浮点共用同一个顺序栈游标（AAPCS64 规定栈上参数按出现顺序排）。
+static uint64_t pick(const uint64_t* reg, int* idx, const uint64_t* stack, int stack_n, int* si) {
     int i = *idx;
     uint64_t v;
-    if (i < 8) v = reg[i];
-    else if (stack && (i - 8) < stack_n) v = stack[i - 8];
-    else v = 0;
+    if (i < 8) {
+        v = reg[i];
+    } else {
+        v = (stack && *si < stack_n) ? stack[(*si)++] : 0;
+    }
     (*idx)++;
     return v;
 }
@@ -19,6 +22,7 @@ int mew_vararg_build(uint64_t* out, int cap, const char* fmt,
                      const uint64_t* x, int xi, const uint64_t* d, int di,
                      const uint64_t* stack_args, int stack_n) {
     int n = 0;
+    int si = 0;                  // 整数/浮点共用的栈参数游标
     const char* p = fmt;
     while (p && *p && n < cap) {
         if (*p != '%') { p++; continue; }
@@ -26,18 +30,18 @@ int mew_vararg_build(uint64_t* out, int cap, const char* fmt,
         if (*p == '%') { p++; continue; }
         while (*p && strchr("-+ #0'", *p)) p++;
         // 动态宽度 %*d / %.*f：先从整数槽吃一个
-        if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n); p++; }
+        if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n, &si); p++; }
         while (*p >= '0' && *p <= '9') p++;
         if (*p == '.') {
             p++;
-            if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n); p++; }
+            if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n, &si); p++; }
             while (*p >= '0' && *p <= '9') p++;
         }
         while (*p && strchr("hljztLq", *p)) p++;
         char conv = *p ? *p++ : 0;
         int is_fp = (conv=='f'||conv=='F'||conv=='e'||conv=='E'||conv=='g'||conv=='G'||conv=='a'||conv=='A');
-        if (is_fp) out[n++] = pick(d, &di, stack_args, stack_n);
-        else        out[n++] = pick(x, &xi, stack_args, stack_n);
+        if (is_fp) out[n++] = pick(d, &di, stack_args, stack_n, &si);
+        else        out[n++] = pick(x, &xi, stack_args, stack_n, &si);
     }
     return n;
 }
