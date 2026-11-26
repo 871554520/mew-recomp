@@ -31,6 +31,23 @@ jobs:
       - name: 结构校验（等价 otool -l / dyld_info -exports）
         run: |
           python3 ios_port/verify_macho.py /tmp/libmew_relinked.dylib
+      - name: llvm-objdump --macho（官方工具链，不抢 macOS 队列）
+        run: |
+          set +e
+          command -v llvm-objdump >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq llvm)
+          OBJDUMP=$(command -v llvm-objdump || echo /usr/lib/llvm-18/bin/llvm-objdump)
+          echo "using $OBJDUMP"
+          $OBJDUMP --macho --private-headers /tmp/libmew_relinked.dylib | head -80
+          echo "===== exports trie ====="
+          $OBJDUMP --macho --exports-trie /tmp/libmew_relinked.dylib | head -20
+          echo "===== rebase (head) ====="
+          $OBJDUMP --macho --rebase /tmp/libmew_relinked.dylib | head -10
+          echo "===== bind (head) ====="
+          $OBJDUMP --macho --bind /tmp/libmew_relinked.dylib | head -10
+          echo "===== 计数 ====="
+          echo "rebase_total=$($OBJDUMP --macho --rebase /tmp/libmew_relinked.dylib | wc -l)"
+          echo "bind_total=$($OBJDUMP --macho --bind /tmp/libmew_relinked.dylib | wc -l)"
+
       - name: 十六进制抽查
         run: |
           python3 - <<'PY'
