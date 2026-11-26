@@ -14,6 +14,8 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
+#include <algorithm>
 #include <sys/mman.h>
 
 struct GuestHeapPool {
@@ -24,6 +26,8 @@ struct GuestHeapPool {
     size_t   cursor = 0;
     std::mutex mtx;
     std::unordered_map<uint64_t, size_t> alloc_sizes;
+    std::unordered_map<uint64_t, size_t> alloc_req;   // 调用方请求的字节数（诊断用）
+    std::vector<std::pair<uint64_t, size_t>> live;     // 已分配区间（升序），查重叠
 
     void init() {
         if (base) return;
@@ -69,7 +73,28 @@ struct GuestHeapPool {
         cursor += aligned;
         if (zero_init) std::memset(ptr, 0, aligned);
         uint64_t addr = reinterpret_cast<uint64_t>(ptr);
+        // 不变量：新块不能和任何存活块重叠。重叠说明"请求的 size 是错的"，
+        // 后续对这个块的写入会踩烂邻居（实测 0x3c8 的 PTD 只申请到 1 字节）。
+        {
+            auto it = std::lower_bound(live.begin(), live.end(), std::make_pair(addr, (size_t)0));
+            bool bad = false;
+            if (it != live.end() && it->first < addr + aligned) bad = true;
+            if (it != live.begin()) {
+                auto pv = it - 1;
+                if (pv->first + pv->second > addr) bad = true;
+            }
+            if (bad) {
+                static int logged = 0;
+                if (logged++ < 20)
+                    std::fprintf(stderr,
+                                 "[heap] OVERLAP new=0x%llx size=%zu req=%zu conflicts live=%zu\n",
+                                 (unsigned long long)addr, aligned, sz, live.size());
+            } else {
+                live.insert(it, std::make_pair(addr, aligned));
+            }
+        }
         alloc_sizes[addr] = aligned;
+        alloc_req[addr] = sz;
         return addr;
     }
 
@@ -94,7 +119,13 @@ struct GuestHeapPool {
     // 阶段 5 调试期只从登记表移除，不真正回收：彻底杜绝 use-after-free 与野指针崩。
     void free_block(uint64_t addr) {
         std::lock_guard<std::mutex> lk(mtx);
-        alloc_sizes.erase(addr);
+        auto it = alloc_sizes.find(addr);
+        if (it != alloc_sizes.end()) {
+            auto r = std::lower_bound(live.begin(), live.end(), std::make_pair(addr, (size_t)0));
+            if (r != live.end() && r->first == addr) live.erase(r);
+            alloc_req.erase(addr);
+            alloc_sizes.erase(it);
+        }
     }
 
     size_t used() const { return cursor; }
