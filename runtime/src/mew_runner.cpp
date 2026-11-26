@@ -151,7 +151,8 @@ int main(int argc, char** argv) {
 
     // SEH 恢复点：异常派发里 resume_at() 会 longjmp 回这里，
     // 然后把宿主上下文换成"展开后恢复的目标上下文"，从新的 Rip 继续跑。
-    seh::init_image(reinterpret_cast<uint64_t>(img.host_base), img.image_size);
+    seh::init_image_va(reinterpret_cast<uint64_t>(img.host_base), img.image_size,
+                       img.pdata_va, img.pdata_bytes);
     uint64_t next_entry = entry;
     volatile bool from_resume = false;
     int rounds = 0;
