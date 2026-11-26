@@ -451,11 +451,14 @@ class MachO:
                 if ehp:
                     secs += sect('__eh_frame', '__TEXT', elf_base + ehp['va'], ehp['fsz'],
                                  elf_base + ehp['va'], S_REGULAR, 3)
+            # 节的 offset+size 必须落在段的 filesize 之内（否则 LLVM/dyld 报
+            # "size field of section 0 greater than the segment"），所以只覆盖文件部分；
+            # 段 memsz>filesz 的 .bss 尾部由 dyld 自动零填，不需要额外节。
             if i == 1:
-                secs += sect('__data', '__DATA_CONST', p_['vm'] + p_['lead'], p_['msz'] - p_['lead'],
+                secs += sect('__data', '__DATA_CONST', p_['vm'] + p_['lead'], p_['fsz'] - p_['lead'],
                              p_['fileoff'] + p_['lead'], S_REGULAR, 3)
             elif i == 2:
-                secs += sect('__data', '__DATA', p_['vm'] + p_['lead'], p_['msz'] - p_['lead'],
+                secs += sect('__data', '__DATA', p_['vm'] + p_['lead'], p_['fsz'] - p_['lead'],
                              p_['fileoff'] + p_['lead'], S_REGULAR, 3)
             nsec = len(secs) // 80
             prot = 5 if i == 0 else 3
