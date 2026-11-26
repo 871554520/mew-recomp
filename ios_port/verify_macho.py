@@ -194,6 +194,19 @@ def main(path):
                         v, p = uleb(d, p); _, p = uleb(d, p); soff += v; n += v
             return n
 
+        # dyld4 的 rebase()/bind() 里 type 初值是 0，流中没 SET_TYPE 就会报
+        # "unknown rebase type 0" / "unknown bind type 0"。这里直接卡住开头几个字节。
+        if d[rb_off] != 0x11:
+            fail.append('rebase 流首字节不是 0x11（SET_TYPE_IMM|POINTER=1）')
+        if d[rb_off + rb_sz - 1] != 0x00:
+            fail.append('rebase 流末字节不是 DONE(0x00)')
+        if d[bd_off] not in (0x51, 0x11):
+            fail.append('bind 流首字节不是 SET_TYPE/SET_ORDINAL（0x%02x）' % d[bd_off])
+        if d[bd_off + bd_sz - 1] != 0x00:
+            fail.append('bind 流末字节不是 DONE(0x00)')
+        print('rebase 首字节=0x%02x 末=0x%02x；bind 首字节=0x%02x 末=0x%02x'
+              % (d[rb_off], d[rb_off+rb_sz-1], d[bd_off], d[bd_off+bd_sz-1]))
+
         n_rb = count_rebase(rb_off, rb_sz)
         n_bd = count_bind(bd_off, bd_sz)
         print('rebase 流 %d 字节 -> %d 条；bind 流 %d 字节 -> %d 条；trie %d 字节'
