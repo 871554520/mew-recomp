@@ -963,7 +963,8 @@ void shim_KERNEL32_RaiseException(X64Ctx* c) {
                  code, flags, nparams);
     // C++ EH 依赖真正的两阶段派发：先走 .pdata 链条问 personality routine。
     // MEW_SEH_DISPATCH=1 时才真的调用 handler；否则只打印帧链（观测模式）。
-    const uint64_t* params = arg3(c) ? reinterpret_cast<const uint64_t*>(uintptr_t)arg3(c) : nullptr;
+    const uint64_t* params = nullptr;
+    if (arg3(c)) params = reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c));
     if (seh::raise_exception_dispatch(c, code, flags, nparams, params)) return;  // 已接管
     ret0(c, 0);
 }
