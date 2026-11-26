@@ -519,6 +519,18 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
                              (unsigned long long)va, buf);
 }
 
+// 读一个 guest 指针指向的 qword；不可映射时打印 n/a
+inline void mew_probe_qword(const char* tag, uint64_t va) {
+    if (!va || !guest_mapped(va, 8) || !cur_ctx_ptr()) {
+        std::fprintf(stderr, "    %s=0x%llx -> n/a\n", tag, (unsigned long long)va);
+        return;
+    }
+    uint64_t v = 0;
+    std::memcpy(&v, reinterpret_cast<const void*>((uintptr_t)(va + cur_ctx_ptr()->mem_bias)), 8);
+    std::fprintf(stderr, "    %s=0x%llx -> 0x%llx\n", tag, (unsigned long long)va,
+                 (unsigned long long)v);
+}
+
 #define MEW_FASTFAIL(CTX, RIP, CODE)                                             \
     do {                                                                         \
         std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x in_fn=0x%llx\n",     \
@@ -528,11 +540,22 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
                      (unsigned long long)(CTX)->rcx, (unsigned long long)(CTX)->rdx,     \
                      (unsigned long long)(CTX)->r8, (unsigned long long)(CTX)->r9,       \
                      (unsigned long long)(CTX)->rsp);                            \
+        /* 非易失寄存器：abort 路径上它们保存着"是谁判定失败"的对象指针 */       \
+        std::fprintf(stderr, "    rdi=0x%llx rsi=0x%llx rbx=0x%llx rbp=0x%llx rax=0x%llx\n", \
+                     (unsigned long long)(CTX)->rdi, (unsigned long long)(CTX)->rsi,     \
+                     (unsigned long long)(CTX)->rbx, (unsigned long long)(CTX)->rbp,     \
+                     (unsigned long long)(CTX)->rax);                            \
+        std::fprintf(stderr, "    r12=0x%llx r13=0x%llx r14=0x%llx r15=0x%llx\n", \
+                     (unsigned long long)(CTX)->r12, (unsigned long long)(CTX)->r13,     \
+                     (unsigned long long)(CTX)->r14, (unsigned long long)(CTX)->r15);    \
+        mew_probe_qword("[rsi]", (CTX)->rsi);                                    \
+        mew_probe_qword("[rdi+0x88]", (CTX)->rdi + 0x88);                        \
+        mew_probe_qword("[rbx]", (CTX)->rbx);                                    \
         mew_dump_guest_str("rcx_str", (CTX)->rcx);                               \
         mew_dump_guest_str("rdx_str", (CTX)->rdx);                               \
         mew_dump_guest_str("r8_str", (CTX)->r8);                                 \
         mew_dump_guest_str("r9_str", (CTX)->r9);                                 \
-        for (int _i = 0; _i < 6; ++_i) {                                         \
+        for (int _i = 0; _i < 12; ++_i) {                                        \
             uint64_t _a = (CTX)->rsp + (uint64_t)_i * 8;                          \
             if (!guest_mapped(_a, 8)) break;                                      \
             uint64_t _v = 0;                                                      \
