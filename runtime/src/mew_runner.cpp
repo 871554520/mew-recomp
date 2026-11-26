@@ -118,19 +118,19 @@ static void probe_security_cookie(const char* exe, const GuestImage& img) {
 // 这里按 Windows 加载器的做法补上：分配块 -> 拷模板 -> 写 _tls_index -> 填 TlsSlots[0]。
 static uint64_t setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
     FILE* fp = std::fopen(exe, "rb");
-    if (!fp) return;
+    if (!fp) return 0;
     uint32_t peOff = 0;
     std::fseek(fp, 0x3c, SEEK_SET);
-    if (std::fread(&peOff, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    if (std::fread(&peOff, 4, 1, fp) != 1) { std::fclose(fp); return 0; }
     long opt = (long)peOff + 24;
     uint16_t magic = 0;
     std::fseek(fp, opt, SEEK_SET);
-    if (std::fread(&magic, 2, 1, fp) != 1) { std::fclose(fp); return; }
+    if (std::fread(&magic, 2, 1, fp) != 1) { std::fclose(fp); return 0; }
     long dirOff = (magic == 0x20b) ? (opt + 112) : (opt + 96);
     uint32_t tlsRva = 0, tlsSize = 0;
     std::fseek(fp, dirOff + 9 * 8, SEEK_SET);
-    if (std::fread(&tlsRva, 4, 1, fp) != 1) { std::fclose(fp); return; }
-    if (std::fread(&tlsSize, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    if (std::fread(&tlsRva, 4, 1, fp) != 1) { std::fclose(fp); return 0; }
+    if (std::fread(&tlsSize, 4, 1, fp) != 1) { std::fclose(fp); return 0; }
     std::fclose(fp);
     if (!tlsRva) {
         std::fprintf(stderr, "[tls] 这个 PE 没有 TLS 目录\n");
