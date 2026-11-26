@@ -218,6 +218,15 @@ jobs:
           if [ -n "$BEST" ]; then echo "STAGE4 PASSED cand=$BEST"; exit 0; fi
           echo "STAGE4: no candidate passed"; exit 1
 
+      - name: Dump stage3b bodies of abort chain
+        run: |
+          : > generated/stage3b_abort_chain.txt
+          for VA in 140d79870 140d79928 140d79600; do
+            echo "===== stage3b sub_$VA =====" >> generated/stage3b_abort_chain.txt
+            awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3b/shard_*.cpp >> generated/stage3b_abort_chain.txt 2>/dev/null || true
+          done
+          wc -l generated/stage3b_abort_chain.txt
+
       - name: Stage 5 - build launcher
         run: |
           set +e
@@ -345,12 +354,14 @@ jobs:
           echo "fastfail_b=$(grep -c 'FASTFAIL' generated/runner_b.err || true)"
           echo "gpak_refs_b=$(grep -c 'resources.gpak' generated/runner_b.err || true)"
           tail -25 generated/runner_b.err
-          # 复跑一次，只看 abort 判定函数 0x140d79870 的入参（rcx/rdx 与 [rcx+0x88]/[rdx]）
+          # 复跑一次：看 abort 判定函数 0x140d79870 的入参 + 关键全局的读写打点
           RC=0
-          MEW_TRACE_FN=0x140d79870 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 \
+          MEW_WATCH=0x1413bbc18,0x200001088 MEW_TRACE_FN=0x140d79870 \
+            MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 \
             ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_bt.out 2> generated/runner_bt.err || RC=$?
           echo "runner_bt rc=$RC"
-          grep -E '^\[fn\]|^\[FASTFAIL\]|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err | head -60
+          echo "watch_w=$(grep -c '\[watch\] W' generated/runner_bt.err || true)"
+          grep -E '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err | head -80
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -392,6 +403,7 @@ jobs:
             generated/runner_b.err
             generated/runner_bt.out
             generated/runner_bt.err
+            generated/stage3b_abort_chain.txt
             generated/runner_nosafe.out
             generated/runner_nosafe.err
             generated/gpak_direct.log
