@@ -526,16 +526,86 @@ class MachO:
                                 exports=len(self.exports), shim=len(set(shim_syms)),
                                 elf_base=elf_base, ncmds=ncmd)
 
-def _uleb3(v):
-    """固定 3 字节的 ULEB（非规范编码，dyld 的 read_uleb128 能正常读），
-    这样节点大小与偏移数值无关，可以一次算准，不需要迭代收敛。
-    3 字节最多表示 2^21-1 = 2,097,151，超出就必须换回变长方案。"""
-    assert 0 <= v < (1 << 21), 'trie 偏移超出 3 字节 ULEB 范围: %d' % v
-    return bytes([(v & 0x7F) | 0x80, ((v >> 7) & 0x7F) | 0x80, (v >> 14) & 0x7F])
+def _uleb_read(buf, p):
+    v = 0
+    s = 0
+    while True:
+        b = buf[p]
+        p += 1
+        v |= (b & 0x7F) << s
+        if not b & 0x80:
+            return v, p
+        s += 7
+        if s > 35:
+            raise ValueError('ULEB 过长 @0x%x' % p)
+
+
+def _walk_trie(trie):
+    """按标准 Mach-O 布局走查 export trie，返回 {符号名: 地址}。
+
+    任何越界、terminal 长度不符、节点偏移非法都立即抛异常——落盘前必须
+    用这个函数自校验，避免又出现「LLVM 的游标落进符号名」这类不报错但
+    结构已坏的情况。"""
+    out = {}
+    seen = set()
+    stack = [(0, '')]
+    max_end = 0
+    while stack:
+        off, prefix = stack.pop()
+        if off >= len(trie):
+            raise ValueError('trie 节点偏移越界: 0x%x' % off)
+        if off in seen:
+            raise ValueError('trie 节点被重复引用: 0x%x' % off)
+        seen.add(off)
+        p = off
+        tsz, p = _uleb_read(trie, p)
+        addr = None
+        if tsz:
+            end = p + tsz
+            if end > len(trie):
+                raise ValueError('terminal 越界 @0x%x' % off)
+            _flags, p = _uleb_read(trie, p)
+            addr, p = _uleb_read(trie, p)
+            if p != end:
+                raise ValueError('terminal 长度不符 @0x%x: 声明 %d 实占 %d'
+                                 % (off, tsz, p - (end - tsz)))
+            if prefix:
+                out[prefix] = addr
+        if p >= len(trie):
+            raise ValueError('child_count 越界 @0x%x' % off)
+        nc = trie[p]
+        p += 1
+        kids = []
+        for _ in range(nc):
+            e = trie.index(b'\0', p)
+            kids.append(trie[p:e])
+            p = e + 1
+        max_end = max(max_end, p)
+        for nm in kids:
+            co, p = _uleb_read(trie, p)
+            if co <= off:
+                raise ValueError('子节点偏移未递增: 0x%x -> 0x%x' % (off, co))
+            stack.append((co, prefix + nm.decode('utf-8', 'surrogateescape')))
+        max_end = max(max_end, p)
+    if max_end != len(trie):
+        raise ValueError('trie 实际使用 %d 字节，声明 %d 字节' % (max_end, len(trie)))
+    return out
 
 
 def _build_trie(entries):
-    """export trie：根必须在 offset 0，子节点偏移相对 trie 起点。"""
+    """export trie（标准 Mach-O 节点布局，根固定在 offset 0）：
+
+        uleb(terminal_size)
+        [terminal payload = uleb(flags=0) + uleb(addr)]   ← 紧跟 terminal_size
+        uint8(child_count)
+        child_count × { 边名字（含结尾 \\0）、uleb(child_offset) }
+
+    注意 payload **不能**放到子节点偏移之后（那样 LLVM 会把 flags 那个 0x00
+    当成 child_count、把地址字节当成子偏移，游标一路漂进符号名，正好就是
+    之前 `inconsistent export info size: 0x73` 的来源）。
+
+    偏移用规范变长 ULEB，节点大小依赖偏移数值，所以先不动点迭代求出每个
+    节点位置，再第二遍按位置写字节；写完用 _walk_trie 走查自校验。"""
     root = {}
     for name, addr, typ in entries:
         if not name:
@@ -543,7 +613,7 @@ def _build_trie(entries):
         cur = root
         for ch in name:
             cur = cur.setdefault(ch, {})
-        cur[''] = (addr, typ)
+        cur[''] = addr
 
     nodes = []
 
@@ -552,40 +622,64 @@ def _build_trie(entries):
         for k in sorted(x for x in n if x != ''):
             collect(n[k])
 
-    collect(root)                       # 前序：根 = 0 号节点
+    collect(root)                       # 前序：根 = 0 号节点，子节点偏移必然更大
     idx = {id(n): i for i, n in enumerate(nodes)}
 
-    # 大小与位置无关：terminal 长度 + 子名字 + 每子 3 字节固定偏移
-    sizes = []
+    payloads = []
+    kids_list = []
+    static = []                          # 与偏移无关的部分：terminal + child_count + 边名字
     for n in nodes:
         term = n.get('')
+        payload = b'' if term is None else uleb(0) + uleb(term)
         kids = sorted(x for x in n if x != '')
-        payload_len = (len(uleb(0)) + len(uleb(term[0]))) if term else 0
-        sz = len(uleb(payload_len)) + 1
+        sz = len(uleb(len(payload))) + len(payload) + 1
         for k in kids:
             sz += len(k.encode()) + 1
-        sz += 3 * len(kids) + payload_len
-        sizes.append(sz)
-    pos = []
-    acc = 0
-    for v in sizes:
-        pos.append(acc)
-        acc += v
+        payloads.append(payload)
+        kids_list.append(kids)
+        static.append(sz)
+
+    pos = [0] * len(nodes)
+    edge_len = None
+    for _ in range(8):
+        lens = {}
+        for i, kids in enumerate(kids_list):
+            for k in kids:
+                lens[(i, k)] = len(uleb(pos[idx[id(nodes[i][k])]]))
+        acc = 0
+        for i in range(len(nodes)):
+            pos[i] = acc
+            acc += static[i] + sum(lens[(i, k)] for k in kids_list[i])
+        if lens == edge_len:             # 偏移长度已稳定，pos 与之一致
+            break
+        edge_len = lens
+    else:
+        raise RuntimeError('export trie 偏移长度未收敛')
+    total = acc
 
     out = bytearray()
     for i, n in enumerate(nodes):
-        term = n.get('')
-        kids = sorted(x for x in n if x != '')
-        payload = (uleb(0) + uleb(term[0])) if term else b''
-        out += uleb(len(payload))
+        kids = kids_list[i]
+        out += uleb(len(payloads[i]))
+        out += payloads[i]               # ← 紧跟 terminal_size
         out.append(len(kids))
         for k in kids:
             out += k.encode() + b'\0'
         for k in kids:
-            out += _uleb3(pos[idx[id(n[k])]])
-        out += payload
-    assert len(out) == acc, 'trie 大小不一致 %d != %d' % (len(out), acc)
-    return bytes(out)
+            out += uleb(pos[idx[id(nodes[i][k])]])
+    trie = bytes(out)
+    if len(trie) != total:
+        raise RuntimeError('export trie 大小与预计算不一致: %d != %d' % (len(trie), total))
+
+    # 落盘前自校验：标准 walker 必须原样还原每一个导出
+    got = _walk_trie(trie)
+    want = {name: addr for name, addr, _t in entries if name}
+    if got != want:
+        allmiss = [k for k in want if k not in got]
+        allbad = [k for k in want if k in got and got[k] != want[k]]
+        raise RuntimeError('export trie 自校验失败：缺 %d 个（%r）错 %d 个（%r）'
+                           % (len(allmiss), allmiss[:5], len(allbad), allbad[:5]))
+    return trie
 
 
 def main():
