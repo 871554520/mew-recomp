@@ -1,5 +1,7 @@
 name: iOS Fast IPA (Ubuntu heavy + short macOS)
 
+# v0.11.4: 修 export trie 深度 446 -> 22（真机 dyld 报 trie too deep > 255 直接拒绝加载 = 黑屏）
+
 # 按手册 P0-1 改造：把重活全压到免费 Ubuntu，macOS 只做「编 shim + 编宿主 + 签名 + 打包」。
 # 关键收益：**只需抢赢一次 macOS 槽位**（旧流程 sdl+app 两个 job 要连赢两次）。
 #

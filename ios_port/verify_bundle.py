@@ -107,6 +107,14 @@ class MachO:
             exports_trie = (dyld_info[8], dyld_info[9])
         if exports_trie:
             self.exports = self._read_exports(exports_trie[0])
+            # dyld 对 export trie 的节点深度有硬上限：超过 255 层直接拒绝加载整个
+            # 镜像（真机报 `trie too deep > 255`，表现是黑屏）。点目录里符号名
+            # 很长（C++ mangled 400+ 字符）时特别容易踩，必须在这里挡住。
+            depth = self._trie_depth(exports_trie[0])
+            self.trie_depth = depth
+            if depth > 255:
+                self.problems.append(
+                    'export trie 最大深度 %d 超过 dyld 上限 255（真机会拒绝加载）' % depth)
             if linkedit and exports_trie[0] + exports_trie[1] > linkedit[0] + linkedit[1]:
                 self.problems.append(
                     'export trie [0x%x,0x%x) 超出 __LINKEDIT [0x%x,0x%x)'
@@ -118,6 +126,34 @@ class MachO:
         # bind 流
         if dyld_info and dyld_info[1] and dyld_info[2]:
             self.binds = self._read_binds(dyld_info[2], dyld_info[3])
+
+    def _trie_depth(self, base):
+        """export trie 的最大节点深度（根算 0）。dyld 超过 255 层就拒绝加载。"""
+        d = self.raw
+        stack = [(0, 0)]
+        seen = set()
+        best = 0
+        while stack:
+            off, dep = stack.pop()
+            if off in seen:
+                continue
+            seen.add(off)
+            if dep > best:
+                best = dep
+            p = base + off
+            term, p = uleb(d, p)
+            p += term
+            nch = d[p]
+            p += 1
+            for _ in range(nch):
+                e = p
+                while d[e]:
+                    e += 1
+                p = e + 1
+                child, p = uleb(d, p)
+                if child:
+                    stack.append((child, dep + 1))
+        return best
 
     def _read_exports(self, base):
         d = self.raw
@@ -264,7 +300,8 @@ def main(argv):
         print('\n[%s]' % rel)
         print('  LC_ID         %s' % (m.self_name or '-'))
         print('  依赖          %s' % (', '.join(m.deps) or '-'))
-        print('  导出 %d 个，bind %d 条' % (len(m.exports), len(m.binds)))
+        print('  导出 %d 个（trie 深度 %d/255），bind %d 条'
+              % (len(m.exports), getattr(m, 'trie_depth', -1), len(m.binds)))
         for pr in m.problems:
             errors.append('%s: %s' % (rel, pr))
 

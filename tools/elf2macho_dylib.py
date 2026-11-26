@@ -627,6 +627,31 @@ def _uleb_read(buf, p):
             raise ValueError('ULEB 过长 @0x%x' % p)
 
 
+def _trie_depth(trie):
+    """返回 export trie 的最大节点深度（根算 0）。dyld 超过 255 层就拒绝加载整个镜像。"""
+    stack = [(0, 0)]
+    seen = set()
+    best = 0
+    while stack:
+        off, dep = stack.pop()
+        if off in seen:
+            continue
+        seen.add(off)
+        if dep > best:
+            best = dep
+        tsz, p = _uleb_read(trie, off)
+        p += tsz
+        nc = trie[p]
+        p += 1
+        for _ in range(nc):
+            e = trie.index(b'\0', p)
+            p = e + 1
+            co, p = _uleb_read(trie, p)
+            if co:
+                stack.append((co, dep + 1))
+    return best
+
+
 def _walk_trie(trie):
     """按标准 Mach-O 布局走查 export trie，返回 {符号名: 地址}。
 
@@ -699,6 +724,30 @@ def _build_trie(entries):
             cur = cur.setdefault(ch, {})
         cur[''] = addr
 
+    # dyld 对 export trie 的**节点深度**有硬上限：超过 255 层直接拒绝加载整个
+    # 镜像，报 `trie too deep > 255`（真机实测：v0.11.1/v0.11.2/v0.11.3 的最大
+    # 深度都是 446，所以全都 load 失败、表现就是黑屏）。
+    # 逐字符建树时深度 = 最长符号名长度，C++ mangled 名字随便就 400+ 字符，必然
+    # 超标。边的名字本身允许任意长度，所以把「没有终结符且只有一个子节点」的
+    # 链压成一条多字符边（路径压缩），走查语义完全不变、深度骤降到十几层。
+    def _compress(n):
+        out = {}
+        term = n.get('')
+        for k, sub in n.items():
+            if k == '':
+                continue
+            label = k
+            while '' not in sub and len(sub) == 1:
+                (k2, sub2), = sub.items()
+                label += k2
+                sub = sub2
+            out[label] = _compress(sub)
+        if term is not None:
+            out[''] = term
+        return out
+
+    root = _compress(root)
+
     nodes = []
 
     def collect(n):
@@ -765,6 +814,11 @@ def _build_trie(entries):
         allbad = [k for k in want if k in got and got[k] != want[k]]
         raise RuntimeError('export trie 自校验失败：缺 %d 个（%r）错 %d 个（%r）'
                            % (len(allmiss), allmiss[:5], len(allbad), allbad[:5]))
+    depth = _trie_depth(trie)
+    if depth > 255:
+        raise RuntimeError('export trie 最大深度 %d 超过 dyld 上限 255，'
+                           '真机会报 trie too deep 并拒绝加载' % depth)
+    _build_trie.last_depth = depth
     return trie
 
 
@@ -792,7 +846,8 @@ def main():
               % (i, p['vm'], p['fileoff'], p['fsz'], p['msz']))
     print('  rebases  : %d' % info['rebases'])
     print('  binds    : %d (distinct shim syms %d)' % (info['binds'], info['shim']))
-    print('  exports  : %d' % info['exports'])
+    print('  exports  : %d (export trie 深度 %d / dyld 上限 255)'
+          % (info['exports'], getattr(_build_trie, 'last_depth', -1)))
 
 
 if __name__ == '__main__':
