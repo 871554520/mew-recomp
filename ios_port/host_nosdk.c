@@ -34,6 +34,7 @@ extern int chdir(const char*);
 extern char* getcwd(char*, size_t);
 extern int access(const char*, int);
 extern int unlink(const char*);
+extern int rmdir(const char*);
 extern int rename(const char*, const char*);
 extern int snprintf(char*, size_t, const char*, ...);
 extern int vsnprintf(char*, size_t, const char*, va_list);
@@ -225,6 +226,49 @@ static void* find_mew_header(void) {
 //     [msgbox] ERROR: unable to open database file
 // 紧接着进程退出（用户看到的就是「闪退」）。所以起游戏之前先把存档/偏好目录
 // 建出来：已有的不动，缺的补上。
+// 读/写一个小整数（阶段计数器用），不依赖 libc 的 atoi/itoa 声明
+static int read_int_file(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    char b[16];
+    ssize_t n = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = '\0';
+    int v = 0;
+    for (ssize_t i = 0; i < n; ++i) {
+        if (b[i] < '0' || b[i] > '9') break;
+        v = v * 10 + (b[i] - '0');
+        if (v > 1000) break;
+    }
+    return v;
+}
+
+static void write_int_file(const char* path, int v) {
+    unlink(path);
+    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) return;
+    char b[16];
+    int n = snprintf(b, sizeof b, "%d", v);
+    if (n > 0) (void)write(fd, b, (size_t)n);
+    close(fd);
+}
+
+// 把上一版留在 <cwd>/shaders/ 的那 50 个文件删掉（阶段里关掉覆盖时必须清干净，
+// 否则游戏照样会读到它们，A/B 就不成立了）
+static void cleanup_shaders(void) {
+    int n = 0;
+    for (const mew_es3_shader* sh = kMewEs3Shaders; sh->name; ++sh) {
+        char path[2200];
+        snprintf(path, sizeof path, "%s/%s", g_game, sh->name);
+        if (unlink(path) == 0) ++n;
+    }
+    char dir[2048];
+    snprintf(dir, sizeof dir, "%s/shaders", g_game);
+    (void)rmdir(dir);
+    say("[host 3f] 已清理 <cwd>/shaders 下 %d 个旧文件（本阶段不启用覆盖）\n", n);
+}
+
 static void mkdir_p(const char* path) {
     char tmp[2048];
     size_t n = mew_strlen(path);
@@ -369,9 +413,29 @@ static int app_main(int argc, char** argv) {
     char cwd[4096];
     if (getcwd(cwd, sizeof cwd)) say("[host] cwd = %s\n", cwd);
 
-    // 必须在起游戏之前：SQLite 存档库要的目录不存在就直接 unable to open database file
-    prepare_writable_dirs();
-    write_shaders();
+    // ---- 阶段轮换：一次装机就能把 A/B 全跑完 ----
+    // 真机上「游戏刚进 _SDL_main 就 SIGSEGV」到底是我新加的哪一项造成的，靠猜没用，
+    // 所以每次启动自动切一档，日志里会写明这一轮是哪一档：
+    //   0 = 纯基线（目录 / shader 覆盖 / init_array 全关，等价 v0.11.1 的行为）
+    //   1 = + 预建可写目录（SQLite 存档库要）
+    //   2 = + 50 个 shader 的 GLSL ES 3.00 覆盖
+    //   3 = + 手工调 init_array（已知会崩，用来确认崩溃点没变）
+    char stage_path[1400];
+    snprintf(stage_path, sizeof stage_path, "%s/.mew_stage", g_docs);
+    int stage = read_int_file(stage_path) % 4;
+    write_int_file(stage_path, (stage + 1) % 4);
+    int use_dirs = (stage >= 1), use_shaders = (stage >= 2), use_ia = (stage >= 3);
+    say("[host 3g] 阶段 %d/3：目录=%d shader=%d init_array=%d（下次启动自动进下一档）\n",
+        stage, use_dirs, use_shaders, use_ia);
+
+    if (use_dirs) {
+        // SQLite 存档库要的目录不存在就直接 unable to open database file
+        prepare_writable_dirs();
+    } else {
+        say("[host 3e] 本阶段跳过：不预建目录\n");
+    }
+    if (use_shaders) write_shaders();
+    else cleanup_shaders();
 
     say("[host 3] before dlopen(%s)\n", MEW_DYLIB_NAME);
     char p3[4200];
@@ -403,7 +467,7 @@ static int app_main(int argc, char** argv) {
     // 想 A/B 就在 Documents 下建一个空文件 .mew_try_init_array，那时会逐项打印再调。
     char flag[1300];
     snprintf(flag, sizeof flag, "%s/.mew_try_init_array", g_docs);
-    int try_ia = (access(flag, F_OK) == 0);
+    int try_ia = (access(flag, F_OK) == 0) || use_ia;
     if (ia && ia_end && ia_end >= ia && !try_ia) {
         say("[host 3d] init_array %d 项：默认跳过（手工调用会在静态构造里 SIGSEGV）\n",
             (int)(ia_end - ia));
