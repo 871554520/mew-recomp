@@ -375,9 +375,9 @@ class MachO:
             else:
                 k = route(sym)
                 if k == 'sdl':
-                    dll, sym_out = '@rpath/SDL3.framework/SDL3', sym
+                    dll, sym_out = '@rpath/SDL3.framework/SDL3', '_' + sym
                 elif k == 'system':
-                    dll, sym_out = '/usr/lib/libSystem.B.dylib', sym
+                    dll, sym_out = '/usr/lib/libSystem.B.dylib', '_' + sym
                 else:
                     dll, sym_out = '@rpath/libbionic_shim.dylib', shim_name(sym)
                     shim_syms.append(sym)
@@ -416,7 +416,8 @@ class MachO:
         buf.extend(strtab)
         buf.extend(b'\0' * (align(len(buf), 8) - len(buf)))
         trie_off = len(buf)
-        trie = _build_trie(sorted(set((n, a + elf_base, t) for n, a, t in self.exports)))
+        # Darwin 约定：export trie 里的 C 符号名带前导 '_'
+        trie = _build_trie(sorted(set(('_' + n, a + elf_base, t) for n, a, t in self.exports)))
         buf.extend(trie)
         rb_off = len(buf)
         buf.extend(rebase_blob)
@@ -501,8 +502,14 @@ class MachO:
                                 exports=len(self.exports), shim=len(set(shim_syms)),
                                 elf_base=elf_base, ncmds=ncmd)
 
+def _uleb3(v):
+    """固定 3 字节的 ULEB（非规范编码，dyld 的 read_uleb128 能正常读），
+    这样节点大小与偏移数值无关，可以一次算准，不需要迭代收敛。"""
+    return bytes([(v & 0x7F) | 0x80, ((v >> 7) & 0x7F) | 0x80, (v >> 14) & 0x7F])
+
+
 def _build_trie(entries):
-    """标准前缀压缩 export trie：根节点必须在 offset 0，偏移相对 trie 起点。"""
+    """export trie：根必须在 offset 0，子节点偏移相对 trie 起点。"""
     root = {}
     for name, addr, typ in entries:
         if not name:
@@ -519,38 +526,28 @@ def _build_trie(entries):
         for k in sorted(x for x in n if x != ''):
             collect(n[k])
 
-    collect(root)                      # 前序：根在 0 号
+    collect(root)                       # 前序：根 = 0 号节点
     idx = {id(n): i for i, n in enumerate(nodes)}
-    pos = [0] * len(nodes)
-    for _ in range(8):                 # 迭代收敛（ULEB 长度只差 1 字节）
-        size = []
-        for i, n in enumerate(nodes):
-            term = n.get('')
-            tb = 0
-            if term:
-                payload = len(uleb(0)) + len(uleb(term[0]))
-                tb = len(uleb(payload)) + payload
-            kids = sorted(x for x in n if x != '')
-            payload_len = 0
-            if term:
-                payload_len = len(uleb(0)) + len(uleb(term[0]))
-            sz = len(uleb(payload_len)) + 1
-            for k in kids:
-                sz += len(k.encode()) + 1
-            for k in kids:
-                sz += len(uleb(pos[idx[id(n[k])]]))
-            sz += payload_len
-            size.append(sz)
-        p, newpos = 0, []
-        for v in size:
-            newpos.append(p)
-            p += v
-        if newpos == pos:
-            break
-        pos = newpos
+
+    # 大小与位置无关：terminal 长度 + 子名字 + 每子 3 字节固定偏移
+    sizes = []
+    for n in nodes:
+        term = n.get('')
+        kids = sorted(x for x in n if x != '')
+        payload_len = (len(uleb(0)) + len(uleb(term[0]))) if term else 0
+        sz = len(uleb(payload_len)) + 1
+        for k in kids:
+            sz += len(k.encode()) + 1
+        sz += 3 * len(kids) + payload_len
+        sizes.append(sz)
+    pos = []
+    acc = 0
+    for v in sizes:
+        pos.append(acc)
+        acc += v
 
     out = bytearray()
-    for n in nodes:
+    for i, n in enumerate(nodes):
         term = n.get('')
         kids = sorted(x for x in n if x != '')
         payload = (uleb(0) + uleb(term[0])) if term else b''
@@ -559,8 +556,9 @@ def _build_trie(entries):
         for k in kids:
             out += k.encode() + b'\0'
         for k in kids:
-            out += uleb(pos[idx[id(n[k])]])
+            out += _uleb3(pos[idx[id(n[k])]])
         out += payload
+    assert len(out) == acc, 'trie 大小不一致 %d != %d' % (len(out), acc)
     return bytes(out)
 
 
