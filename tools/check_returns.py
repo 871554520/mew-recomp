@@ -15,6 +15,16 @@ import re
 import sys
 
 # 粗略但够用的函数定义匹配：返回类型 + 名字 + 参数列表 + '{'
+BARE_RETURN = re.compile(r'\breturn\s*;')
+# 先剥掉字符串 / 字符字面量和 // 注释，否则 `e.out << "... return;\n"` 这种
+# 「发代码文本」的行会被误报（实际报过 24 条这种假阳性）。
+STR_LIT = re.compile(r'"(?:\\.|[^"\\])*"')
+CHR_LIT = re.compile(r"'(?:\\.|[^'\\])*'")
+
+# lambda（[&](...) { ... } 或 [=](...) { ... }）按 void 处理，否则它的裸
+# return; 会被算到外层函数名下（实际踩过一次假阳性）。
+LAMBDA_RE = re.compile(r'\[\s*[&=]?\s*\]\s*\([^;{}]*\)\s*(?:->\s*[\w:<>*&\s]+)?\{')
+
 FUNC_RE = re.compile(
     r'^[ \t]*(?:template\s*<[^>]*>\s*)?'
     r'(?P<ret>(?:static\s+|inline\s+|extern\s+|constexpr\s+|virtual\s+)*'
@@ -39,12 +49,17 @@ def scan(path):
     for no, line in enumerate(lines, 1):
         stripped = line.strip()
         # 进入一个函数体？
+        if LAMBDA_RE.search(line):
+            stack.append(('<lambda>', 'void', depth))
         m = FUNC_RE.match(line)
         if m and '{' in line:
             ret = m.group('ret').strip()
             stack.append((m.group('name'), ret, depth))
 
-        if stripped == 'return;':
+        probe = STR_LIT.sub('", "', line)
+        probe = CHR_LIT.sub("''", probe)
+        probe = probe.split('//')[0]
+        if BARE_RETURN.search(probe):
             for name, ret, d in reversed(stack):
                 base = ret.replace('static', '').replace('inline', '').replace('constexpr', '').strip()
                 if base and base != 'void' and not base.endswith('void'):
