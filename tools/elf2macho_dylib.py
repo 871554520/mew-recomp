@@ -330,6 +330,23 @@ class MachO:
                 if self.verbose:
                     sys.stderr.write('[warn] 未处理重定位类型 %d @0x%x\n' % (t, r['off']))
 
+        # ---- DT_INIT_ARRAY：ELF 加载时由动态链接器按序调用（C++ 全局构造） ----
+        # 转成 Mach-O 后**没有** __mod_init_func 节，dyld 不会替我们跑这些构造函数；
+        # 而 libmain.so 有 12 项（实测 0x453bea8 / 96 B，槽位全是 R_AARCH64_RELATIVE，
+        # rebase 流会把它们修成正确的宿主地址）。所以把数组首/尾地址当**数据符号**导出，
+        # 由 MewHost 在 dlopen 之后按序调用；不导出就是「12 个全局构造函数全不执行」。
+        ia = elf.dynv.get(DT_INIT_ARRAY, 0)
+        iasz = elf.dynv.get(DT_INIT_ARRAYSZ, 0)
+        self.init_array_va = ia
+        self.init_array_sz = iasz
+        if ia and iasz:
+            self.exports.append(('mew_init_array', ia, 1))
+            self.exports.append(('mew_init_array_end', ia + iasz, 1))
+            print('  init_array: va=0x%x size=%d（%d 项）→ 导出给宿主手动调用'
+                  % (ia, iasz, iasz // 8))
+        else:
+            print('  init_array: 无（无需手动跑静态构造）')
+
     # ---- 生成 Mach-O ----
     def emit(self):
         elf = self.elf

@@ -291,6 +291,24 @@ static int app_main(int argc, char** argv) {
     say("[host 3c] mew_base=%p set_base=%p\n", hdr, (void*)set_base);
     if (set_base && hdr) set_base((unsigned long)hdr);
 
+    // ELF 的 DT_INIT_ARRAY（libmain.so 里 12 项）在 Mach-O 里没有 __mod_init_func 节，
+    // dyld 不会自动调用。转换器把它导出成 mew_init_array / mew_init_array_end 两个
+    // 数据符号，这里按序调用——否则所有 C++ 全局构造函数都不执行，后面全是未初始化全局。
+    typedef void (*init_fn)(void);
+    init_fn* ia = (init_fn*)dlsym(h, "mew_init_array");
+    init_fn* ia_end = (init_fn*)dlsym(h, "mew_init_array_end");
+    if (ia && ia_end && ia_end >= ia) {
+        int cnt = (int)(ia_end - ia);
+        say("[host 3d] init_array %d 项，开始按序调用（静态构造）\n", cnt);
+        for (int i = 0; i < cnt; ++i) {
+            if (!ia[i]) continue;
+            ia[i]();
+        }
+        say("[host 3d] init_array 全部完成\n");
+    } else {
+        say("[host 3d] 警告：没找到 init_array 导出（静态构造不会执行）\n");
+    }
+
     void* entry = dlsym(h, "SDL_main");
     if (!entry && hdr) {
         entry = (void*)((char*)hdr + MEW_SDL_MAIN_OFFSET);

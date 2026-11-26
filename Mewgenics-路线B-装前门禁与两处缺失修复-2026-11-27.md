@@ -52,6 +52,28 @@ LC_LOAD_DYLIB    @rpath/libbionic_shim.dylib    ← 序号 3
 - 官方文档：`SDL_StretchSurface` 自 **SDL 3.4.0** 起公开；实现就在
   `src/video/SDL_stretch.c`，语义是「校验矩形 + 加锁 + 按 scaleMode 缩放 blit」。
 
+### 2.3 顺带查出的第三个坑：`DT_INIT_ARRAY` 的 12 个静态构造函数没人跑
+
+- `libmain.so` 的动态段里有 `DT_INIT_ARRAY = 0x453bea8`、`DT_INIT_ARRAYSZ = 96`，即 **12 项**。
+- 这 12 个槽位在文件里全是 0，由 `R_AARCH64_RELATIVE` 重定位在加载期填成真实地址
+  （实测 12 条 relocation 的 addend 分别是 0x4421584 / 0x4421bb8 / 0x407935c …）。
+- 转成 Mach-O 后**没有 `__DATA,__mod_init_func` 节**，dyld 不会替我们调用它们，
+  转换器原来也只是把 `DT_INIT_ARRAY` 的常量定义摆着、从未使用。
+- 后果：`dlopen` 成功之后，12 个 C++ 全局构造函数一个都不执行，引擎拿到的是
+  一堆未初始化的全局对象——这比「加载失败」更难查。
+
+**修法**：转换器把数组首/尾地址当**数据符号**导出（`mew_init_array` / `mew_init_array_end`），
+MewHost 在 `dlopen` 成功后按序调用。实测导出地址：
+
+| 符号 | 地址 | 说明 |
+|---|---|---|
+| `_mew_init_array` | `0x453fea8` | = ELF 0x453bea8 + 0x4000 平移 |
+| `_mew_init_array_end` | `0x453ff08` | +96 B，差 12 项 |
+| `_SDL_main` | `0x4075e60` | 未受影响（回归对照） |
+
+真机日志里会出现 `[host 3d] init_array 12 项，开始按序调用（静态构造）` 与
+`[host 3d] init_array 全部完成`——这两行是「构造函数真的跑过了」的判据。
+
 ## 3. 修法（全程 Linux 可编，不动 macOS）
 
 新增 **`libmewcompat.dylib`**（`ios_port/compat/mewcompat.c` + 复用
@@ -105,7 +127,7 @@ FAIL ... _SDL_StretchSurface 未被 ... SDL3.framework/SDL3 导出
 - IPA 26,604,433 B（v0.9.0 是 27,268,635 B，剔掉 SDL3 头文件省了 664 KB）；
 - `Info.plist` 版本 **0.10.0 / build 100**（与文件名同源，P2-1 关闭）；
 - ⚠️ 这只包**仍然带那两个缺失符号**（dylib 是同一份），**不要装**。
-  能装的是修完后的 **v0.11.0**。
+  能装的是修完后的 **v0.11.2**（v0.11.0/0.11.1 缺 init_array，别装）。
 
 ## 6. 方案二那边同一轮的收获
 
@@ -117,7 +139,7 @@ FAIL ... _SDL_StretchSurface 未被 ... SDL3.framework/SDL3 导出
 
 ## 7. 还没验证的部分（别当成已完成）
 
-- v0.11.0 未在任何设备上跑过；libSystem 的 106 条绑定无法在包内核对。
+- v0.11.2（含 init_array 调用）未在任何设备上跑过；libSystem 的 106 条绑定无法在包内核对。
 - `SDL_StretchSurface` 的兼容实现是「等价语义」而非原函数；若真机上出现缩放/像素
   异常，优先怀疑这里（可换成重编 SDL3 3.2.12+）。
 - 方案二的堆路径修复（`HeapReAlloc` 等）尚未跑出新的运行期数据。
