@@ -281,6 +281,14 @@ static std::string sseRead(const PeImage& pe, const ZydisDecodedOperand& o,
 bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                 const ZydisDecodedInstruction& insn,
                 const ZydisDecodedOperand* ops, uint64_t next_rip) {
+    // 零操作数的 VEX 指令必须在这行 operand_count 检查**之前**处理。
+    // vzeroupper / vzeroall 的 operand_count 是 0，之前被 `if (< 1) return false`
+    // 直接退回，于是整函数进了占位表（stage3 实测：0x140dac181 只缺这一条，
+    // 却整函数被 stub，UNIMPL FUNC distinct=1）。
+    if (mn == "vzeroupper" || mn == "vzeroall") {
+        e.out << "  avx::zeroupper(ctx);\n";
+        return true;
+    }
     if (insn.operand_count < 1) return false;
     const ZydisDecodedOperand& d0 = ops[0];
     int dx = is_xmm_reg(d0) ? xmmId(d0.reg.value) : -1;
@@ -722,10 +730,6 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         const int imm = (int)ops[2].imm.value.u;
         e.out << "  avx::extractf128(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
               << imm << ");\n";
-        return true;
-    }
-    if (mn == "vzeroupper" || mn == "vzeroall") {
-        e.out << "  avx::zeroupper(ctx);\n";
         return true;
     }
     // SSE2 的 64 位 unpack（AVX 代码里也常出现）

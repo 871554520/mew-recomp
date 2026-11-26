@@ -71,6 +71,45 @@ void install_crash_handler() {
 }
 }  // namespace
 
+// ---- 诊断探针：__security_cookie 到底是不是 0 ----
+// stage3 的崩溃（fault=0xc06b57238）怀疑是「cookie 全局还没初始化就拿去解码指针」。
+// 这个 PE 的 LoadConfig.SecurityCookie 指向 0x1412f2880，.data 里的初值是
+// 0x00002B992DDFA232（MSVC 的默认 cookie 值）。探针把它在**进入 entry 之前**
+// 的真实值打出来：是 0 就说明我们的加载器把 .data 清掉了，非 0 就说明 cookie
+// 一直是好的、崩溃另有原因。
+static void probe_security_cookie(const char* exe, const GuestImage& img) {
+    FILE* fp = std::fopen(exe, "rb");
+    if (!fp) return;
+    uint32_t peOff = 0;
+    std::fseek(fp, 0x3c, SEEK_SET);
+    if (std::fread(&peOff, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    long opt = (long)peOff + 24;
+    uint16_t magic = 0;
+    std::fseek(fp, opt, SEEK_SET);
+    if (std::fread(&magic, 2, 1, fp) != 1) { std::fclose(fp); return; }
+    long dirOff = (magic == 0x20b) ? (opt + 112) : (opt + 96);
+    uint32_t lcRva = 0;
+    std::fseek(fp, dirOff + 10 * 8, SEEK_SET);
+    if (std::fread(&lcRva, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    std::fclose(fp);
+    if (!lcRva) { std::fprintf(stderr, "[probe] 这个 PE 没有 LoadConfig\n"); return; }
+    uint64_t lcVa = img.orig_image_base + lcRva;
+    if (lcVa + 0x60 < img.orig_image_base || lcVa + 0x60 >= img.orig_image_base + img.image_size) {
+        std::fprintf(stderr, "[probe] LoadConfig 越界 0x%llx\n", (unsigned long long)lcVa);
+        return;
+    }
+    uint64_t cookie_va = *reinterpret_cast<uint64_t*>(guest_ptr(img, lcVa + 0x58));
+    if (cookie_va < img.orig_image_base || cookie_va + 8 > img.orig_image_base + img.image_size) {
+        std::fprintf(stderr, "[probe] SecurityCookie 指向界外 0x%llx（=0 说明没被初始化）\n",
+                     (unsigned long long)cookie_va);
+        return;
+    }
+    uint64_t v = *reinterpret_cast<uint64_t*>(guest_ptr(img, cookie_va));
+    std::fprintf(stderr, "[probe] __security_cookie @0x%llx 进 entry 前的值 = 0x%016llx%s\n",
+                 (unsigned long long)cookie_va, (unsigned long long)v,
+                 v ? "" : "  <<< 是 0，说明 .data 被清掉了");
+}
+
 int main(int argc, char** argv) {
     std::fprintf(stderr, "[runner] marker: seh headers linked, dispatch=%d\n",
                  (int)seh::seh_dispatch_enabled());
@@ -122,6 +161,8 @@ int main(int argc, char** argv) {
     std::printf("runner: image_base=0x%llx entry=0x%llx bias=%lld\n",
                 (unsigned long long)img.orig_image_base,
                 (unsigned long long)entry, (long long)img.mem_bias);
+
+    probe_security_cookie(exe, img);
 
     init_dispatch_table();
 
