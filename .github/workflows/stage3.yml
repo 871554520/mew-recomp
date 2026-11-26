@@ -361,7 +361,7 @@ jobs:
             ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_bt.out 2> generated/runner_bt.err || RC=$?
           echo "runner_bt rc=$RC"
           echo "watch_w=$(grep -c '\[watch\] W' generated/runner_bt.err || true)"
-          grep -E '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err | head -80
+          (grep -E '^\[fn\]|^\[FASTFAIL\]|^\[watch\]|\[fn:|\[rsi\]|\[rdi\+0x88\]|\[rbx\]' generated/runner_bt.err || true) | head -80 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
