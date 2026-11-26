@@ -1,13 +1,23 @@
-// 变参桥的 C 侧：把 AAPCS64 的 x0..x7 / d0..d7 摊平成 Darwin 的扁平 va_list。
-// Darwin ARM64：va_list 就是 char*，所有可变参数按格式串顺序连续排在 8 字节槽里。
+// 变参桥 C 侧：AAPCS64(x0..x7 / d0..d7 / 栈上第 9 个起) -> Darwin 扁平 va_list
 #include "bionic_shim.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
-// 按格式串把 x_slots/d_slots 交替取出来，拼成连续的 8 字节数组
+// 取第 i 个整数/浮点参数：前 8 个在寄存器槽，第 9 个起在调用方栈上
+static uint64_t pick(const uint64_t* reg, int* idx, const uint64_t* stack, int stack_n) {
+    int i = *idx;
+    uint64_t v;
+    if (i < 8) v = reg[i];
+    else if (stack && (i - 8) < stack_n) v = stack[i - 8];
+    else v = 0;
+    (*idx)++;
+    return v;
+}
+
 int mew_vararg_build(uint64_t* out, int cap, const char* fmt,
-                     const uint64_t* x, int xi, const uint64_t* d, int di) {
+                     const uint64_t* x, int xi, const uint64_t* d, int di,
+                     const uint64_t* stack_args, int stack_n) {
     int n = 0;
     const char* p = fmt;
     while (p && *p && n < cap) {
@@ -15,39 +25,37 @@ int mew_vararg_build(uint64_t* out, int cap, const char* fmt,
         p++;
         if (*p == '%') { p++; continue; }
         while (*p && strchr("-+ #0'", *p)) p++;
+        // 动态宽度 %*d / %.*f：先从整数槽吃一个
+        if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n); p++; }
         while (*p >= '0' && *p <= '9') p++;
-        if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }
+        if (*p == '.') {
+            p++;
+            if (*p == '*') { out[n++] = pick(x, &xi, stack_args, stack_n); p++; }
+            while (*p >= '0' && *p <= '9') p++;
+        }
         while (*p && strchr("hljztLq", *p)) p++;
         char conv = *p ? *p++ : 0;
         int is_fp = (conv=='f'||conv=='F'||conv=='e'||conv=='E'||conv=='g'||conv=='G'||conv=='a'||conv=='A');
-        if (is_fp) {
-            out[n++] = d[di < 8 ? di : 7];
-            if (di < 8) di++;
-        } else {
-            out[n++] = x[xi < 8 ? xi : 7];
-            if (xi < 8) xi++;
-        }
+        if (is_fp) out[n++] = pick(d, &di, stack_args, stack_n);
+        else        out[n++] = pick(x, &xi, stack_args, stack_n);
     }
     return n;
 }
 
-// bionic_snprintf(buf, size, fmt, ...)
-int mew_vararg_snprintf(const uint64_t* x, const uint64_t* d) {
+int mew_vararg_snprintf(const uint64_t* x, const uint64_t* d, const uint64_t* stk) {
     char* buf = (char*)(uintptr_t)x[0];
     size_t cap = (size_t)x[1];
     const char* fmt = (const char*)(uintptr_t)x[2];
     uint64_t flat[32];
-    int n = mew_vararg_build(flat, 32, fmt, x, 3, d, 0);
-    (void)n;
+    mew_vararg_build(flat, 32, fmt, x, 3, d, 0, stk, 16);
     return vsnprintf(buf, cap, fmt, (va_list)flat);
 }
 
-// __android_log_print(prio, tag, fmt, ...)
-int mew_vararg_android_log_print(const uint64_t* x, const uint64_t* d) {
+int mew_vararg_android_log_print(const uint64_t* x, const uint64_t* d, const uint64_t* stk) {
     const char* tag = (const char*)(uintptr_t)x[1];
     const char* fmt = (const char*)(uintptr_t)x[2];
     uint64_t flat[32];
-    mew_vararg_build(flat, 32, fmt, x, 3, d, 0);
+    mew_vararg_build(flat, 32, fmt, x, 3, d, 0, stk, 16);
     fprintf(stderr, "[%s] ", tag ? tag : "?");
     vfprintf(stderr, fmt, (va_list)flat);
     fputc('\n', stderr);
