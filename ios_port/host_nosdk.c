@@ -245,6 +245,19 @@ static int app_main(int argc, char** argv) {
     }
     say("[host] dlopen shim -> %p %s\n", h_shim, h_shim ? "ok" : get_dlerror());
 
+    // 兼容库必须显式加载：它是 libmew_relinked 的第 4 个依赖，但主 dylib 是按**绝对路径**
+    // dlopen 的，dyld 解析它里面的 @rpath/libmewcompat.dylib 时要靠可执行文件的 LC_RPATH；
+    // 显式先加载一份，dyld 就会按 install name 复用，不必赌 rpath 回溯。
+    // 顺序必须在 SDL3 之后（compat 自己依赖 SDL3 的 SDL_BlitSurfaceScaled）。
+    void* h_compat = dlopen("@rpath/libmewcompat.dylib", RTLD_NOW | RTLD_GLOBAL);
+    if (!h_compat) {
+        snprintf(alt, sizeof alt, "%s/Frameworks/libmewcompat.dylib", dir);
+        say("[host] @rpath/compat 失败：%s，改试 %s\n", get_dlerror(), alt);
+        h_compat = dlopen(alt, RTLD_NOW | RTLD_GLOBAL);
+    }
+    say("[host] dlopen compat -> %p %s\n", h_compat, h_compat ? "ok" : get_dlerror());
+    if (!h_compat) say("[host] 警告：compat 库没加载，主 dylib 大概率会报 "
+                       "symbol not found: _bionic_tlsdesc_resolver\n");
     if (gsz < 0) {
         if (!h_sdl) h_sdl = dlopen("@rpath/SDL3.framework/SDL3", RTLD_NOW | RTLD_GLOBAL);
         typedef int (*mb_fn)(unsigned, const char*, const char*, void*);

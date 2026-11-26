@@ -1,0 +1,46 @@
+name: 垫片/宿主语法门禁（约 1 分钟）
+
+# 背景：stage3 一轮要 40 分钟，而「shim 里用了一个不存在的函数」这种错误
+# 会让第 20 步直接失败、后面 5 个跑起来的步骤全被跳过，等于整轮白跑。
+# 这个 job 只做 -fsyntax-only，30 秒内把编译错误打出来，和 stage3 并行跑。
+
+on:
+  push:
+    paths:
+      - 'shims/**'
+      - 'runtime/**'
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 g++
+        run: |
+          if ! command -v g++ >/dev/null; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++
+          fi
+          g++ --version | head -1
+
+      - name: 语法检查（不产出目标文件）
+        run: |
+          set -euo pipefail
+          rc=0
+          for f in shims/win32_kernel32.cpp runtime/src/mew_runner.cpp runtime/src/pe_image_loader.cpp; do
+            echo "===== $f ====="
+            if ! g++ -std=c++17 -fsyntax-only -Wall -Wextra \
+                   -Wno-unused-parameter -Wno-unused-variable -Wno-sign-compare \
+                   -I runtime/include -I shims "$f" 2>&1 | tee /tmp/"$(basename "$f")".log; then
+              rc=1
+            fi
+            grep -c 'error:' /tmp/"$(basename "$f")".log 2>/dev/null | sed 's/^/    error 行数: /' || echo "    error 行数: 0"
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::语法门禁未通过，逐条看上面的 error 行"
+            exit 1
+          fi
+          echo "语法门禁通过"
