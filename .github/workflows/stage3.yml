@@ -464,6 +464,13 @@ jobs:
       - name: 发布诊断摘要到分支 ci-diag-stage3
         if: always()
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ci-diag-stage3
+          FILE: diag-summary.txt
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
         run: |
           set +e
           {
@@ -504,21 +511,46 @@ jobs:
             grep -m 10 'error:' generated/compile.log 2>/dev/null
           } > diag-summary.txt
           wc -l diag-summary.txt
-          # 在临时仓库里做「单文件根提交」再 force-push。
-          # 不要在本仓库里用 git checkout --orphan + git rm --cached：
-          # 实测在这个 job 里 rm --cached 不生效，孤儿提交会把整个仓库（含
-          # .github/workflows/**）一起带上，GITHUB_TOKEN 不允许推送工作流文件，
-          # 于是 push 被静默拒绝、诊断分支永远停在旧内容。
-          ORIG="$(git -C "$GITHUB_WORKSPACE" config --get remote.origin.url)"
-          HDR="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
-          TMP="$(mktemp -d)"
-          cp diag-summary.txt "$TMP/"
-          cd "$TMP"
-          git init -q
-          git config user.name "ci-diag"
-          git config user.email "ci-diag@users.noreply.github.com"
-          [ -n "$HDR" ] && git config http.https://github.com/.extraheader "$HDR"
-          git add -f diag-summary.txt
-          git commit -q -m "stage3 diag: run ${{ github.run_id }}"
-          git remote add origin "$ORIG"
-          git push -q -f origin HEAD:ci-diag-stage3 && echo "已发布到 ci-diag-stage3"
+          # 发布走 GitHub REST API（contents 接口），不用 git：
+          # runner 上孤儿分支 + git rm --cached 的行为不可靠，且 push 一旦涉及
+          # .github/workflows/** 就会被 GITHUB_TOKEN 拒绝，两种坑都踩过了。
+          # 这里只是「在已有分支上更新一个文件」，不产生任何工作流文件变更。
+          python3 - <<'PY'
+          import base64, json, os, urllib.request, urllib.error
+          repo = os.environ['REPO']; branch = os.environ['BRANCH']; path = os.environ['FILE']
+          tok = os.environ['GH_TOKEN']
+          data = open(path, 'rb').read()
+          api = 'https://api.github.com/repos/%s/contents/%s' % (repo, path)
+
+          def call(method, url, body=None):
+              req = urllib.request.Request(
+                  url, method=method,
+                  data=json.dumps(body).encode() if body else None,
+                  headers={'Authorization': 'Bearer ' + tok,
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json',
+                           'User-Agent': 'ci-diag'})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as f:
+                      return json.load(f)
+              except urllib.error.HTTPError as e:
+                  return {'_http': e.code, '_body': e.read().decode()[:300]}
+
+          cur = call('GET', api + '?ref=' + branch)
+          sha = cur.get('sha') if isinstance(cur, dict) else None
+          if isinstance(cur, dict) and cur.get('_http') == 404:
+              # 分支还不存在：先按当前提交建 ref，再取一次
+              mk = call('POST', 'https://api.github.com/repos/%s/git/refs' % repo,
+                        {'ref': 'refs/heads/' + branch, 'sha': os.environ['SHA']})
+              print('建分支:', mk.get('ref', mk.get('_http')))
+              cur = call('GET', api + '?ref=' + branch)
+              sha = cur.get('sha') if isinstance(cur, dict) else None
+          body = {'message': 'diag run ' + os.environ['RUN_ID'],
+                  'content': base64.b64encode(data).decode(),
+                  'branch': branch}
+          if sha:
+              body['sha'] = sha
+          res = call('PUT', api, body)
+          print('发布结果:', res.get('commit', {}).get('sha', '?'),
+                res.get('_http', ''), str(res.get('_body', ''))[:200])
+          PY
