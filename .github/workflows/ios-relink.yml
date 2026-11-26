@@ -1,5 +1,9 @@
 name: iOS relink (ELF -> Mach-O dylib, structure validation)
 
+concurrency:
+  group: ios-relink
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
