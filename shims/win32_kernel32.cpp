@@ -666,6 +666,392 @@ void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
     ret0(c, 0);
 }
 
+// ---------------- SRW 锁 / 条件变量 / 一次性初始化 ----------------
+// Windows 上 std::mutex / std::shared_mutex 底层就是 SRWLOCK；UCRT 的 locale、errno
+// 初始化也走 InitOnce。这些对象在 guest 侧只是一个 8 字节不透明槽（静态初值 0），
+// 所以宿主按「槽地址」建表，用真正的 pthread 原语实现，而不是返回成功骗过去。
+namespace {
+struct SrwSlot { pthread_rwlock_t rw; int shared; };
+struct CvSlot  { pthread_cond_t cv; pthread_mutex_t mu; };
+
+std::mutex& g_sync_mu() { static std::mutex m; return m; }
+std::unordered_map<uint64_t, SrwSlot*>& srw_table() { static std::unordered_map<uint64_t, SrwSlot*> m; return m; }
+std::unordered_map<uint64_t, CvSlot*>&  cv_table()  { static std::unordered_map<uint64_t, CvSlot*>  m; return m; }
+std::unordered_map<uint64_t, int>&      once_table(){ static std::unordered_map<uint64_t, int>      m; return m; }
+
+SrwSlot* srw_for(uint64_t addr, bool create) {
+    if (!addr) return nullptr;
+    std::lock_guard<std::mutex> lk(g_sync_mu());
+    auto it = srw_table().find(addr);
+    if (it != srw_table().end()) return it->second;
+    if (!create) return nullptr;
+    SrwSlot* s = new SrwSlot();
+    pthread_rwlock_init(&s->rw, nullptr);
+    s->shared = 0;
+    srw_table()[addr] = s;
+    return s;
+}
+
+CvSlot* cv_for(uint64_t addr, bool create) {
+    if (!addr) return nullptr;
+    std::lock_guard<std::mutex> lk(g_sync_mu());
+    auto it = cv_table().find(addr);
+    if (it != cv_table().end()) return it->second;
+    if (!create) return nullptr;
+    CvSlot* s = new CvSlot();
+    pthread_cond_init(&s->cv, nullptr);
+    pthread_mutex_init(&s->mu, nullptr);
+    cv_table()[addr] = s;
+    return s;
+}
+}  // namespace
+
+void shim_KERNEL32_AcquireSRWLockExclusive(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), true);
+    if (s) pthread_rwlock_wrlock(&s->rw);
+    ret0(c, 0);
+}
+void shim_KERNEL32_AcquireSRWLockShared(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), true);
+    if (s) {
+        pthread_rwlock_rdlock(&s->rw);
+        __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+    }
+    ret0(c, 0);
+}
+void shim_KERNEL32_ReleaseSRWLockExclusive(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), false);
+    if (s) pthread_rwlock_unlock(&s->rw);
+    ret0(c, 0);
+}
+void shim_KERNEL32_ReleaseSRWLockShared(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), false);
+    if (s) {
+        __atomic_sub_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+        pthread_rwlock_unlock(&s->rw);
+    }
+    ret0(c, 0);
+}
+void shim_KERNEL32_TryAcquireSRWLockExclusive(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), true);
+    ret0(c, (s && pthread_rwlock_trywrlock(&s->rw) == 0) ? 1 : 0);
+}
+void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
+    SrwSlot* s = srw_for(arg0(c), true);
+    if (!s) { ret0(c, 0); return; }
+    if (pthread_rwlock_tryrdlock(&s->rw) == 0) {
+        __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+        ret0(c, 1);
+    } else {
+        ret0(c, 0);
+    }
+}
+
+// SleepConditionVariableSRW：释放 srw → 等条件 → 重新加锁。
+// pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
+// 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
+void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
+    CvSlot* cv = cv_for(arg0(c), true);
+    SrwSlot* s = srw_for(arg1(c), true);
+    const uint32_t ms = (uint32_t)arg2(c);
+    if (!cv || !s) { ret0(c, 0); return; }
+    const bool was_shared = __atomic_load_n(&s->shared, __ATOMIC_SEQ_CST) > 0;
+    pthread_rwlock_unlock(&s->rw);
+    pthread_mutex_lock(&cv->mu);
+    int rc = 0;
+    if (ms == 0xFFFFFFFFu) {
+        rc = pthread_cond_wait(&cv->cv, &cv->mu);
+    } else {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += (time_t)(ms / 1000u);
+        ts.tv_nsec += (long)(ms % 1000u) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+        rc = pthread_cond_timedwait(&cv->cv, &cv->mu, &ts);
+    }
+    pthread_mutex_unlock(&cv->mu);
+    if (was_shared) {
+        pthread_rwlock_rdlock(&s->rw);
+        __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+    } else {
+        pthread_rwlock_wrlock(&s->rw);
+    }
+    ret0(c, rc == 0 ? 1 : 0);
+}
+void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
+    CvSlot* cv = cv_for(arg0(c), true);
+    if (cv) pthread_cond_signal(&cv->cv);
+    ret0(c, 0);
+}
+void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
+    CvSlot* cv = cv_for(arg0(c), true);
+    if (cv) pthread_cond_broadcast(&cv->cv);
+    ret0(c, 0);
+}
+
+// InitOnce：0=未完成 1=已完成；INIT_ONCE_INIT_FAILED(0x4) 允许后续重试
+void shim_KERNEL32_InitOnceBeginInitialize(X64Ctx* c) {
+    const uint64_t addr = arg0(c);
+    const uint64_t pending = arg2(c);
+    const uint64_t ctx_out = arg3(c);
+    int state = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_sync_mu());
+        state = once_table()[addr];
+    }
+    if (pending) mem_write<int32_t>(c, pending, state == 1 ? 0 : 1);
+    if (state == 1 && ctx_out) mem_write<uint64_t>(c, ctx_out, 0);
+    ret0(c, 1);
+}
+void shim_KERNEL32_InitOnceComplete(X64Ctx* c) {
+    const uint64_t addr = arg0(c);
+    const uint32_t flags = (uint32_t)arg1(c);
+    std::lock_guard<std::mutex> lk(g_sync_mu());
+    once_table()[addr] = (flags & 0x4u) ? 0 : 1;   // 失败 -> 回到可重试
+    ret0(c, 1);
+}
+
+// ---------------- 线程池（单线程宿主：句柄是真的，任务不真排队） ----------------
+// 与 CreateThread（当前返回假句柄、不真起线程）保持一致的语义：
+// 只保证调用方拿到有效句柄、不会崩，不假装任务执行过。
+namespace {
+uint64_t& tp_next() { static uint64_t n = 0x710000000ULL; return n; }
+}
+void shim_KERNEL32_CreateThreadpoolWork(X64Ctx* c) {
+    ret0(c, tp_next()++);
+}
+void shim_KERNEL32_SubmitThreadpoolWork(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 5)
+        std::fprintf(stderr, "[shim] SubmitThreadpoolWork(0x%llx) 忽略（单线程宿主）\n",
+                     (unsigned long long)arg0(c));
+    ret0(c, 0);
+}
+void shim_KERNEL32_CloseThreadpoolWork(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_WaitForThreadpoolWorkCallbacks(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_FreeLibraryWhenCallbackReturns(X64Ctx* c) { (void)c; ret0(c, 0); }
+
+// ---------------- Global*（Win16 时代的堆，很多库还在用） ----------------
+void shim_KERNEL32_GlobalAlloc(X64Ctx* c) {
+    const uint32_t flags = (uint32_t)arg0(c);
+    const size_t n = (size_t)arg1(c);
+    uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x40u) != 0);  // GMEM_ZEROINIT=0x40
+    ret0(c, g);
+}
+void shim_KERNEL32_GlobalFree(X64Ctx* c) {
+    uint64_t a = arg0(c);
+    if (a && g_guest_heap.owns(a)) g_guest_heap.free_block(a);
+    ret0(c, 0);
+}
+void shim_KERNEL32_GlobalLock(X64Ctx* c) { ret0(c, arg0(c)); }   // 句柄即指针（GMEM_FIXED 语义）
+void shim_KERNEL32_GlobalUnlock(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_GlobalSize(X64Ctx* c) {
+    uint64_t a = arg0(c);
+    ret0(c, a ? (uint64_t)g_guest_heap.requested(a) : 0);
+}
+
+// ---------------- 等待 / 信号量 ----------------
+void shim_KERNEL32_WaitForSingleObjectEx(X64Ctx* c) { (void)c; ret0(c, 0); }  // 无真线程：视为已满足
+void shim_KERNEL32_CreateSemaphoreW(X64Ctx* c) {
+    static uint64_t h = 0x720000000ULL;
+    ret0(c, h++);
+}
+void shim_KERNEL32_ReleaseSemaphore(X64Ctx* c) {
+    if (arg2(c)) mem_write<uint32_t>(c, arg2(c), 0);   // lpPreviousCount
+    ret0(c, 1);
+}
+
+// ---------------- 系统信息 / 环境 ----------------
+void shim_KERNEL32_IsWow64Process(X64Ctx* c) {
+    if (arg1(c)) mem_write<int32_t>(c, arg1(c), 0);
+    ret0(c, 1);
+}
+void shim_KERNEL32_GlobalMemoryStatusEx(X64Ctx* c) {
+    // MEMORYSTATUSEX：dwLength(0) dwMemoryLoad(4) ullTotalPhys(8) ullAvailPhys(16)
+    // ullTotalPageFile(24) ullAvailPageFile(32) ullTotalVirtual(40) ullAvailVirtual(48) ullAvailExtendedVirtual(56)
+    const uint64_t p = arg0(c);
+    if (p) {
+        const uint64_t gb = 1024ULL * 1024 * 1024;
+        mem_write<uint32_t>(c, p + 0, 64);
+        mem_write<uint32_t>(c, p + 4, 40);                 // 40% 用量
+        mem_write<uint64_t>(c, p + 8, 4 * gb);
+        mem_write<uint64_t>(c, p + 16, 2 * gb);
+        mem_write<uint64_t>(c, p + 24, 8 * gb);
+        mem_write<uint64_t>(c, p + 32, 4 * gb);
+        mem_write<uint64_t>(c, p + 40, 1ULL << 47);
+        mem_write<uint64_t>(c, p + 48, 1ULL << 46);
+        mem_write<uint64_t>(c, p + 56, 0);
+    }
+    ret0(c, 1);
+}
+void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
+    // SYSTEM_INFO（x64 布局，48 字节）：把宿主当成 1 核 ARM64
+    const uint64_t p = arg0(c);
+    if (p) {
+        std::memset(guest_ptr_from_ctx(c, p), 0, 48);
+        mem_write<uint16_t>(c, p + 0, 12);                 // PROCESSOR_ARCHITECTURE_ARM64
+        mem_write<uint32_t>(c, p + 4, 0x4000);             // dwPageSize
+        mem_write<uint64_t>(c, p + 8, 0x10000);            // lpMinimumApplicationAddress
+        mem_write<uint64_t>(c, p + 16, 0x7FFFFFFEFFFFULL); // lpMaximumApplicationAddress
+        mem_write<uint64_t>(c, p + 24, 1);                 // dwActiveProcessorMask
+        mem_write<uint32_t>(c, p + 32, 1);                 // dwNumberOfProcessors
+        mem_write<uint32_t>(c, p + 36, 1);                 // dwProcessorType
+        mem_write<uint32_t>(c, p + 40, 0x10000);           // dwAllocationGranularity
+        mem_write<uint16_t>(c, p + 44, 8);                 // wProcessorLevel
+        mem_write<uint16_t>(c, p + 46, 0);                 // wProcessorRevision
+    }
+    ret0(c, 0);
+}
+void shim_KERNEL32_GetNativeSystemInfo(X64Ctx* c) { shim_KERNEL32_GetSystemInfo(c); }
+void shim_KERNEL32_SetThreadExecutionState(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_SetErrorMode(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetLogicalDrives(X64Ctx* c) { (void)c; ret0(c, 1); }  // 只有 C:
+void shim_KERNEL32_MulDiv(X64Ctx* c) {
+    const int32_t a = (int32_t)arg0(c), b = (int32_t)arg1(c), d = (int32_t)arg2(c);
+    if (d == 0) { ret0(c, (uint64_t)(int64_t)-1); return; }
+    const long long v = ((long long)a * (long long)b + d / 2) / d;
+    ret0(c, (uint64_t)(int64_t)v);
+}
+void shim_KERNEL32_AreFileApisANSI(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_FormatMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
+void shim_KERNEL32_FormatMessageA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_SetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 1); }
+
+// ---------------- 控制台（失败要如实，不能假装写成功） ----------------
+void shim_KERNEL32_WriteConsoleW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetConsoleMode(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_SetStdHandle(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_AttachConsole(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_SetConsoleCtrlHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_ReadConsoleW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetConsoleOutputCP(X64Ctx* c) { (void)c; ret0(c, 65001); }
+
+// ---------------- 杂项 ----------------
+void shim_KERNEL32_InitializeCriticalSectionEx(X64Ctx* c) { shim_KERNEL32_InitializeCriticalSectionAndSpinCount(c); }
+void shim_KERNEL32_ExitThread(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] ExitThread(%u)\n", (unsigned)arg0(c));
+    std::exit((int)arg0(c));
+}
+void shim_KERNEL32_AddVectoredExceptionHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_RemoveVectoredExceptionHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_KERNEL32_RtlCaptureStackBackTrace(X64Ctx* c) { (void)c; ret0(c, 0); }
+
+// ---------------- locale（初始化路径会调；给稳定的 en-US 子集） ----------------
+namespace {
+const char* locale_value(uint32_t type) {
+    switch (type) {
+        case 0x59:   return "ENG";                    // LOCALE_SISO639LANGNAME
+        case 0x5A:   return "USA";                    // LOCALE_SISO3166CTRYNAME
+        case 0x5C:   return "en-US";                  // LOCALE_SNAME
+        case 0x0C:   return ",";                      // LOCALE_SLIST
+        case 0x0D:   return "0";                      // LOCALE_IMEASURE（0=美制）
+        case 0x0E:   return ".";                      // LOCALE_SDECIMAL
+        case 0x0F:   return ",";                      // LOCALE_STHOUSAND
+        case 0x11:   return "2";                      // LOCALE_IDIGITS
+        case 0x12:   return "1";                      // LOCALE_ILZERO
+        case 0x1D:   return "/";                      // LOCALE_SDATE
+        case 0x1E:   return ":";                      // LOCALE_STIME
+        case 0x1F:   return "M/d/yyyy";               // LOCALE_SSHORTDATE
+        case 0x20:   return "dddd, MMMM d, yyyy";     // LOCALE_SLONGDATE
+        case 0x31:   return "AM";                     // LOCALE_S1159
+        case 0x32:   return "PM";                     // LOCALE_S2359
+        case 0x50:   return "+";                      // LOCALE_SPOSITIVESIGN
+        case 0x51:   return "-";                      // LOCALE_SNEGATIVESIGN
+        case 0x1001: return "English";                // LOCALE_SENGLANGUAGE
+        case 0x1002: return "United States";          // LOCALE_SENGCOUNTRY
+        case 0x1003: return "h:mm:ss tt";             // LOCALE_STIMEFORMAT
+        case 0x1004: return "MMMM d, yyyy";           // LOCALE_SLONGDATE（旧名）
+        default:     return "";
+    }
+}
+void write_utf16(X64Ctx* c, uint64_t dst, const char* s) {
+    uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, dst);
+    size_t i = 0;
+    for (; s[i]; ++i) p[i] = (uint16_t)(unsigned char)s[i];
+    p[i] = 0;
+}
+}  // namespace
+
+void shim_KERNEL32_GetLocaleInfoW(X64Ctx* c) {
+    const uint32_t type = (uint32_t)arg1(c);
+    const uint64_t buf = arg2(c);
+    const int cch = (int)arg3(c);
+    const char* v = locale_value(type);
+    const int need = (int)std::strlen(v) + 1;
+    if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
+    if (cch < need) { ret0(c, 0); return; }
+    write_utf16(c, buf, v);
+    ret0(c, (uint64_t)need);
+}
+void shim_KERNEL32_GetLocaleInfoA(X64Ctx* c) {
+    const uint32_t type = (uint32_t)arg1(c);
+    const uint64_t buf = arg2(c);
+    const int cch = (int)arg3(c);
+    const char* v = locale_value(type);
+    const int need = (int)std::strlen(v) + 1;
+    if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
+    if (cch < need) { ret0(c, 0); return; }
+    std::memcpy(guest_ptr_from_ctx(c, buf), v, (size_t)need);
+    ret0(c, (uint64_t)need);
+}
+void shim_KERNEL32_GetLocaleInfoEx(X64Ctx* c) { shim_KERNEL32_GetLocaleInfoW(c); }
+
+// CompareString*：按码点序比较，返回 1/2/3（CSTR_LESS/EQUAL/GREATER）
+namespace {
+int compare_units(const uint16_t* a, int an, const uint16_t* b, int bn) {
+    int i = 0;
+    for (; i < an && i < bn; ++i) {
+        if (a[i] != b[i]) return a[i] < b[i] ? 1 : 3;
+    }
+    if (an == bn) return 2;
+    return an < bn ? 1 : 3;
+}
+}  // namespace
+void shim_KERNEL32_CompareStringW(X64Ctx* c) {
+    const uint64_t sa = arg2(c), sb = arg4(c);
+    const int na = (int)arg3(c), nb = (int)arg5(c);
+    if (!sa || !sb) { ret0(c, 0); return; }
+    const uint16_t* a = (const uint16_t*)guest_ptr_from_ctx(c, sa);
+    const uint16_t* b = (const uint16_t*)guest_ptr_from_ctx(c, sb);
+    int an = na, bn = nb;
+    if (an < 0) { an = 0; while (a[an]) ++an; }
+    if (bn < 0) { bn = 0; while (b[bn]) ++bn; }
+    ret0(c, (uint64_t)compare_units(a, an, b, bn));
+}
+void shim_KERNEL32_CompareStringEx(X64Ctx* c) {
+    // (name, flags, s1, n1, s2, n2, version, reserved, param) —— 前 6 个参数位置一致
+    const uint64_t sa = arg2(c), sb = arg4(c);
+    const int na = (int)arg3(c), nb = (int)arg5(c);
+    if (!sa || !sb) { ret0(c, 0); return; }
+    const uint16_t* a = (const uint16_t*)guest_ptr_from_ctx(c, sa);
+    const uint16_t* b = (const uint16_t*)guest_ptr_from_ctx(c, sb);
+    int an = na, bn = nb;
+    if (an < 0) { an = 0; while (a[an]) ++an; }
+    if (bn < 0) { bn = 0; while (b[bn]) ++bn; }
+    ret0(c, (uint64_t)compare_units(a, an, b, bn));
+}
+void shim_KERNEL32_CompareStringA(X64Ctx* c) {
+    const uint64_t sa = arg2(c), sb = arg4(c);
+    const int na = (int)arg3(c), nb = (int)arg5(c);
+    if (!sa || !sb) { ret0(c, 0); return; }
+    const char* a = (const char*)guest_ptr_from_ctx(c, sa);
+    const char* b = (const char*)guest_ptr_from_ctx(c, sb);
+    int an = na, bn = nb;
+    if (an < 0) { an = 0; while (a[an]) ++an; }
+    if (bn < 0) { bn = 0; while (b[bn]) ++bn; }
+    const int n = an < bn ? an : bn;
+    int cmp = 2;
+    for (int i = 0; i < n; ++i) {
+        if (a[i] != b[i]) { cmp = (a[i] < b[i]) ? 1 : 3; break; }
+    }
+    if (cmp == 2 && an != bn) cmp = an < bn ? 1 : 3;
+    ret0(c, (uint64_t)cmp);
+}
+void shim_KERNEL32_LCMapStringEx(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
+
 // ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
 namespace {
 
