@@ -129,6 +129,11 @@ struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
     XmmReg   xmm[16];
+    // AVX：x86-64 只有 16 个 XMM 寄存器，VEX 编码把它们扩成 256 位（YMM）。
+    // 项目原本只建模低 128 位；这里单独存每个寄存器的高 128 位，避免改动 XmmReg
+    // 影响已有的生成代码（它们都按 xmm[i].u64[0/1] 访问）。
+    // 规矩（与真机一致）：VEX **128 位**写操作会把高 128 位清零；只有 256 位写才动它。
+    alignas(16) uint8_t ymm_hi[16][16];
     bool zf, sf, cf, of, pf, df;
     int64_t mem_bias;
     uint64_t gs_base;   // 伪 TEB 的 guest 地址（gs:[disp] 路由到这里）

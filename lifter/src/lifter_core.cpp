@@ -217,6 +217,16 @@ int xmmId(ZydisRegister r) {
         case ZYDIS_REGISTER_XMM10: return 10; case ZYDIS_REGISTER_XMM11: return 11;
         case ZYDIS_REGISTER_XMM12: return 12; case ZYDIS_REGISTER_XMM13: return 13;
         case ZYDIS_REGISTER_XMM14: return 14; case ZYDIS_REGISTER_XMM15: return 15;
+        // YMMn 的低 128 位就是 XMMn：AVX 下两者编号一致，高 128 位由运行时的
+        // ctx->ymm_hi[n] 单独保存（见 X64Ctx 注释）。
+        case ZYDIS_REGISTER_YMM0: return 0; case ZYDIS_REGISTER_YMM1: return 1;
+        case ZYDIS_REGISTER_YMM2: return 2; case ZYDIS_REGISTER_YMM3: return 3;
+        case ZYDIS_REGISTER_YMM4: return 4; case ZYDIS_REGISTER_YMM5: return 5;
+        case ZYDIS_REGISTER_YMM6: return 6; case ZYDIS_REGISTER_YMM7: return 7;
+        case ZYDIS_REGISTER_YMM8: return 8; case ZYDIS_REGISTER_YMM9: return 9;
+        case ZYDIS_REGISTER_YMM10: return 10; case ZYDIS_REGISTER_YMM11: return 11;
+        case ZYDIS_REGISTER_YMM12: return 12; case ZYDIS_REGISTER_YMM13: return 13;
+        case ZYDIS_REGISTER_YMM14: return 14; case ZYDIS_REGISTER_YMM15: return 15;
         default: return -1;
     }
 }
@@ -640,6 +650,87 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             e.out << "  " << dst() << ".u64[0] = g_u64(" << addr << ");\n"
                   << "  " << dst() << ".u64[1] = g_u64(" << addr << " + 8ULL);\n";
         }
+        return true;
+    }
+    // ---- AVX / VEX（128 位与 256 位）----
+    // 语义全部在 runtime/include/x64_sse_helpers.h 的 avx::* 里实现（含 VEX 128 位
+    // 写清零高半的规矩），生成代码只发一次函数调用，减少 codegen 出错面。
+    if (mn == "vmovdqa" || mn == "vmovdqu" || mn == "vmovaps" || mn == "vmovups" ||
+        mn == "vmovntdq" || mn == "vmovntdqa") {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            std::string addr = addrExpr(pe, ops[0], next_rip, e);
+            e.out << "  avx::mov_store(ctx, " << addr << ", " << xmmId(ops[1].reg.value)
+                  << ", " << bytes << ");\n";
+            return true;
+        }
+        if (is_xmm_reg(ops[0]) && ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            std::string addr = addrExpr(pe, ops[1], next_rip, e);
+            e.out << "  avx::mov_load(ctx, " << dx << ", " << addr << ", " << bytes << ");\n";
+            return true;
+        }
+        if (is_xmm_reg(ops[0]) && is_xmm_reg(ops[1])) {
+            e.out << "  avx::mov_reg(ctx, " << dx << ", " << xmmId(ops[1].reg.value)
+                  << ", " << bytes << ");\n";
+            return true;
+        }
+    }
+    if (mn == "vpxor" || mn == "vxorps" || mn == "vxorpd" || mn == "vpand" || mn == "vpor") {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int op = (mn == "vpxor" || mn == "vxorps" || mn == "vxorpd") ? 0
+                     : (mn == "vpand") ? 1 : 2;
+        const int s1 = xmmId(ops[1].reg.value);
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::bitop_reg(ctx, " << dx << ", " << s1 << ", "
+                  << xmmId(ops[2].reg.value) << ", " << bytes << ", " << op << ");\n";
+        } else {
+            std::string addr = addrExpr(pe, ops[2], next_rip, e);
+            e.out << "  avx::bitop_mem(ctx, " << dx << ", " << s1 << ", " << addr << ", "
+                  << bytes << ", " << op << ");\n";
+        }
+        return true;
+    }
+    if (mn == "vpcmpeqb" || mn == "vpcmpeqw" || mn == "vpcmpeqd") {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int lane = (mn[7] == 'b') ? 1 : (mn[7] == 'w') ? 2 : 4;
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::cmpeq_reg(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
+                  << xmmId(ops[2].reg.value) << ", " << bytes << ", " << lane << ");\n";
+            return true;
+        }
+    }
+    if (mn == "vpmovmskb") {
+        const int bytes = (ops[1].size == 256) ? 32 : 16;
+        e.out << "  write_reg(ctx, " << dg << ", (uint64_t)avx::pmovmskb(ctx, "
+              << xmmId(ops[1].reg.value) << ", " << bytes << "), 4);\n";
+        return true;
+    }
+    if (mn == "vinsertf128") {
+        const int imm = (int)ops[3].imm.value.u;
+        e.out << "  avx::insertf128(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
+              << xmmId(ops[2].reg.value) << ", " << imm << ");\n";
+        return true;
+    }
+    if (mn == "vextractf128") {
+        const int imm = (int)ops[2].imm.value.u;
+        e.out << "  avx::extractf128(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
+              << imm << ");\n";
+        return true;
+    }
+    if (mn == "vzeroupper" || mn == "vzeroall") {
+        e.out << "  avx::zeroupper(ctx);\n";
+        return true;
+    }
+    // SSE2 的 64 位 unpack（AVX 代码里也常出现）
+    if (mn == "punpcklqdq" || mn == "punpckhqdq") {
+        const bool hi = (mn[6] == 'h');
+        const int lane = hi ? 1 : 0;
+        std::string src = is_xmm_reg(ops[1])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].u64[" + std::to_string(lane) + "]")
+            : ("g_u64(" + addrExpr(pe, ops[1], next_rip, e) + (lane ? " + 8ULL)" : ")"));
+        e.out << "  { uint64_t a_=" << "ctx->xmm[" << dx << "].u64[" << lane << "];"
+              << " uint64_t b_=" << src << ";"
+              << " ctx->xmm[" << dx << "].u64[0]=a_; ctx->xmm[" << dx << "].u64[1]=b_; }\n";
         return true;
     }
     if (mn == "xorps" || mn == "xorpd" || mn == "pxor" || mn == "andps" || mn == "orps") {
