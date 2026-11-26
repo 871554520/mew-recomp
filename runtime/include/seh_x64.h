@@ -103,20 +103,45 @@ inline void init_image(uint64_t base, uint64_t size) {
     im.base = base;
     im.size = size;
     im.ready = false;
-    if (!base || !size) return;
+    std::fprintf(stderr, "[seh] init base=0x%llx size=0x%llx\n",
+                 (unsigned long long)base, (unsigned long long)size);
+    if (!base) { std::fprintf(stderr, "[seh] init: base==0, skip\n"); return; }
     uint64_t pe = rd32(base + 0x3c) + base;
-    if (rd32(pe) != 0x00004550) return;
-    uint16_t optsz = rd16(pe + 20);
-    (void)optsz;
+    uint32_t sig = rd32(pe);
+    if (sig != 0x00004550) {
+        std::fprintf(stderr, "[seh] init: bad PE sig 0x%x at 0x%llx\n", sig, (unsigned long long)pe);
+        return;
+    }
     uint64_t opt = pe + 24;
+    if (!size) {
+        size = rd32(opt + 56);  // SizeOfImage
+        im.size = size;
+        std::fprintf(stderr, "[seh] init: size from header 0x%llx\n", (unsigned long long)size);
+    }
     uint64_t dd = opt + 112 + 3 * 8;  // DataDirectory[3] = Exception
     uint32_t rva = rd32(dd), bytes = rd32(dd + 4);
-    if (!rva || !bytes) return;
+    if (!rva || !bytes) {
+        std::fprintf(stderr, "[seh] init: exception dir empty rva=0x%x bytes=0x%x\n", rva, bytes);
+        return;
+    }
     im.pdata = base + rva;
     im.pdata_count = bytes / 12;
     im.ready = true;
     std::fprintf(stderr, "[seh] image base=0x%llx pdata=0x%llx entries=%u\n",
                  (unsigned long long)im.base, (unsigned long long)im.pdata, im.pdata_count);
+}
+
+// 懒初始化：镜像固定钉在 0x140000000（bias=0），所以这里可以兜底自举，
+// 不依赖 runner 先调用 init_image。
+inline void ensure_ready() {
+    if (image().ready) return;
+    const uint64_t base = 0x140000000ULL;
+    if (!rd32(base + 0x3c)) {
+        std::fprintf(stderr, "[seh] ensure_ready: no PE at 0x140000000\n");
+        return;
+    }
+    init_image(base, 0);
+    std::fprintf(stderr, "[seh] ensure_ready: ready=%d\n", (int)image().ready);
 }
 
 struct FuncEntry {
@@ -329,7 +354,12 @@ inline int call_personality(X64Ctx* c, uint64_t handler, uint64_t record_va, uin
 // 派发异常；返回 false = 没人处理（调用方决定后续）
 inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
                                      uint32_t nparams, const uint64_t* params) {
-    if (!image().ready) return false;
+    ensure_ready();
+    if (!image().ready) {
+        std::fprintf(stderr, "[seh] dispatch skipped: image not ready (base=0x%llx)\n",
+                     (unsigned long long)image().base);
+        return false;
+    }
     const uint64_t rsp_at_throw = c->rsp;
     const uint64_t ret_addr = 0;
     uint64_t ret = 0;
