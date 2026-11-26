@@ -18,6 +18,9 @@ static inline uint64_t arg0(X64Ctx* c) { return c->rcx; }
 static inline uint64_t arg1(X64Ctx* c) { return c->rdx; }
 static inline uint64_t arg2(X64Ctx* c) { return c->r8; }
 static inline uint64_t arg3(X64Ctx* c) { return c->r9; }
+// 第 5/6 个参数在栈上：call 之后 rsp 指向返回地址，+0x28 = 第 5 个参数
+static inline uint64_t arg4(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x28); }
+static inline uint64_t arg5(X64Ctx* c) { return mem_read<uint64_t>(c, c->rsp + 0x30); }
 static inline void ret0(X64Ctx* c, uint64_t v) { c->rax = v; }
 
 template <typename T>
