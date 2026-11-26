@@ -463,21 +463,35 @@ class MachO:
         cmds += dylib_cmd(LC_ID_DYLIB, '@rpath/libmew_relinked.dylib')
         for d in self.dlls:
             cmds += dylib_cmd(LC_LOAD_DYLIB, d)
-        cmds += struct.pack('<IIIIIIIIII', LC_DYLD_INFO_ONLY, 48,
-                            rb_off, len(rebase_blob), bd_off, len(bind_blob), 0, 0, 0, 0)
+        # LC_DYLD_INFO_ONLY 共 12 个 uint32 = 48 字节（含 export_off/size）
+        cmds += struct.pack('<IIIIIIIIIIII', LC_DYLD_INFO_ONLY, 48,
+                            rb_off, len(rebase_blob), bd_off, len(bind_blob),
+                            0, 0, 0, 0, trie_off, len(trie))
         cmds += struct.pack('<IIIIII', LC_SYMTAB, 24, symoff, len(symtab) // 16, stroff, len(strtab))
         cmds += struct.pack('<II', LC_UUID, 24) + bytes(range(16))
         plat = PLATFORM_IOS if self.platform == 'ios' else PLATFORM_MACOS
         cmds += struct.pack('<IIIIII', LC_BUILD_VERSION, 24, plat, 0x000F0000, 0, 0)
-        ncmd = 0
-        o = 0
-        while o < len(cmds):
-            ncmd += 1
-            o += struct.unpack_from('<I', cmds, o + 4)[0]
+        # 命令条数按构造顺序显式计数（不再回走字节流，避免 cmdsize 解析偏差）
+        # 段(含 __LINKEDIT) + LC_ID_DYLIB + LOAD_DYLIB×N + DYLD_INFO + SYMTAB + UUID + BUILD_VERSION
+        ncmd = len(placed) + 1 + 1 + len(self.dlls) + 4
+        # 自检：逐条走一遍，确保 cmdsize 之和 == len(cmds)
+        _o, _n, _sum = 0, 0, 0
+        while _o + 8 <= len(cmds):
+            _sz = struct.unpack_from('<I', cmds, _o + 4)[0]
+            if _sz < 8 or _o + _sz > len(cmds):
+                raise SystemExit('load command 结构错乱 @%d size=%d' % (_o, _sz))
+            _o += _sz
+            _n += 1
+            _sum += _sz
+        if _o != len(cmds) or _n != ncmd:
+            raise SystemExit('load commands 计数不一致: walked=%d/%d bytes=%d/%d' % (_n, ncmd, _o, len(cmds)))
 
         if len(cmds) > shift:
             raise SystemExit('load commands 超出 header 预留: %d > %d' % (len(cmds), shift))
 
+        import os
+        if os.environ.get('DBG'):
+            print('[dbg] len(seg_cmds)=%d len(cmds)=%d ncmd=%d' % (len(seg_cmds), len(cmds), ncmd))
         hdr = struct.pack('<IIIIIIII', MH_MAGIC_64, CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
                           MH_DYLIB, ncmd, len(cmds),
                           MH_DYLDLINK | MH_TWOLEVEL | MH_NO_REEXPORTED_DYLIBS, 0)
@@ -488,7 +502,7 @@ class MachO:
                                 elf_base=elf_base, ncmds=ncmd)
 
 def _build_trie(entries):
-    """标准前缀压缩 export trie（entries: [(name, addr, type)]）。"""
+    """标准前缀压缩 export trie：根节点必须在 offset 0，偏移相对 trie 起点。"""
     root = {}
     for name, addr, typ in entries:
         if not name:
@@ -497,29 +511,56 @@ def _build_trie(entries):
         for ch in name:
             cur = cur.setdefault(ch, {})
         cur[''] = (addr, typ)
-    out = bytearray()
-    pos = {}
 
-    def emit(node):
-        kids = sorted(k for k in node if k != '')
-        for k in kids:
-            emit(node[k])
-        pos[id(node)] = len(out)
-        term = node.get('')
-        tb = b''
-        if term:
-            addr, typ = term
-            payload = uleb(0) + uleb(addr)
-            tb = uleb(len(payload)) + payload
-        out.extend(uleb(len(tb)))
+    nodes = []
+
+    def collect(n):
+        nodes.append(n)
+        for k in sorted(x for x in n if x != ''):
+            collect(n[k])
+
+    collect(root)                      # 前序：根在 0 号
+    idx = {id(n): i for i, n in enumerate(nodes)}
+    pos = [0] * len(nodes)
+    for _ in range(8):                 # 迭代收敛（ULEB 长度只差 1 字节）
+        size = []
+        for i, n in enumerate(nodes):
+            term = n.get('')
+            tb = 0
+            if term:
+                payload = len(uleb(0)) + len(uleb(term[0]))
+                tb = len(uleb(payload)) + payload
+            kids = sorted(x for x in n if x != '')
+            payload_len = 0
+            if term:
+                payload_len = len(uleb(0)) + len(uleb(term[0]))
+            sz = len(uleb(payload_len)) + 1
+            for k in kids:
+                sz += len(k.encode()) + 1
+            for k in kids:
+                sz += len(uleb(pos[idx[id(n[k])]]))
+            sz += payload_len
+            size.append(sz)
+        p, newpos = 0, []
+        for v in size:
+            newpos.append(p)
+            p += v
+        if newpos == pos:
+            break
+        pos = newpos
+
+    out = bytearray()
+    for n in nodes:
+        term = n.get('')
+        kids = sorted(x for x in n if x != '')
+        payload = (uleb(0) + uleb(term[0])) if term else b''
+        out += uleb(len(payload))
         out.append(len(kids))
         for k in kids:
-            out.extend(k.encode() + b'\0')
+            out += k.encode() + b'\0'
         for k in kids:
-            out.extend(uleb(pos[id(node[k])]))
-        out.extend(tb)
-
-    emit(root)
+            out += uleb(pos[idx[id(n[k])]])
+        out += payload
     return bytes(out)
 
 
