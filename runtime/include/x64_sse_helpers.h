@@ -203,6 +203,19 @@ inline void cmpeq_reg(X64Ctx* c, int d, int s1, int s2, int bytes, int lane) {
     wr_reg(c, d, bytes, a);
 }
 
+// 第二源是内存的形式：`vpcmpeqw ymm1,ymm1,YMMWORD PTR [r9]`
+inline void cmpeq_mem(X64Ctx* c, int d, int s1, uint64_t addr, int bytes, int lane) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    for (int i = 0; i + lane <= bytes; i += lane) {
+        bool eq = true;
+        for (int k = 0; k < lane; ++k) if (a[i + k] != b[i + k]) { eq = false; break; }
+        for (int k = 0; k < lane; ++k) a[i + k] = eq ? 0xFF : 0x00;
+    }
+    wr_reg(c, d, bytes, a);
+}
+
 inline uint32_t pmovmskb(X64Ctx* c, int s, int bytes) {
     uint8_t t[32];
     rd_reg(c, s, bytes, t);

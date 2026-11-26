@@ -698,6 +698,13 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                   << xmmId(ops[2].reg.value) << ", " << bytes << ", " << lane << ");\n";
             return true;
         }
+        // 实测形式：`vpcmpeqw ymm1,ymm1,YMMWORD PTR [r9]` —— 第二源可以是内存
+        if (ops[2].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            std::string addr = addrExpr(pe, ops[2], next_rip, e);
+            e.out << "  avx::cmpeq_mem(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
+                  << addr << ", " << bytes << ", " << lane << ");\n";
+            return true;
+        }
     }
     if (mn == "vpmovmskb") {
         const int bytes = (ops[1].size == 256) ? 32 : 16;
