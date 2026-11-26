@@ -136,3 +136,31 @@ int mew_vararg_vasprintf(char** out, const char* fmt, BionicVaList* ap) {
     mew_va_build_from_bionic(flat, 32, fmt, ap);
     return vasprintf(out, fmt, (va_list)flat);
 }
+
+// ---------------- scanf 家族：可变参数全是指针，只走整数槽 ----------------
+// %f/%lf 传的也是 float*/double*，所以永远不碰 d0..d7。
+// 只需要数出「非 %% 、非赋值抑制 %*」的转换个数，按顺序取指针即可。
+int mew_vararg_sscanf(const uint64_t* x, const uint64_t* stack_args) {
+    const char* str = (const char*)(uintptr_t)x[0];
+    const char* fmt = (const char*)(uintptr_t)x[1];
+    uint64_t flat[32];
+    int n = 0, xi = 0, si = 0;
+    const char* p = fmt;
+    while (p && *p && n < 30) {
+        if (*p != '%') { p++; continue; }
+        p++;
+        if (*p == '%') { p++; continue; }         // 字面量 %
+        if (*p == '*') { p++; }                    // 赋值抑制：不消费参数
+        while (*p && strchr("-+ #0'", *p)) p++;
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }
+        while (*p && strchr("hljztLq", *p)) p++;
+        if (*p) p++;                               // 跳过转换字符
+        uint64_t v;
+        if (xi < 6) v = x[2 + xi];                 // x0=str, x1=fmt
+        else v = stack_args[si < 16 ? si : 15];
+        if (xi < 6) xi++; else si++;
+        flat[n++] = v;
+    }
+    return vsscanf(str, fmt, (va_list)flat);
+}
