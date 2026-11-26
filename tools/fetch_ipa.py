@@ -111,26 +111,35 @@ def main():
     ver = sys.argv[2] if len(sys.argv) > 2 else None
     no_api = '--no-api' in sys.argv
 
-    # 1) 等完成：API 可用就用，否则用 nightly.link 探针
-    if not no_api:
-        for _ in range(90):
+    # 1) 等完成：API 可用就用，配额打满就退化成 nightly.link 探针继续等
+    deadline = time.time() + 90 * 60
+    api_ok = not no_api
+    ready = False
+    while time.time() < deadline:
+        if api_ok:
             try:
                 d = api('https://api.github.com/repos/%s/actions/runs/%s' % (REPO, run_id))
+                print(time.strftime('%H:%M:%S'), 'run', run_id, d['status'], d.get('conclusion'), flush=True)
+                if d['status'] == 'completed':
+                    if d.get('conclusion') != 'success':
+                        print('run 没成功，退出')
+                        return 1
+                    ready = True
+                    break
+                time.sleep(60)
+                continue
             except Exception as e:
                 print('API 不可用（多半是匿名配额 0/60），改用 nightly.link 探针:', str(e)[:60], flush=True)
-                break
-            print(time.strftime('%H:%M:%S'), 'run', run_id, d['status'], d.get('conclusion'), flush=True)
-            if d['status'] == 'completed':
-                if d.get('conclusion') != 'success':
-                    print('run 没成功，退出')
-                    return 1
-                break
-            time.sleep(60)
-
-    if not probe_artifact(run_id):
-        print('artifact 还没生成（nightly.link 探针失败），退出')
+                api_ok = False
+        if probe_artifact(run_id):
+            print(time.strftime('%H:%M:%S'), 'artifact 已生成', flush=True)
+            ready = True
+            break
+        print(time.strftime('%H:%M:%S'), 'artifact 还没好，等 60s', flush=True)
+        time.sleep(60)
+    if not ready:
+        print('等了 90 分钟还没出包，退出')
         return 1
-    print('artifact 已生成', flush=True)
 
     # 2) CI 报告的 sha256（拿不到就退化为只用包内报告）
     txt = '' if no_api else (diag_for(run_id) or '')

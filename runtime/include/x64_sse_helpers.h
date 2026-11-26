@@ -247,3 +247,9 @@ inline void zeroupper(X64Ctx* c) { zero_all_hi(c); }
 }  // namespace avx
 
 }  // namespace sse
+
+// lifter 生成的代码按**全局**命名空间写 `avx::xxx`（见 lifter/src/lifter_core.cpp
+// 里 AVX 那一组发射），但 avx 实际嵌在 sse 里（因为它要用 sse 的 helper）。
+// 这里补一个命名空间别名，让 `avx::` 在所有分片里都可见——否则只有真正用到
+// AVX 指令的那个分片会报 'avx' has not been declared（stage3 shard_049 实测）。
+namespace avx = sse::avx;
