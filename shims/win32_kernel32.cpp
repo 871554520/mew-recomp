@@ -383,7 +383,11 @@ void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
     if (logged++ < 40)
         std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx)\n",
                      (unsigned long long)arg0(c), (unsigned long long)m);
-    if (m) pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
+    if (m) {
+        pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
+        if (logged <= 40) std::fprintf(stderr, "[shim] EnterCS acquired cs=0x%llx\n",
+                                       (unsigned long long)arg0(c));
+    }
     ret0(c, 1);
 }
 
