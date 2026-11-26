@@ -204,6 +204,12 @@ jobs:
             ls -l out/*.ipa 2>/dev/null
             sha256sum out/*.ipa 2>/dev/null
             echo
+            echo '===== 兼容库构建报告（build_compat_linux.txt）====='
+            cat out/build_compat_linux.txt 2>/dev/null
+            echo
+            echo '===== 宿主构建报告（build_host_linux.txt）====='
+            cat out/build_host_linux.txt 2>/dev/null
+            echo
             echo '===== 打包报告（assemble_report.txt）====='
             cat out/assemble_report.txt 2>/dev/null
           } > diag-ios.txt
