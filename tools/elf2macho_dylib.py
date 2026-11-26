@@ -368,7 +368,10 @@ class MachO:
         SECIDX = [0, 1, 2]   # 段索引
 
         # ---------- 2) rebase / bind ----------
-        rebase_blob = bytearray()
+        # dyld4 的 rebase() 里 `uint8_t type = 0;`，没有 SET_TYPE_IMM 就一直是 0，
+        # 遇到第一条 DO_REBASE_IMM_TIMES 直接报 "unknown rebase type 0"。
+        # 所以流必须以 SET_TYPE_IMM | REBASE_TYPE_POINTER(=1) 开头，以 DONE 结尾。
+        rebase_blob = bytearray([0x11])
         for va, add in sorted(self.rebases):
             si, so = seg_of_va(va + elf_base)
             if si is None:
@@ -380,7 +383,9 @@ class MachO:
             rebase_blob += bytes([0x20 | (SECIDX[si] & 0xF)]) + uleb(so) + bytes([0x51])   # SET_SEGMENT_AND_OFFSET_ULEB(seg=si) + DO_REBASE_IMM_TIMES(1)
             struct.pack_into('<Q', buf, va + elf_base, (add + elf_base) & 0xFFFFFFFFFFFFFFFF)
 
-        bind_blob = bytearray()
+        # bind 虽然每条前面都会写 0x51（SET_TYPE_IMM|pointer），但开头显式给一次、
+        # 结尾补 DONE 更稳：dyld4 的 bind() 同样以 type=0 起步。
+        bind_blob = bytearray([0x51])
         shim_syms = []
         for va, sym, add, kind in sorted(self.binds):
             if kind == R_AARCH64_TLSDESC:
@@ -419,6 +424,9 @@ class MachO:
             struct.pack_into('<Q', buf, va + elf_base, 0)
 
         # ---------- 3) __LINKEDIT：symtab / strtab / export trie ----------
+        rebase_blob += bytes([0x00])   # REBASE_OPCODE_DONE
+        bind_blob += bytes([0x00])     # BIND_OPCODE_DONE
+
         linkedit_start = align(len(buf), page)
         buf.extend(b'\0' * (linkedit_start - len(buf)))
 
