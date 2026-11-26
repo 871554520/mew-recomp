@@ -958,9 +958,17 @@ void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
 }
 
 void shim_KERNEL32_RaiseException(X64Ctx* c) {
+    // RaiseException(Code, Flags, NumberParameters, lpExceptionInformation)
     const uint32_t code = (uint32_t)arg0(c);
-    const uint32_t flags = (uint32_t)arg2(c);
-    const uint32_t nparams = (uint32_t)arg1(c);
+    const uint32_t flags = (uint32_t)arg1(c);
+    const uint32_t nparams = (uint32_t)arg2(c);
+    {
+        const uint64_t p0 = arg3(c) ? *reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c)) : 0;
+        const uint64_t p1 = arg3(c) ? *reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c) + 8) : 0;
+        const uint64_t p2 = arg3(c) ? *reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c) + 16) : 0;
+        std::fprintf(stderr, "[shim]   params=%u [0]=0x%llx [1]=0x%llx [2]=0x%llx\n",
+                     nparams, (unsigned long long)p0, (unsigned long long)p1, (unsigned long long)p2);
+    }
     std::fprintf(stderr, "[shim] RaiseException(code=0x%x, flags=0x%x, n=%u)\n",
                  code, flags, nparams);
     // C++ EH 依赖真正的两阶段派发：先走 .pdata 链条问 personality routine。
