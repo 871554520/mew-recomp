@@ -356,7 +356,7 @@ jobs:
           tail -25 generated/runner_b.err
           # 复跑一次：看 abort 判定函数 0x140d79870 的入参 + 关键全局的读写打点
           RC=0
-          MEW_WATCH=0x1413bbc18,0x200001088 MEW_TRACE_FN=0x140d79870 \
+          MEW_WATCH=0x200001088,0x200001090,0x2000013a8,0x1413bbc18 MEW_TRACE_FN=0x140d79870 \
             MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 120 \
             ./build-stage3b/mew_runner Mewgenics.exe > generated/runner_bt.out 2> generated/runner_bt.err || RC=$?
           echo "runner_bt rc=$RC"
