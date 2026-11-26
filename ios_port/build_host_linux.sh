@@ -57,6 +57,7 @@ say "链接（ld64.lld，undefined dynamic_lookup）"
 "$LD64" -arch arm64 \
     -platform_version ios 15.0 15.0 \
     -undefined dynamic_lookup \
+    -rpath @executable_path/Frameworks \
     -e _start \
     -o "$PROD/MewHost" \
     /tmp/start_nosdk.o /tmp/host_nosdk.o 2>&1 | tee -a "$REPORT"
