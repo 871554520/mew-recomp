@@ -2,3 +2,4 @@ t=1795726400 v0.11.3 round-D: AVX/VEX 指令支持（vmovdqa/vmovdqu/vmovntdq/vp
 t=1795726400 v0.11.5 round-E: 验证 avx 命名空间别名（shard_049 编译错）
 t=1795726400 round-F: vzeroupper 零操作数修复 + __security_cookie 探针
 t=1795726400 round-G: PE TLS 目录装载 + TlsSlots 与 __declspec(thread) 对齐 + TEB.Self
+t=1795726400 round-G2: 修 setup_pe_tls 调用顺序（ctx 未声明）+ stage3 加 concurrency

@@ -211,13 +211,14 @@ int main(int argc, char** argv) {
                 (unsigned long long)img.orig_image_base,
                 (unsigned long long)entry, (long long)img.mem_bias);
 
-    setup_pe_tls(exe, img, &ctx);
-    probe_security_cookie(exe, img);
-
     init_dispatch_table();
 
     X64Ctx ctx;
     init_guest_thread_ctx(&ctx, img);
+
+    // 必须在 init_guest_thread_ctx 之后：要往伪 TEB 的 TlsSlots 里写模块 TLS 块指针
+    setup_pe_tls(exe, img, &ctx);
+    probe_security_cookie(exe, img);
     if (!call_va) {
         ctx.rcx = 0;   // hInstance
         ctx.rdx = 0;   // hPrevInstance

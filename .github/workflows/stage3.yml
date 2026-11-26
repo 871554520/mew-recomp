@@ -6,6 +6,12 @@ on:
       - '.stage3-trigger'
   workflow_dispatch:
 
+# 同一时间只留一轮：新触发会把还在跑的旧轮取消掉（之前两个 stage3 并行抢 runner，
+# 互相拖慢还浪费额度）。
+concurrency:
+  group: stage3-full
+  cancel-in-progress: true
+
 jobs:
   full:
     runs-on: ubuntu-24.04
