@@ -1,7 +1,7 @@
 // 变参桥：Bionic(ELF, AAPCS64) -> Darwin
 //   AAPCS64 : 整数 x0..x7，浮点 d0..d7
 //   Darwin  : va_list 是扁平 char*，所有参数按格式串顺序连续排 8 字节槽
-// 做法：把 x0..x7 / d0..d7 各溢写到栈上两块槽，交给 C 侧的 mew_vararg_build 重排。
+// 做法：x0..x7 / d0..d7 溢写到两块槽，第 9 个起的参数从 callar_sp 取，交给 mew_vararg_build 重排。
     .text
     .p2align 2
 
@@ -19,6 +19,7 @@ _bionic_\name:
     stp  d6, d7, [sp, #0xb0]
     add  x0, sp, #0x00      // x_slots
     add  x1, sp, #0x80      // d_slots
+    add  x2, sp, #0x120     // 调用方栈上第 9 个起的参数（caller_sp）
     bl   _\target
     add  sp, sp, #0x120
     ret
