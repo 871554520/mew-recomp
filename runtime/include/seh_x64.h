@@ -302,7 +302,7 @@ inline void resume_at(uint64_t rip, const Ctx64& w) {
         std::_Exit(70);
     }
     resume_armed() = false;
-    std::longjmp(resume_buf(), 1);
+    ::longjmp(resume_buf(), 1);
 }
 
 inline bool seh_dispatch_enabled() {
