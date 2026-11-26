@@ -38,6 +38,9 @@ bool load_pe_image(const char* exe_path, GuestImage* out, std::string* err) {
     const uint64_t imageBase = rd64(opt + 24);
     const uint32_t sizeOfImage = rd32(opt + 56);
     const size_t secTab = peOff + 24 + optSize;
+    // 注意：映射时只拷贝节，PE 头（RVA 0）不落地，所以 .pdata 目录必须在这里从文件头取
+    const uint32_t excRva = rd32(opt + 112 + 3 * 8);
+    const uint32_t excBytes = rd32(opt + 112 + 3 * 8 + 4);
 
     // 优先映射到原始基址：bias=0 时镜像内所有绝对指针天然有效，无需 .reloc 修正
     void* want = (void*)(uintptr_t)imageBase;
@@ -114,6 +117,10 @@ bool load_pe_image(const char* exe_path, GuestImage* out, std::string* err) {
     out->host_base = (uint8_t*)mem;
     out->image_size = sizeOfImage;
     out->mem_bias = bias;
+    out->pdata_va = excRva ? imageBase + excRva : 0;
+    out->pdata_bytes = excBytes;
+    std::fprintf(stderr, "[loader] pdata va=0x%llx bytes=0x%x (%u entries)\n",
+                 (unsigned long long)out->pdata_va, excBytes, excBytes / 12);
     return true;
 }
 
