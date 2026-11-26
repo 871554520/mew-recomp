@@ -257,8 +257,8 @@ void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     uint32_t flags = (uint32_t)arg1(c);
     // 统一走固定 Guest 堆池：地址一定落在堆区，SAFE_MEM 用区间比较 O(1) 放行
     uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x8u) != 0);  // HEAP_ZERO_MEMORY=0x8
-    std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx\n", n, flags,
-                 (unsigned long long)g);
+    std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx caller=0x%llx\n", n, flags,
+                 (unsigned long long)g, (unsigned long long)cur_fn_va());
     ret0(c, g);
 }
 
