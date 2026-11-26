@@ -367,16 +367,27 @@ static int app_main(int argc, char** argv) {
     typedef void (*init_fn)(void);
     init_fn* ia = (init_fn*)dlsym(h, "mew_init_array");
     init_fn* ia_end = (init_fn*)dlsym(h, "mew_init_array_end");
-    if (ia && ia_end && ia_end >= ia) {
+    // 真机实测结论（v0.11.2 ~ v0.11.5 每一轮都复现）：**手工调用这 12 个静态构造
+    // 会让进程立刻 SIGSEGV**，崩在第一次调用里；而不调它们的老版本（≤v0.11.1）
+    // 反而能一路跑到开窗、建 GL 上下文、加载 shader。所以默认**不调**。
+    // 想 A/B 就在 Documents 下建一个空文件 .mew_try_init_array，那时会逐项打印再调。
+    char flag[1300];
+    snprintf(flag, sizeof flag, "%s/.mew_try_init_array", g_docs);
+    int try_ia = (access(flag, F_OK) == 0);
+    if (ia && ia_end && ia_end >= ia && !try_ia) {
+        say("[host 3d] init_array %d 项：默认跳过（手工调用会在静态构造里 SIGSEGV）\n",
+            (int)(ia_end - ia));
+    } else if (ia && ia_end && ia_end >= ia) {
         int cnt = (int)(ia_end - ia);
-        say("[host 3d] init_array %d 项，开始按序调用（静态构造）\n", cnt);
+        say("[host 3d] init_array %d 项，逐项调用（.mew_try_init_array 已存在）\n", cnt);
         for (int i = 0; i < cnt; ++i) {
+            say("[host 3d] ctor #%d @%p\n", i, (void*)ia[i]);
             if (!ia[i]) continue;
             ia[i]();
         }
         say("[host 3d] init_array 全部完成\n");
     } else {
-        say("[host 3d] 警告：没找到 init_array 导出（静态构造不会执行）\n");
+        say("[host 3d] 没找到 init_array 导出（不调，符合预期）\n");
     }
 
     void* entry = dlsym(h, "SDL_main");
