@@ -110,6 +110,55 @@ static void probe_security_cookie(const char* exe, const GuestImage& img) {
                  v ? "" : "  <<< 是 0，说明 .data 被清掉了");
 }
 
+// ---- PE 的 TLS 目录 ----
+// `__declspec(thread)` 在 x64 上是编译器直接发 `mov rax, gs:[0x58 + 8*_tls_index]`：
+// 槽里放的是**指向该模块 TLS 块的指针**，块内容由加载器从 TLS 模板拷过来。
+// 我们之前既没分配这个块、也没往槽里写指针，于是所有线程局部变量读出来都是 0，
+// CRT 拿 0 当对象指针再 `mov [rax],ebx` 就崩了（stage3 实测写 0xc06b57238）。
+// 这里按 Windows 加载器的做法补上：分配块 -> 拷模板 -> 写 _tls_index -> 填 TlsSlots[0]。
+static void setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
+    FILE* fp = std::fopen(exe, "rb");
+    if (!fp) return;
+    uint32_t peOff = 0;
+    std::fseek(fp, 0x3c, SEEK_SET);
+    if (std::fread(&peOff, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    long opt = (long)peOff + 24;
+    uint16_t magic = 0;
+    std::fseek(fp, opt, SEEK_SET);
+    if (std::fread(&magic, 2, 1, fp) != 1) { std::fclose(fp); return; }
+    long dirOff = (magic == 0x20b) ? (opt + 112) : (opt + 96);
+    uint32_t tlsRva = 0, tlsSize = 0;
+    std::fseek(fp, dirOff + 9 * 8, SEEK_SET);
+    if (std::fread(&tlsRva, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    if (std::fread(&tlsSize, 4, 1, fp) != 1) { std::fclose(fp); return; }
+    std::fclose(fp);
+    if (!tlsRva) {
+        std::fprintf(stderr, "[tls] 这个 PE 没有 TLS 目录\n");
+        return;
+    }
+    uint64_t tlsVa = img.orig_image_base + tlsRva;
+    auto rd64 = [&](int i) {
+        return *reinterpret_cast<uint64_t*>(guest_ptr(img, tlsVa + (uint64_t)i * 8));
+    };
+    uint64_t start = rd64(0), end = rd64(1), addrIdx = rd64(2), addrCb = rd64(3);
+    uint64_t zfill = rd64(4) & 0xFFFFFFFFULL;
+    uint64_t rawBytes = (end > start) ? (end - start) : 0;
+    uint64_t total = rawBytes + zfill;
+    uint64_t blk = 0;
+    if (total) {
+        blk = g_guest_heap.alloc((size_t)total, /*zero_init=*/true);
+        if (blk && rawBytes)
+            std::memcpy(guest_ptr(img, blk), guest_ptr(img, start), (size_t)rawBytes);
+    }
+    if (addrIdx) *reinterpret_cast<uint32_t*>(guest_ptr(img, addrIdx)) = 0;  // _tls_index = 0
+    if (blk) *reinterpret_cast<uint64_t*>(guest_ptr(img, ctx->gs_base + 0x58)) = blk;
+    std::fprintf(stderr,
+                 "[tls] 目录 rva=0x%x 模板=0x%llx..0x%llx zero=0x%llx block=0x%llx index=0 callbacks=0x%llx\n",
+                 tlsRva, (unsigned long long)start, (unsigned long long)end,
+                 (unsigned long long)zfill, (unsigned long long)blk,
+                 (unsigned long long)addrCb);
+}
+
 int main(int argc, char** argv) {
     std::fprintf(stderr, "[runner] marker: seh headers linked, dispatch=%d\n",
                  (int)seh::seh_dispatch_enabled());
@@ -162,6 +211,7 @@ int main(int argc, char** argv) {
                 (unsigned long long)img.orig_image_base,
                 (unsigned long long)entry, (long long)img.mem_bias);
 
+    setup_pe_tls(exe, img, &ctx);
     probe_security_cookie(exe, img);
 
     init_dispatch_table();

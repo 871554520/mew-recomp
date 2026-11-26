@@ -463,9 +463,27 @@ void shim_KERNEL32_TlsFree(X64Ctx* c) {
     ret0(c, 1);
 }
 
-void shim_KERNEL32_TlsGetValue(X64Ctx* c) { ret0(c, g_tls[(uint32_t)arg0(c) & 1023]); }
+// x64 Windows 上 TLS 只有**一份**真相：TEB+TlsSlots（`gs:[0x58 + 8*index]`）。
+// `__declspec(thread)` 变量是编译器直接发 `mov rax, gs:[0x58 + 8*index]` 读的，
+// 根本不经过 TlsGetValue。之前这里写的是宿主侧 thread_local g_tls[]，于是两条路
+// 互不可见——线程局部变量在模拟器里永远是 0，CRT 拿它当对象指针就会崩
+//（stage3 实测：0x140d6d140 里 `mov [rax],ebx` 写到 0xc06b57238）。
+// 现在两个 API 直接读写伪 TEB 的 TlsSlots，和编译器生成的访问路径对齐；
+// 索引 >=64 的仍然落在宿主数组里（Windows 那边是 TlsExpansionSlots）。
+static uint64_t tls_slot_addr(X64Ctx* c, uint32_t idx) {
+    return c->gs_base + 0x58 + (uint64_t)idx * 8;
+}
+
+void shim_KERNEL32_TlsGetValue(X64Ctx* c) {
+    uint32_t i = (uint32_t)arg0(c) & 1023;
+    if (i < 64) { ret0(c, mem_read<uint64_t>(c, tls_slot_addr(c, i))); return; }
+    ret0(c, g_tls[i]);
+}
+
 void shim_KERNEL32_TlsSetValue(X64Ctx* c) {
-    g_tls[(uint32_t)arg0(c) & 1023] = arg1(c);
+    uint32_t i = (uint32_t)arg0(c) & 1023;
+    if (i < 64) mem_write<uint64_t>(c, tls_slot_addr(c, i), arg1(c));
+    else g_tls[i] = arg1(c);
     ret0(c, 1);
 }
 

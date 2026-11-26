@@ -148,6 +148,10 @@ void init_guest_thread_ctx(X64Ctx* ctx, const GuestImage& img) {
     register_guest_range(ctx->gs_base, 4096);
     register_guest_range((uint64_t)((int64_t)(uintptr_t)stack - img.mem_bias), kStack);
     ctx->fs_base = ctx->gs_base;
+    // gs:[0x30] = TEB.Self：CRT 里一堆 `mov rax, gs:[0x30]` 之后按偏移取字段的写法，
+    // 这一格是 0 的话立刻在 NULL 上翻车（注释早就说有，代码一直没写）。
+    *reinterpret_cast<uint64_t*>(teb) = 0;  // 先确保清零
+    *reinterpret_cast<uint64_t*>(reinterpret_cast<char*>(teb) + 0x30) = ctx->gs_base;
     ctx->rbx = 0; ctx->rbp = 0; ctx->rsi = 0; ctx->rdi = 0;
     ctx->r12 = ctx->r13 = ctx->r14 = ctx->r15 = 0;
 }
