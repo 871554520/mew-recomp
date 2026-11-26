@@ -15,17 +15,34 @@ jobs:
 
       - name: Install toolchain
         run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            cmake ninja-build g++ clang python3-pip git \
-            gcc-mingw-w64-x86-64 wine64 xvfb
-          python3 -m pip install --quiet lief
-          nproc; g++ --version | head -1
+          set -x
+          # 镜像里 cmake/ninja/g++/python3 通常已预装，缺什么装什么；
+          # 每个 apt 调用都限时，避免镜像源卡死把整条流水线挂住（实测挂过 50 分钟）。
+          need=""
+          command -v cmake   >/dev/null || need="$need cmake"
+          command -v ninja   >/dev/null || need="$need ninja-build"
+          command -v g++     >/dev/null || need="$need g++"
+          command -v clang   >/dev/null || need="$need clang"
+          command -v python3 >/dev/null || need="$need python3"
+          if [ -n "$need" ]; then
+            sudo timeout 240 apt-get update -qq || echo "apt update timeout/ignored"
+            sudo DEBIAN_FRONTEND=noninteractive timeout 420 apt-get install -y -qq $need || echo "apt install partial"
+          fi
+          command -v x86_64-w64-mingw32-g++ >/dev/null || \
+            sudo DEBIAN_FRONTEND=noninteractive timeout 420 apt-get install -y -qq gcc-mingw-w64-x86-64 || true
+          command -v wine64 >/dev/null || \
+            sudo DEBIAN_FRONTEND=noninteractive timeout 420 apt-get install -y -qq wine64 || true
+          command -v Xvfb >/dev/null || \
+            sudo DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq xvfb || true
+          python3 -c "import lief" 2>/dev/null || timeout 180 python3 -m pip install --quiet lief || true
+          nproc; (g++ --version | head -1) || true; command -v x86_64-w64-mingw32-g++ || true
 
       - name: Install Zydis
         run: |
           set -e
-          if ! sudo apt-get install -y -qq libzydis-dev; then
+          if [ -f /usr/include/Zydis/Zydis.h ]; then
+            echo "zydis already present"
+          elif ! sudo timeout 300 apt-get install -y -qq libzydis-dev; then
             git clone --depth 1 --branch v4.1.0 https://github.com/zyantific/zydis.git /tmp/zydis
             cmake -S /tmp/zydis -B /tmp/zydis/build -G Ninja -DZYDIS_BUILD_TESTS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release > /dev/null
             cmake --build /tmp/zydis/build -j"$(nproc)" > /dev/null
