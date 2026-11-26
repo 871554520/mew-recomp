@@ -33,20 +33,33 @@ jobs:
           python3 ios_port/verify_macho.py /tmp/libmew_relinked.dylib
       - name: llvm-objdump --macho（官方工具链，不抢 macOS 队列）
         run: |
-          set +e
+          set -o pipefail
           command -v llvm-objdump >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq llvm)
           OBJDUMP=$(command -v llvm-objdump || echo /usr/lib/llvm-18/bin/llvm-objdump)
           echo "using $OBJDUMP"
-          $OBJDUMP --macho --private-headers /tmp/libmew_relinked.dylib | head -80
-          echo "===== exports trie ====="
-          $OBJDUMP --macho --exports-trie /tmp/libmew_relinked.dylib | head -20
-          echo "===== rebase (head) ====="
-          $OBJDUMP --macho --rebase /tmp/libmew_relinked.dylib | head -10
-          echo "===== bind (head) ====="
-          $OBJDUMP --macho --bind /tmp/libmew_relinked.dylib | head -10
+          D=/tmp/libmew_relinked.dylib
+          $OBJDUMP --macho --private-headers $D > /tmp/o_headers.txt 2>&1
+          $OBJDUMP --macho --exports-trie  $D > /tmp/o_exports.txt 2>&1
+          $OBJDUMP --macho --rebase        $D > /tmp/o_rebase.txt  2>&1
+          $OBJDUMP --macho --bind          $D > /tmp/o_bind.txt    2>&1
+          echo "===== private-headers (head) ====="; head -60 /tmp/o_headers.txt
+          echo "===== exports-trie (head) =====";    head -12 /tmp/o_exports.txt
+          echo "===== rebase (head) =====";          head -5  /tmp/o_rebase.txt
+          echo "===== bind (head) =====";            head -5  /tmp/o_bind.txt
           echo "===== 计数 ====="
-          echo "rebase_total=$($OBJDUMP --macho --rebase /tmp/libmew_relinked.dylib | wc -l)"
-          echo "bind_total=$($OBJDUMP --macho --bind /tmp/libmew_relinked.dylib | wc -l)"
+          echo "rebase_total=$(wc -l < /tmp/o_rebase.txt)"
+          echo "bind_total=$(wc -l < /tmp/o_bind.txt)"
+          echo "===== malformed 门禁 ====="
+          if grep -n -E 'malformed|inconsistent|bad offset|bad segIndex|too large|Unknown' /tmp/o_*.txt; then
+            echo "::error::llvm-objdump 报出结构错误，Mach-O 未过关"
+            exit 1
+          fi
+          echo "no malformed"
+          if ! grep -q '_SDL_main' /tmp/o_exports.txt; then
+            echo "::error::export trie 里没有 _SDL_main"
+            exit 1
+          fi
+          grep -m1 '_SDL_main' /tmp/o_exports.txt
 
       - name: 十六进制抽查
         run: |
