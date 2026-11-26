@@ -116,7 +116,7 @@ static void probe_security_cookie(const char* exe, const GuestImage& img) {
 // 我们之前既没分配这个块、也没往槽里写指针，于是所有线程局部变量读出来都是 0，
 // CRT 拿 0 当对象指针再 `mov [rax],ebx` 就崩了（stage3 实测写 0xc06b57238）。
 // 这里按 Windows 加载器的做法补上：分配块 -> 拷模板 -> 写 _tls_index -> 填 TlsSlots[0]。
-static void setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
+static uint64_t setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
     FILE* fp = std::fopen(exe, "rb");
     if (!fp) return;
     uint32_t peOff = 0;
@@ -134,7 +134,7 @@ static void setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
     std::fclose(fp);
     if (!tlsRva) {
         std::fprintf(stderr, "[tls] 这个 PE 没有 TLS 目录\n");
-        return;
+        return 0;
     }
     uint64_t tlsVa = img.orig_image_base + tlsRva;
     auto rd64 = [&](int i) {
@@ -157,6 +157,31 @@ static void setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx) {
                  tlsRva, (unsigned long long)start, (unsigned long long)end,
                  (unsigned long long)zfill, (unsigned long long)blk,
                  (unsigned long long)addrCb);
+    return addrCb;
+}
+
+// ---- 执行 TLS 回调 ----
+// Windows 加载器在进 entry 之前，会按数组顺序把每个 TLS 回调以
+// DLL_PROCESS_ATTACH(1) 调一遍。CRT 里有不少线程级初始化就挂在这里，
+// 跳过它们的话，后面拿到的线程局部结构可能是半成品（实测：装载 TLS 块之后
+// 崩溃点前移了 0x2f0 = 模板大小 752 字节，说明这条路已经接通，只差回调）。
+static void run_tls_callbacks(const GuestImage& img, X64Ctx* ctx, uint64_t callbacks_va) {
+    if (!callbacks_va) return;
+    for (int i = 0; i < 32; ++i) {
+        uint64_t cb = *reinterpret_cast<uint64_t*>(guest_ptr(img, callbacks_va + (uint64_t)i * 8));
+        if (!cb) break;
+        // 压一个 0 当返回地址：回调里的 ret 弹到它，lifter 会直接返回宿主
+        ctx->rsp -= 8;
+        *reinterpret_cast<uint64_t*>(guest_ptr(img, ctx->rsp)) = 0;
+        ctx->rcx = 1;   // DLL_PROCESS_ATTACH
+        ctx->rdx = 0;   // lpReserved
+        std::fprintf(stderr, "[tls] 调用回调 #%d @0x%llx ...\n", i, (unsigned long long)cb);
+        std::fflush(stderr);
+        dispatch_indirect(cb, ctx);
+        std::fprintf(stderr, "[tls] 回调 #%d 已返回 rsp=0x%llx\n", i,
+                     (unsigned long long)ctx->rsp);
+        std::fflush(stderr);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -217,8 +242,9 @@ int main(int argc, char** argv) {
     init_guest_thread_ctx(&ctx, img);
 
     // 必须在 init_guest_thread_ctx 之后：要往伪 TEB 的 TlsSlots 里写模块 TLS 块指针
-    setup_pe_tls(exe, img, &ctx);
+    uint64_t tls_callbacks = setup_pe_tls(exe, img, &ctx);
     probe_security_cookie(exe, img);
+    run_tls_callbacks(img, &ctx, tls_callbacks);
     if (!call_va) {
         ctx.rcx = 0;   // hInstance
         ctx.rdx = 0;   // hPrevInstance
