@@ -136,9 +136,16 @@ def main(path):
     else:
         fail.append('no LC_DYLD_INFO_ONLY')
 
-    # trie 走查
+    # trie 走查（标准布局：terminal_size → payload → child_count → 边名字/偏移）
     def node(q):
         tsz, p = uleb(d, q)
+        addr = None
+        if tsz:
+            end = p + tsz
+            _, p = uleb(d, p)
+            addr, p = uleb(d, p)
+            if p != end:
+                fail.append('trie terminal 长度不符 @0x%x' % q)
         nc = d[p]
         p += 1
         kids = []
@@ -150,22 +157,21 @@ def main(path):
         for _ in range(nc):
             v, p = uleb(d, p)
             offs.append(v)
-        return tsz, kids, offs, p
+        for v in offs:
+            if v <= q - trie_off:
+                fail.append('trie 子节点偏移未递增 @0x%x -> 0x%x' % (q - trie_off, v))
+        return tsz, addr, kids, offs, p
 
     def find(name):
         q = trie_off
         for i in range(len(name)):
-            tsz, kids, offs, _ = node(q)
+            tsz, addr, kids, offs, _ = node(q)
             c = name[i:i + 1]
             if c not in kids:
                 return None
             q = trie_off + offs[kids.index(c)]
-        tsz, kids, offs, p = node(q)
-        if not tsz:
-            return None
-        fl, p = uleb(d, p)
-        addr, p = uleb(d, p)
-        return addr
+        tsz, addr, kids, offs, p = node(q)
+        return addr if tsz else None
 
     a = find(b'_SDL_main')
     print('trie 走查 _SDL_main -> %s' % (hex(a) if a else None))
@@ -173,6 +179,24 @@ def main(path):
         fail.append('trie 找不到 _SDL_main')
     if find(b'SDL_main') is not None:
         fail.append('trie 里存在无下划线的 SDL_main')
+    # 全量走查：节点数、导出名数、精确占满 trie_sz（LLVM 就是这么判 inconsistent 的）
+    seen, stack, nnames, maxend = set(), [(0, b'')], 0, 0
+    while stack:
+        off, pre = stack.pop()
+        if off in seen:
+            fail.append('trie 节点被重复引用 0x%x' % off)
+            break
+        seen.add(off)
+        tsz, addr, kids, offs, p = node(trie_off + off)
+        maxend = max(maxend, p - trie_off)
+        if tsz and pre:
+            nnames += 1
+        for nm, v in zip(kids, offs):
+            stack.append((v, pre + nm))
+    print('trie 节点 %d 个，导出名 %d 个，占用 %d / %d 字节'
+          % (len(seen), nnames, maxend, trie_sz))
+    if maxend != trie_sz:
+        fail.append('trie 未精确占满（%d != %d）' % (maxend, trie_sz))
     if sy:
         symoff, nsyms, stroff = sy[2], sy[3], sy[4]
         ok = 0
