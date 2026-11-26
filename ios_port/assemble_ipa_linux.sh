@@ -196,4 +196,18 @@ print('    export trie [0x%x, 0x%x)  __LINKEDIT [0x%x, 0x%x)' % (ex_off, end, fo
 assert end <= fo + fs, 'export trie 超出 __LINKEDIT（dyld 会拒绝加载）'
 print('    LINKEDIT 覆盖 export trie ✓')
 PY
+# ldid 安全性探针：在副本上签名，看新顺序（STRTAB 在最末）是否还会被截断。
+# 只探测、不影响产物；结果进报告，方便以后决定要不要给大文件签名。
+if [ -n "$LDID" ]; then
+    cp "$DYLIB" /tmp/ldid_probe.dylib
+    before=$(stat -c%s /tmp/ldid_probe.dylib 2>/dev/null || stat -f%z /tmp/ldid_probe.dylib)
+    "$LDID" -S /tmp/ldid_probe.dylib >/dev/null 2>&1 || true
+    after=$(stat -c%s /tmp/ldid_probe.dylib 2>/dev/null || stat -f%z /tmp/ldid_probe.dylib)
+    if [ "$before" = "$after" ]; then
+        num "ldid 探针：新顺序下签名后大小不变（$after B）→ 以后可以给大文件签名"
+    else
+        num "ldid 探针：签名后 $before -> $after B（仍会改文件→继续跳过大文件签名）"
+    fi
+fi
+
 say "完成：$IPA"
