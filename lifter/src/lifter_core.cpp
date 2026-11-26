@@ -1233,7 +1233,10 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                         e.out << "  return sub_" << hexStr(t) << "(ctx);\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
-                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                        // jmp [IAT] 是尾调用：本函数的 ret 由垫片代劳，必须把调用方压入的
+                        // 返回地址弹掉。否则每个导入跳板都漏 8 字节，逐层累积后
+                        // MSVC stack cookie（xor rsp）校验失败 -> __fastfail(2)。
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8; return;\n";
                     } else {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
@@ -1288,7 +1291,10 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
                     uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
                     if (const ImportSlot* im = pe.importBySlot(slot)) {
                         e.iatCall = true;
-                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                        // jmp [IAT] 是尾调用：本函数的 ret 由垫片代劳，必须把调用方压入的
+                        // 返回地址弹掉。否则每个导入跳板都漏 8 字节，逐层累积后
+                        // MSVC stack cookie（xor rsp）校验失败 -> __fastfail(2)。
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8; return;\n";
                     } else {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx); return;\n";
@@ -2434,7 +2440,10 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         e.out << "  return sub_" << hexStr(t) << "(ctx);\n";
                     } else if (const ImportSlot* im = resolveIatThunk(pe, t)) {
                         e.iatCall = true;
-                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                        // jmp [IAT] 是尾调用：本函数的 ret 由垫片代劳，必须把调用方压入的
+                        // 返回地址弹掉。否则每个导入跳板都漏 8 字节，逐层累积后
+                        // MSVC stack cookie（xor rsp）校验失败 -> __fastfail(2)。
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8; return;\n";
                     } else {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(0x" << hexStr(t) << "ULL, ctx); return;\n";
@@ -2489,7 +2498,10 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                     uint64_t slot = next_rip + (int64_t)ops[0].mem.disp.value;
                     if (const ImportSlot* im = pe.importBySlot(slot)) {
                         e.iatCall = true;
-                        e.out << "  " << shimSym(*im) << "(ctx); return;\n";
+                        // jmp [IAT] 是尾调用：本函数的 ret 由垫片代劳，必须把调用方压入的
+                        // 返回地址弹掉。否则每个导入跳板都漏 8 字节，逐层累积后
+                        // MSVC stack cookie（xor rsp）校验失败 -> __fastfail(2)。
+                        e.out << "  " << shimSym(*im) << "(ctx); ctx->rsp += 8; return;\n";
                     } else {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx); return;\n";
