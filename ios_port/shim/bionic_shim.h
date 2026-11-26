@@ -24,7 +24,7 @@ int  darwin_to_bionic_errno(int d);
 int  bionic_to_darwin_errno(int b);
 
 // ---------------- Bionic 结构体（只列用到的字段布局） ----------------
-// Linux arm64 struct stat（132B）
+// Linux arm64 struct stat（严格 128B，字段偏移见下方断言）
 struct bionic_stat {
     uint64_t st_dev;
     uint64_t st_ino;
@@ -47,6 +47,12 @@ struct bionic_stat {
     uint32_t __unused4;
     uint32_t __unused5;
 };
+
+_Static_assert(sizeof(struct bionic_stat) == 128, "Linux arm64 struct stat must be 128B");
+_Static_assert(offsetof(struct bionic_stat, st_size) == 48, "st_size offset must be 48");
+_Static_assert(offsetof(struct bionic_stat, st_blksize) == 56, "st_blksize offset must be 56");
+_Static_assert(offsetof(struct bionic_stat, st_blocks) == 64, "st_blocks offset must be 64");
+_Static_assert(offsetof(struct bionic_stat, st_atime) == 72, "st_atime offset must be 72");
 
 // Linux arm64 struct dirent（d_name 256B）
 struct bionic_dirent {
