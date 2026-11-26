@@ -71,8 +71,7 @@ assert plat == 2, 'platform 不是 iOS(2)'
 PY
 
 say "硬门禁：必须真含 SDL_RunApp 与 mew.log"
-grep -c 'mew.log' "$PROD/MewHost" >/dev/null 2>&1 || { strings "$PROD/MewHost" | grep -q 'mew.log' || { echo "::error::MewHost 里没有 mew.log 字符串"; exit 1; }; }
 strings "$PROD/MewHost" | grep -q 'SDL_RunApp' || { echo "::error::MewHost 里没有 SDL_RunApp"; exit 1; }
-strings "$PROD/MewHost" | grep -q 'mew.log' || { echo "::error::MewHost 里没有 mew.log"; exit 1; }
+strings "$PROD/MewHost" | grep -q 'mew.log'    || { echo "::error::MewHost 里没有 mew.log"; exit 1; }
 num "门禁通过：SDL_RunApp ✓  mew.log ✓"
 say "完成：$PROD/MewHost"
