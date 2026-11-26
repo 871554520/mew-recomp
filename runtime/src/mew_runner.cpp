@@ -9,6 +9,7 @@
 
 #include "x64_runtime.h"
 #include "pe_image.h"
+#include "seh_x64.h"
 
 namespace {
 // 每 15 秒采样一次调用环顶部，用来判断"卡死"发生在哪个循环里
@@ -145,7 +146,29 @@ int main(int argc, char** argv) {
 
     std::printf("runner: calling entry...\n");
     std::fflush(stdout);
-    dispatch_indirect(entry, &ctx);
-    std::printf("runner: entry returned rax=%llu\n", (unsigned long long)ctx.rax);
+
+    // SEH 恢复点：异常派发里 resume_at() 会 longjmp 回这里，
+    // 然后把宿主上下文换成"展开后恢复的目标上下文"，从新的 Rip 继续跑。
+    seh::init_image(reinterpret_cast<uint64_t>(img.host_base), img.image_size);
+    uint64_t next_entry = entry;
+    volatile bool from_resume = false;
+    int rounds = 0;
+    for (; rounds < 128; ++rounds) {
+        if (from_resume) {
+            seh::win_to_ctx(&seh::resume_ctx(), &ctx);
+            next_entry = seh::resume_ctx().Rip;
+            std::fprintf(stderr, "[seh] RESUME #%d rip=0x%llx rsp=0x%llx rbp=0x%llx\n", rounds,
+                         (unsigned long long)next_entry, (unsigned long long)ctx.rsp,
+                         (unsigned long long)ctx.rbp);
+        }
+        seh::resume_armed() = true;
+        if (setjmp(seh::resume_buf()) == 0) {
+            dispatch_indirect(next_entry, &ctx);
+            break;  // guest 正常返回
+        }
+        from_resume = true;
+    }
+    std::printf("runner: entry returned rax=%llu resumes=%d\n",
+                (unsigned long long)ctx.rax, rounds);
     return 0;
 }
