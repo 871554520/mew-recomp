@@ -1,0 +1,47 @@
+name: iOS relink (Linux 结构校验)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/elf2macho_dylib.py
+      - ios_port/verify_macho.py
+concurrency:
+  group: ios-relink-linux
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 组装 APK + 抽 libmain.so
+        run: |
+          cat ios_port/vendor/apk_part_*.bin > /tmp/app.apk
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('/tmp/app.apk')
+          open('/tmp/libmain.so','wb').write(z.read('lib/arm64-v8a/libmain.so'))
+          print('libmain.so extracted')
+          PY
+          ls -l /tmp/libmain.so
+      - name: ELF -> Mach-O
+        run: |
+          python3 tools/elf2macho_dylib.py /tmp/libmain.so -o /tmp/libmew_relinked.dylib --platform ios
+          ls -l /tmp/libmew_relinked.dylib
+      - name: 结构校验（等价 otool -l / dyld_info -exports）
+        run: |
+          python3 ios_port/verify_macho.py /tmp/libmew_relinked.dylib
+      - name: 十六进制抽查
+        run: |
+          python3 - <<'PY'
+          import struct
+          d=open('/tmp/libmew_relinked.dylib','rb').read()
+          print('header:', d[:32].hex())
+          print('size:', len(d))
+          print('magic:', hex(struct.unpack_from('<I',d,0)[0]))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relink-linux
+          path: /tmp/libmew_relinked.dylib
