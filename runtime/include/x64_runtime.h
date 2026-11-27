@@ -696,6 +696,22 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
                      (long long)((int64_t)target_va - (int64_t)near_lo),
                      (unsigned long long)cur_fn_va(),
                      (unsigned long long)hits);
+    // 目标落在镜像内、且该地址处是可打印 ASCII 时把字符串打出来：
+    // 一眼区分「槽里是名字描述符」和「槽里是游戏数据指针」。
+    // run 46051381022 的 `Unmapped indirect target: 0x140efc4ac` 查下去就是 ".rdata 里的 \"OK\""
+    // —— 说明 SDL 弹窗函数把一个**指向字符串的指针**当函数调了，不是普通野指针。
+    if (full && ctx && target_va >= 0x140000000ULL && target_va < 0x141570000ULL &&
+        guest_mapped(target_va, 2)) {
+        char txt[48];
+        int n = 0;
+        for (; n < 47; ++n) {
+            const uint8_t ch = mem_read<uint8_t>(ctx, target_va + (uint64_t)n);
+            if (ch < 32 || ch > 126) break;
+            txt[n] = (char)ch;
+        }
+        txt[n] = 0;
+        if (n >= 2) std::fprintf(stderr, "[FATAL]   该地址处是字符串 \"%s\"\n", txt);
+    }
     // guard-dispatch 蹦床：槽里不是有效代码指针时，真正目标通常在 rax。
     // 但这个回退会自杀式递归（rax 常常就是调用者本身，实测 0x140d3e654 -> 0x140d6adc8
     // 无限循环到超时），因此默认关闭，只在显式要求时启用。

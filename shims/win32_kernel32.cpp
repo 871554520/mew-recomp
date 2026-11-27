@@ -1392,12 +1392,40 @@ void shim_USER32_MessageBoxA(X64Ctx* c) {
 // 0x20/0x30/0x38 是自然对齐的偏移，读出来是指针的高半截 + 图标资源 ID，全是垃圾。
 // 这里按 cbSize 选布局，并对每个指针做 guest_mapped 校验、取不到就换另一种布局再试。
 void shim_COMCTL32_TaskDialogIndirect(X64Ctx* c) {
-    const uint64_t cfg = arg0(c);
+    // run 46051381022：rcx 指向的是 UTF-16 "ERROR"，不是 TASKDIALOGCONFIG
+    // （cbSize 读出来 0x520045 = 'E','R'），说明真正 config 不在 rcx。
+    // 所以这里不再假设第一个参数：把 rcx/rdx/r8/r9 四个候选都看一遍，
+    // 谁的前 4 字节是 0xA0（pshpack1）或 0xB0（自然对齐）就当 config；
+    // 同时把每个候选的前 0x40 字节十六进制打出来，一轮定型。
+    const uint64_t cand[4] = { c->rcx, c->rdx, c->r8, c->r9 };
+    const char* names[4] = { "rcx", "rdx", "r8", "r9" };
+    int best = -1;
+    uint64_t cfg = 0;
     uint32_t cb = 0;
     bool packed = true;
-    if (cfg && guest_mapped(cfg, 4)) {
-        cb = mem_read<uint32_t>(c, cfg);
-        if (cb == 0xB0) packed = false;   // 自然对齐变体（理论上不会出现）
+    for (int i = 0; i < 4; ++i) {
+        if (!cand[i] || !guest_mapped(cand[i], 4)) continue;
+        const uint32_t v = mem_read<uint32_t>(c, cand[i]);
+        if (v == 0xA0 || v == 0xB0) { best = i; cfg = cand[i]; cb = v; packed = (v == 0xA0); break; }
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (!cand[i] || !guest_mapped(cand[i], 0x40)) {
+            std::fprintf(stderr, "[shim] TaskDialogIndirect cand %s=0x%llx <unmapped>\n",
+                         names[i], (unsigned long long)cand[i]);
+            continue;
+        }
+        std::fprintf(stderr, "[shim] TaskDialogIndirect cand %s=0x%llx:", names[i],
+                     (unsigned long long)cand[i]);
+        for (int k = 0; k < 0x40; k += 8)
+            std::fprintf(stderr, " %016llx",
+                         (unsigned long long)mem_read<uint64_t>(c, cand[i] + (uint64_t)k));
+        std::fprintf(stderr, "\n");
+    }
+    if (best < 0) {
+        // 四个都不像 config：仍然按 rcx 走一遍（可能它真是个小 cbSize 变体）
+        cfg = cand[0];
+        if (cfg && guest_mapped(cfg, 4)) cb = mem_read<uint32_t>(c, cfg);
+        std::fprintf(stderr, "[shim] TaskDialogIndirect 未找到 cbSize=0xA0/0xB0 的候选，退回 rcx\n");
     }
     auto rd = [&](uint64_t off) -> uint64_t {
         if (!cfg || !guest_mapped(cfg + off, 8)) return 0;
@@ -1419,16 +1447,15 @@ void shim_COMCTL32_TaskDialogIndirect(X64Ctx* c) {
     if (cfg && guest_mapped(cfg + (packed ? 0x3C : 0x40), 4))
         cbuttons = mem_read<uint32_t>(c, cfg + (packed ? 0x3C : 0x40));
     std::fprintf(stderr,
-                 "[shim] TaskDialogIndirect cbSize=0x%x packed=%d buttons=%u title=\"%s\""
-                 " content=\"%s\" main=\"%s\" expanded=\"%s\" footer=\"%s\"\n",
-                 cb, (int)packed, cbuttons,
+                 "[shim] TaskDialogIndirect picked=%s cbSize=0x%x packed=%d buttons=%u"
+                 " title=\"%s\" content=\"%s\" main=\"%s\" expanded=\"%s\" footer=\"%s\"\n",
+                 (best >= 0 ? names[best] : "rcx(fallback)"), cb, (int)packed, cbuttons,
                  title ? guest_wstr(c, title).c_str() : "",
                  content ? guest_wstr(c, content).c_str() : "",
                  instr ? guest_wstr(c, instr).c_str() : "",
                  expanded ? guest_wstr(c, expanded).c_str() : "",
                  footer ? guest_wstr(c, footer).c_str() : "");
-    // IDBUTTONINDEX0(=100)：SDL3 用 nButton-100 反查是第几个按钮，这样能正确映射回
-    // 调用方自己的 buttonID；返回 IDOK(1) 会被 SDL 当成「未知按钮」→ buttonID=-1。
+    // IDBUTTONINDEX0(=100)：SDL3 用 nButton-100 反查是第几个按钮。
     if (arg1(c)) mem_write<int32_t>(c, arg1(c), 100);
     if (arg2(c)) mem_write<int32_t>(c, arg2(c), 0);
     if (arg3(c)) mem_write<int32_t>(c, arg3(c), 0);

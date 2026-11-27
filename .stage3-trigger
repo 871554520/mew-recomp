@@ -37,3 +37,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T18:1xZ  P0-A 收口第二轮：condvar 非阻塞 + IAT 兜底 + 头文件前置声明
 2026-11-28T02:4xZ  TaskDialogIndirect 垫片抓错误正文 + 调用环补 dump + walkoff cap 4000
 2026-11-28T02:5xZ  TaskDialogIndirect 按 pshpack1 布局修正（cbSize=0xA0，标题在 0x1C）
+2026-11-28T03:1xZ  TaskDialogIndirect 四候选 hexdump + FATAL 目标解字符串 + 140c88b20 进 dump
