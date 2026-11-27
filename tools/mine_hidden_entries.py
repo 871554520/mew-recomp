@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """手册 Prompt 2：从 .reloc(DIR64) + CFG GFIDS 静态挖出指向 .text 的隐藏入口"""
+import bisect
 import json
 import struct
 import sys
@@ -74,13 +75,17 @@ try:
 except Exception as exc:  # noqa: BLE001
     print('pdata range scan failed:', exc)
 
+# 注意：这个判定在 thunk 那一步里会被调用近百万次（.text 按 16 字节步进），
+# 用线性扫 5.5 万条 .pdata 会直接跑成几十分钟（真踩过：stage3 的
+# 「Mine hidden entries」一步挂住 11 分钟没动）。所以改成二分。
+_pd_starts = [lo for lo, _hi in pdata_ranges]
+
+
 def _inside_known(va):
-    for lo, hi in pdata_ranges:
-        if lo <= va < hi:
-            return True
-        if lo > va:
-            break
-    return False
+    if not pdata_ranges:
+        return False
+    i = bisect.bisect_right(_pd_starts, va) - 1
+    return i >= 0 and pdata_ranges[i][0] <= va < pdata_ranges[i][1]
 
 
 try:
