@@ -185,6 +185,34 @@ except Exception as exc:  # noqa: BLE001
     print('jmp-thunk scan failed:', exc)
 print('jmp-thunk (e9+ccc) candidates:', n_jmp)
 
+# 「空指针守卫 + 尾跳函数指针」桩（import/内部指针表 thunk），16 字节一个、16 对齐：
+#   48 85 c9           test rcx,rcx          （也有 test rdx/rbx/... 的变体）
+#   74 07              je  +7（跳过 jmp，空指针时直接返回）
+#   48 ff 25 <rel32>   jmp qword [rip+rel32]
+# 关键：尾跳是 **ff 25** 不是 **e9**，所以上面那条 e9 规则看不见它们；
+# 而且相邻两个桩之间往往只有 1 个 cc，`>=3 个 cc` 的填充规则也挖不到。
+# 运行期证据（run 45999239672）：
+#   [FATAL] Unmapped indirect target: 0x140bf4ff0 (nearest_lo=0x140bf4fe0 delta=16)
+#   而 manifest 里 0x140bf4fe0=32 —— 长度按「下一个 seed（0x140bf5000）」算，
+#   把兄弟桩 0x140bf4ff0 一起吞了，于是调用 0x140bf4ff0 就 miss。
+n_ithunk = 0
+try:
+    for k in range(0, len(text_bytes) - 16):
+        if text_bytes[k] != 0x48 or text_bytes[k + 1] != 0x85:
+            continue
+        if text_bytes[k + 3] != 0x74:
+            continue
+        if text_bytes[k + 5:k + 8] != b'\x48\xff\x25':
+            continue
+        va = text_start + k
+        if va % 16 or va in known or va in seeds or _inside_known(va):
+            continue
+        seeds.add(va)
+        n_ithunk += 1
+except Exception as exc:  # noqa: BLE001
+    print('import-thunk scan failed:', exc)
+print('import-thunk (test/je/jmp[rip]) candidates:', n_ithunk)
+
 print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))
 
