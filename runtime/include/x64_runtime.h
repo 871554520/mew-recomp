@@ -194,10 +194,24 @@ inline void mew_livelock_note(uint64_t va, uint64_t rcx, uint64_t rdx) {
     }
 }
 
+// 是否已经进过 exe 的 main（0x1409b5230）。
+// 依据：`ret` 被 lift 成 `ctx->rsp += 8; return;`，也就是**每个 guest 函数都直接返回
+// 到宿主**。所以我们从 _initterm 内部 resume 回去以后，_initterm 跑完最后一条 `ret`
+// 是 return 回宿主，而不是"回到 __scrt_common_main_seh 继续调 main"——main 天然不会跑。
+// 必须在链尾显式补一次 main，但要先确认它没被跑过，否则会重复初始化。
+inline bool& mew_saw_main() {
+    static bool v = false;
+    return v;
+}
+inline void mew_note_entry(uint64_t va) {
+    if (va == 0x1409b5230ULL) mew_saw_main() = true;
+}
+
 #define MEW_SET_CUR_FN(CTX, VA)                                                   \
     do {                                                                          \
         cur_ctx_ptr() = (CTX);                                                    \
         cur_fn_va() = (uint64_t)(VA);                                             \
+        mew_note_entry((uint64_t)(VA));                                           \
         mew_livelock_note((uint64_t)(VA), (CTX)->rcx, (CTX)->rdx);                \
         call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, mew_guest_ret(CTX)); \
         {                                                                         \
@@ -654,7 +668,9 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
     std::memcpy(&v, reinterpret_cast<const void*>(guest_addr + ctx->mem_bias), sizeof(T));
     if (mew_watch_hit(guest_addr, sizeof(T))) {
         static int n = 0;
-        if (n++ < 60)
+        // 上限从 60 提到 240：加了 mask/_Vec 五个地址以后，60 条预算会在
+        // 初始化器第 3~4 次插入时就烧光，后面真正关键的"第 9 次"反而打不出来。
+        if (n++ < 240)
             std::fprintf(stderr, "[watch] R addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)mew_bits(&v, sizeof(T)),
@@ -688,7 +704,7 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
     std::memcpy(reinterpret_cast<void*>(guest_addr + ctx->mem_bias), &val, sizeof(T));
     if (mew_watch_hit(guest_addr, sizeof(T))) {
         static int n = 0;
-        if (n++ < 60)
+        if (n++ < 240)
             std::fprintf(stderr, "[watch] W addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)mew_bits(&val, sizeof(T)),

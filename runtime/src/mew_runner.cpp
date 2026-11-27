@@ -380,6 +380,63 @@ int main(int argc, char** argv) {
     }
     std::printf("runner: entry returned rax=%llu resumes=%d\n",
                 (unsigned long long)ctx.rax, rounds);
+
+    // ---- 链尾补 main（MEW_CALL_MAIN=1）----
+    // 为什么必须要补：`ret` 被 lift 成 `ctx->rsp += 8; return;`，也就是每个 guest
+    // 函数都直接**返回宿主**。我们从 _initterm 内部 resume 回去、把剩下的全局构造器
+    // 跑完以后，_initterm 最后那条 `ret` 只会 return 回宿主，不会像正常 CRT 那样
+    // "返回到 __scrt_common_main_seh，再由它 call main"。所以 main 天然不会跑。
+    // 判据：run 45958412796 的 phase2 已经证明帧链能走到 _initterm；a64051b 把
+    // SKIP_INIT 的起点也改成 [rsp] 以后，预期是 `entry returned ... resumes=1`。
+    // 这条补调就是紧接在那一行之后，用**同一个 ctx（rsp 已经是 _initterm 弹完
+    // 返回地址的层级，等价于 call main 之前的 rsp）**把 main 跑起来。
+    if (const char* e = std::getenv("MEW_CALL_MAIN"); e && e[0] == '1') {
+        uint64_t main_va = 0x1409b5230ULL;   // main(argc,argv) 包装器：sub rsp,0x28 / call 0x1409b9967
+        if (const char* m = std::getenv("MEW_MAIN_VA")) main_va = std::strtoull(m, nullptr, 0);
+        auto& tbl = g_dispatch_table();
+        if (mew_saw_main()) {
+            std::fprintf(stderr, "[main] 已经进过 main（0x%llx），不重复调用\n",
+                         (unsigned long long)main_va);
+        } else if (rounds <= 0) {
+            std::fprintf(stderr, "[main] 没有发生 resume（初始化链没被跳过），不补调 main\n");
+        } else if (tbl.find(main_va) == tbl.end()) {
+            std::fprintf(stderr, "[main] 0x%llx 不在派发表里，跳过补调\n",
+                         (unsigned long long)main_va);
+        } else {
+            // argv 放 guest 堆：argv[0] = exe 名，argv[1] = NULL。
+            const char* name = "Mewgenics.exe";
+            const size_t nlen = std::strlen(name);
+            uint64_t str = g_guest_heap.alloc(nlen + 1, true);
+            uint64_t argv = g_guest_heap.alloc(16, true);
+            if (str && argv) {
+                for (size_t i = 0; i < nlen; ++i)
+                    mem_write<uint8_t>(&ctx, str + i, (uint8_t)name[i]);
+                mem_write<uint64_t>(&ctx, argv, str);
+                mem_write<uint64_t>(&ctx, argv + 8, 0);
+                ctx.rcx = 1;      // argc
+                ctx.rdx = argv;   // argv
+                ctx.rax = 0;
+                std::fprintf(stderr,
+                             "[main] 链尾补调 main 0x%llx argc=1 argv=0x%llx (argv[0]=\"%s\") "
+                             "rsp=0x%llx\n",
+                             (unsigned long long)main_va, (unsigned long long)argv, name,
+                             (unsigned long long)ctx.rsp);
+                seh::resume_armed() = true;
+                if (setjmp(seh::resume_buf()) == 0) {
+                    dispatch_indirect(main_va, &ctx);
+                    std::printf("runner: main returned rax=%llu\n",
+                                (unsigned long long)ctx.rax);
+                } else {
+                    std::fprintf(stderr,
+                                 "[main] main 内部又走到 resume（rip=0x%llx），不再继续\n",
+                                 (unsigned long long)seh::resume_ctx().Rip);
+                }
+            } else {
+                std::fprintf(stderr, "[main] argv 分配失败 str=0x%llx argv=0x%llx，跳过\n",
+                             (unsigned long long)str, (unsigned long long)argv);
+            }
+        }
+    }
     mew_unimpl_dump("exit");
     return 0;
 }

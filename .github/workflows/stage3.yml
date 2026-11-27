@@ -300,9 +300,16 @@ jobs:
         run: |
           set +e
           # 观测那个「cookie 解码链表」函数：看它的 rcx / [rcx] 以及两条哨兵全局、cookie 的真实值
-          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400,0x1400598f0,0x140386250,0x140d6aec8 MEW_TRACE_MEM=0x1413bb4e8,0x1413bb500,0x1412f2880,0x1413c60dc,0x1413c60e4,0x1413c60c0,0x1413c60e8,0x1413c60b0,0x1413c59e0,0x1413c59e8 \
-          MEW_WATCH=0x1413c59e0,0x1413c59e8,0x1413c59f0,0x1413c60c0 \
-          MEW_SAMPLE_SEC=15 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEH_SKIP_INIT=1 MEW_SEED_MLF=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 240 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
+          # 本轮（a64051b 之后）新增三样观测：
+          #   1) MEW_WATCH 补 _Myhead(b8) / _Vec(c8,d0,d8) / _Mask(e0)：9 次插入里
+          #      到底哪一步分配了桶数组、mask 有没有被 rehash 改掉，看得到就不必再猜。
+          #   2) MEW_TRACE_FN 补 0x140386180：那是 mlf 检查失败后唯一被 call 的
+          #      "算新桶数"函数（无 .pdata，但是直接 call 目标，lifter 会当函数入口）。
+          #   3) MEW_CALL_MAIN=1：CRT 的 `ret` 是 return 回宿主，_initterm 跑完不会
+          #      自己走到 main，必须链尾显式补一次。
+          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400,0x1400598f0,0x140386250,0x140d6aec8,0x140386180,0x1409b5230 MEW_TRACE_MEM=0x1413bb4e8,0x1413bb500,0x1412f2880,0x1413c60dc,0x1413c60e4,0x1413c60c0,0x1413c60e8,0x1413c60b0,0x1413c59e0,0x1413c59e8,0x1413c60e0,0x1413c60c8,0x1413c60d0 \
+          MEW_WATCH=0x1413c59e0,0x1413c59e8,0x1413c59f0,0x1413c60c0,0x1413c60b8,0x1413c60c8,0x1413c60d0,0x1413c60d8,0x1413c60e0 \
+          MEW_SAMPLE_SEC=15 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEH_SKIP_INIT=1 MEW_SEED_MLF=1 MEW_CALL_MAIN=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 240 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
           echo "--- unimpl/api log (first 40) ---"
