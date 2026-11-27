@@ -1481,8 +1481,81 @@ void shim_USER32_LockWorkStation(X64Ctx* c) { (void)c; ret0(c, 1); }
 
 // ---- 显示 / 系统参数 ----
 void shim_USER32_ChangeDisplaySettingsExW(X64Ctx* c) { (void)c; ret0(c, 0); }  // DISP_CHANGE_SUCCESSFUL
-void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_USER32_EnumDisplayMonitors(X64Ctx* c) { (void)c; ret0(c, 0); }
+// ---- 显示枚举：必须报告「有一个 1920x1080 的主显示器」 ----
+// 以前 EnumDisplayMonitors / EnumDisplayDevicesW 都直接 ret0，等于「这台机器没有任何显示器」。
+// SDL3 的 WIN_InitModes 虽然恒返回 true（WIN_AddDisplays 找不到显示器也不报错），
+// 但后续 SDL_GetPrimaryDisplay/SDL_GetDisplayBounds 会一路 "Invalid display index"，
+// 引擎摆放窗口时就会失败——这条线不能再留空。
+// 结构偏移按 mingw-w64 wingdi.h：
+//   DEVMODEW: dmSize@68(220) dmFields@72 dmBitsPerPel@168 dmPelsWidth@172
+//             dmPelsHeight@176 dmDisplayFrequency@184，sizeof=220
+//   DISPLAY_DEVICEW: cb@0 DeviceName[32]@4 DeviceString[128]@68 StateFlags@324，sizeof=840
+namespace {
+constexpr uint64_t kFakeMonitor = 0x30001;
+// 逐字符写 UTF-16LE（只处理 ASCII，够表示设备名）
+void put_wascii(X64Ctx* c, uint64_t dst, const char* s, size_t units) {
+    size_t i = 0;
+    for (; s[i] && i + 1 < units; ++i)
+        mem_write<uint16_t>(c, dst + i * 2, (uint16_t)(unsigned char)s[i]);
+    if (i < units) mem_write<uint16_t>(c, dst + i * 2, 0);
+}
+}  // namespace
+
+void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) {
+    const uint32_t idx = (uint32_t)arg1(c);
+    const uint64_t out = arg2(c);
+    if (idx != 0 || !out || !guest_mapped(out, 840)) { ret0(c, 0); return; }
+    std::memset(guest_ptr_from_ctx(c, out), 0, 840);
+    mem_write<uint32_t>(c, out + 0, 840);
+    put_wascii(c, out + 4, "\\\\.\\DISPLAY1", 32);
+    put_wascii(c, out + 68, "Fake Display", 128);
+    mem_write<uint32_t>(c, out + 324, 0x1 | 0x4);   // ATTACHED_TO_DESKTOP | PRIMARY_DEVICE
+    put_wascii(c, out + 328, "MONITOR\\FAKE1", 128);
+    put_wascii(c, out + 584, "\\Registry\\Machine\\System\\Fake", 128);
+    ret0(c, 1);
+}
+
+// BOOL EnumDisplayMonitors(HDC, LPCRECT, MONITORENUMPROC, LPARAM)
+// 合成一次回调：回调是 guest 函数，调用方式与 runner 里 TLS 回调一致——
+// 先在栈上压一个 0 作返回哨兵（lift 出来的 ret 就是 rsp+=8; return），再 dispatch。
+void shim_USER32_EnumDisplayMonitors(X64Ctx* c) {
+    const uint64_t cb = arg2(c);
+    const uint64_t data = arg3(c);
+    if (!cb) { ret0(c, 0); return; }
+    static uint64_t rect_va = 0;
+    if (!rect_va) rect_va = guest_alloc(c, 16);
+    if (!rect_va) { ret0(c, 0); return; }
+    fill_rect(c, rect_va, 0, 0, win().w, win().h);
+    const uint64_t saved_rsp = c->rsp;
+    c->rsp -= 8;
+    mem_write<uint64_t>(c, c->rsp, 0);   // 返回哨兵：回到宿主
+    c->rcx = kFakeMonitor;
+    c->rdx = kFakeHdc;
+    c->r8 = rect_va;
+    c->r9 = data;
+    dispatch_indirect(cb, c);
+    c->rsp = saved_rsp;
+    ret0(c, 1);
+}
+
+// BOOL EnumDisplaySettingsW(LPCWSTR, DWORD, DEVMODEW*)
+void shim_USER32_EnumDisplaySettingsW(X64Ctx* c) {
+    const uint32_t mode = (uint32_t)arg1(c);
+    const uint64_t dm = arg2(c);
+    if (!dm || !guest_mapped(dm, 220)) { ret0(c, 0); return; }
+    // ENUM_CURRENT_SETTINGS = 0xFFFFFFFF，ENUM_REGISTRY_SETTINGS = 0xFFFFFFFE；
+    // 只报一个模式，其余索引一律失败（SDL 靠这个判断枚举结束）。
+    if (mode != 0xFFFFFFFFu && mode != 0xFFFFFFFEu) { ret0(c, 0); return; }
+    std::memset(guest_ptr_from_ctx(c, dm), 0, 220);
+    mem_write<uint16_t>(c, dm + 68, 220);                                   // dmSize
+    mem_write<uint32_t>(c, dm + 72, 0x005C0000u);                           // BITS_PER_PEL|PELS_WIDTH|PELS_HEIGHT|DISPLAY_FREQUENCY
+    mem_write<uint32_t>(c, dm + 168, 32);                                   // dmBitsPerPel
+    mem_write<uint32_t>(c, dm + 172, (uint32_t)win().w);                     // dmPelsWidth
+    mem_write<uint32_t>(c, dm + 176, (uint32_t)win().h);                     // dmPelsHeight
+    mem_write<uint32_t>(c, dm + 184, 60);                                   // dmDisplayFrequency
+    ret0(c, 1);
+}
+void shim_USER32_EnumDisplaySettingsExW(X64Ctx* c) { shim_USER32_EnumDisplaySettingsW(c); }
 void shim_USER32_MonitorFromWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_GetMonitorInfoW(X64Ctx* c) {
     const uint64_t p = arg1(c);
