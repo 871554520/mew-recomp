@@ -1073,10 +1073,16 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
     // 带上 caller：run 46055985114 里 485 次 wake 都是同一个 cv(0x509355c0)，
     // 只有 caller 能区分「SDL 事件队列在转」还是「引擎自己的 job 池在等不存在的线程」。
+    // 参数顺序修正（run 46065844562 的日志误读）：SleepConditionVariableSRW(cv, srw, ms, flags)
+    // 的第一个参数是 rcx=cv、第二个是 rdx=srw。这里一直把 arg1(rdx) 当 cv 打印，
+    // 于是「0x1412f80a0 没人唤醒」是假象——0x1412f80a0 是 SRW 锁，真 cv 是 rcx 那个。
+    // 实测对照：wait 的 rcx=0x1413c62e8，而 _Cnd_signal 打的 wake cv=0x1413c62e8 —— 同一个对象，
+    // 所以那条「两个 cv 永不配对」的结论作废。
     static int wait_logged = 0;
     if (wait_logged++ < 20)
-        std::fprintf(stderr, "[cond] wait cv=0x%llx ms=%u -> %s(%llu) caller=0x%llx\n",
-                     (unsigned long long)arg1(c), ms, ret ? "signaled" : "timeout",
+        std::fprintf(stderr, "[cond] wait cv=0x%llx srw=0x%llx ms=%u -> %s(%llu) caller=0x%llx\n",
+                     (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
+                     ret ? "signaled" : "timeout",
                      (unsigned long long)ret, (unsigned long long)cur_fn_va());
     (void)cv_for; (void)srw_for;
     ret0(c, ret);
