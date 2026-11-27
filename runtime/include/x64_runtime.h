@@ -547,6 +547,26 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
         cur_fn_va() = caller;   // 恢复调用者：否则返回点/SAFE 日志会指到被调函数
         return;
     }
+    // 未解析的导入 → 函数指针就是 0，guest 会 `call 0` / `jmp 0`。真机上这是崩溃，
+    // 在这个移植里却是**可选功能没实现**的正常表现：steam_api64 是 LoadLibrary +
+    // GetProcAddress 动态取的，GetProcAddress 对未知名字返回 0，调用方不判空就直接调
+    // （[main] 之后第一道墙，见复盘 0.6 节：SteamInternal_ContextInit / SteamAPI_RunCallbacks）。
+    // 所以 target==0 单独处理成「返回 0 的空桩」：call 形态补弹返回地址，然后继续跑。
+    // 其它未映射目标仍然是 FATAL —— 那些是「地址算错了」或「真入口没登记」，
+    // 静默吞掉会把真正的问题藏起来（thunk 那次就是靠 FATAL 才定案的）。
+    if (!target_va) {
+        static int null_logged = 0;
+        if (null_logged++ < 20)
+            std::fprintf(stderr,
+                         "[api] indirect call target=0（未解析的导入）in_fn=0x%llx is_call=%d -> 当作返回 0\n",
+                         (unsigned long long)cur_fn_va(), (int)is_call);
+        if (ctx) {
+            ctx->rax = 0;
+            if (is_call) ctx->rsp += 8;
+        }
+        tracer_done(trace_this, target_va, ctx);
+        return;
+    }
     // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
     auto& v = dispatch_vas();
     auto it2 = std::lower_bound(v.begin(), v.end(), target_va);
