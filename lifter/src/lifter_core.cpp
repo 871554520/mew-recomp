@@ -279,6 +279,19 @@ static bool is_prefetch(const std::string& mn) {
            mn == "prefetch" || mn == "prefetchit0" || mn == "prefetchit1";
 }
 
+// 无副作用、可以直接当 nop 的指令：内存栅栏 / FPU 等待 / 缓存行提示。
+// 这些以前都没进白名单，结果**整个函数**被占位成 UNIMPL_FUNC，一条调用链就此断掉：
+// run 46015989537 的 stub_list.tsv 里 `fwait` 挡住 315 个函数、`sfence` 挡住 20+ 个，
+// 其中 0x140dab860（1645 字节）在运行期被调用 8268 次，直接造成
+// 0x1400595e0 ↔ 0x140dabee0 的活锁（mew_livelock_note 触发 abort）。
+// guest 是单线程的，栅栏/等待本来就没有可观察语义。
+static bool is_noop_insn(const std::string& mn) {
+    return mn == "sfence" || mn == "lfence" || mn == "mfence" ||
+           mn == "fwait" || mn == "wait" || mn == "fnop" ||
+           mn == "fnclex" || mn == "finit" || mn == "fninit" ||
+           mn == "clflush" || mn == "clflushopt" || mn == "cldemote";
+}
+
 static bool is_xmm_reg(const ZydisDecodedOperand& o) {
     return o.type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(o.reg.value) >= 0;
 }
@@ -1459,8 +1472,23 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" || is_prefetch(mn)) {
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
+                   is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
+        } else if (mn == "ldmxcsr") {
+            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+        } else if (mn == "stmxcsr") {
+            // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
+            e.out << "  mem_write<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x1F80u);\n";
+        } else if (mn == "fldcw") {
+            e.out << "  (void)mem_read<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+        } else if (mn == "fnstcw") {
+            // 默认 x87 控制字：0x037F（64 位精度、所有异常屏蔽）
+            e.out << "  mem_write<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x037Fu);\n";
+        } else if (mn == "rdsspq" || mn == "rdsspd") {
+            // 影子栈指针：没有影子栈，给 0（调用方一般只做保存/比较）
+            storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
         } else if (mn == "ret") {
             e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
         } else if (mn == "leave") {
@@ -2776,8 +2804,23 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" || is_prefetch(mn)) {
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
+                   is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
+        } else if (mn == "ldmxcsr") {
+            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+        } else if (mn == "stmxcsr") {
+            // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
+            e.out << "  mem_write<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x1F80u);\n";
+        } else if (mn == "fldcw") {
+            e.out << "  (void)mem_read<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+        } else if (mn == "fnstcw") {
+            // 默认 x87 控制字：0x037F（64 位精度、所有异常屏蔽）
+            e.out << "  mem_write<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x037Fu);\n";
+        } else if (mn == "rdsspq" || mn == "rdsspd") {
+            // 影子栈指针：没有影子栈，给 0（调用方一般只做保存/比较）
+            storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
         } else if (mn == "ret") {
             e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
         } else if (mn == "leave") {
