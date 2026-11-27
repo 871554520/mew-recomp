@@ -3250,14 +3250,29 @@ static size_t addExtraEntriesImpl(PeImage& pe, const std::vector<uint64_t>& seed
         --it;
         return v >= it->first && v < (it->first + (uint64_t)it->second);
     };
+    // 每个 seed 的「声明长度」= 到下一个已知起点的距离。但相邻 seed 之间往往只隔
+    // 16 字节（MSVC 的 C++ 调整器 thunk 就是一串 16 对齐、没有 .pdata、没有 cc 填充的
+    // 小函数），如果只看 .pdata 起点，第一个 thunk 会按「到下一个 .pdata 的巨大距离」
+    // 登记进 pe.functions，后面整串 thunk 就都落在它区间内 → 被 inside_known 丢掉。
+    // 实测（run 45991101871）：miner 已经挖出 599 个 thunk 候选、0x140e39c00/10/20
+    // 也写进了 extra_seeds.txt，但 manifest 里只有 0x140e39b90（那一串的第一个），
+    // 后三个没进派发表 → `[FATAL] Unmapped indirect target: 0x140e39c20 … delta=144`。
+    // 所以长度上限还要考虑「下一个 seed」。
+    std::vector<uint64_t> seed_sorted = seeds;
+    std::sort(seed_sorted.begin(), seed_sorted.end());
+    auto next_seed_after = [&](uint64_t v) -> uint64_t {
+        auto it = std::upper_bound(seed_sorted.begin(), seed_sorted.end(), v);
+        return it == seed_sorted.end() ? ~0ULL : *it;
+    };
     for (uint64_t v : seeds) {
         if (pe.hasFunction(v)) continue;
         if (!allow_inside && inside_known(v)) { ++skipped_inside; continue; }
         const Section* sec = pe.byRva((uint32_t)(v - pe.image_base));
         if (!sec || !sec->exec) continue;
-        uint32_t len = 0;
+        uint64_t limit = next_seed_after(v);
         for (const auto& f : pe.functions)
-            if (f.first > v) { len = (uint32_t)(f.first - v); break; }
+            if (f.first > v) { limit = std::min(limit, f.first); break; }
+        uint32_t len = limit == ~0ULL ? 0u : (uint32_t)(limit - v);
         if (!len) {
             uint32_t off = (uint32_t)(v - pe.image_base - sec->va);
             len = sec->rawsize > off ? std::min<uint32_t>(sec->rawsize - off, 256) : 0;
