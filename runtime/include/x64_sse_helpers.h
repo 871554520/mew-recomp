@@ -324,10 +324,19 @@ inline PcmpStr pcmp_core(const XmmReg& a, const XmmReg& b, int nA, int nB, uint8
             }
         } else if (agg == 2) {                 // equal each：同下标逐元素
             if (i < nA && h == pcmp_elem(pa, i, unit, sgn)) hit = true;
-        } else {                               // equal ordered：needle 整段出现在 i 处
-            if (i + nA <= nB) {
+        } else {                               // equal ordered：A 的前缀出现在 i 处
+            // **不能**用 `i + nA <= nB` 当硬条件。运行期证据（run 46005327501 的 objdump）：
+            // 调用方在 `mov eax,16 / mov edx,eax` 之后走 pcmpestrm，拿到位图先 `bsr` 取**最高**
+            // 置位，再 `btr` 清掉重来，并对每个候选位置重新 `movdqu + xorps + ptest` 做
+            // 完整 16 字节比对才认命中（0x140d1a451..0x140d1a45d），尾部还有
+            // `and (1<<r12)-1` 只保留低 r12 位。这套「先候选、再逐位验证」的写法只有在
+            // 位图**包含部分前缀匹配**时才成立：否则 la=lb=16 时位图只剩 bit0，
+            // bsr/btr 重试循环退化，正是 std::out_of_range 的来源。
+            // 所以这里按「能比多少比多少」：k_max = min(nA, nB - i)，全部相等就置位。
+            if (i < nB) {
+                const int k_max = (nA < nB - i) ? nA : (nB - i);
                 hit = true;
-                for (int k = 0; k < nA; ++k)
+                for (int k = 0; k < k_max; ++k)
                     if (pcmp_elem(pb, i + k, unit, sgn) != pcmp_elem(pa, k, unit, sgn)) { hit = false; break; }
             }
         }
