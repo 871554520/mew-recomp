@@ -28,8 +28,11 @@ def main():
     out = load(d, 'runner.out')
     nosafe = load(d, 'runner_nosafe.err')
     hot = load(d, 'hot_functions.txt')
+    # [merge]/[extend] 是 **lifter 阶段**打的，落在 shards.log（stage3 那一步
+    # `--shards 64 ... 2>&1 | tee generated/shards.log`），不在 runner.err 里。
+    shards = load(d, 'shards.log')
     print(f'== artifact: {d}')
-    print(f'   runner.err {len(err)}B  runner_nosafe.err {len(nosafe)}B  runner.out {len(out)}B  hot_functions {len(hot)}B')
+    print(f'   runner.err {len(err)}B  runner_nosafe.err {len(nosafe)}B  runner.out {len(out)}B  hot_functions {len(hot)}B  shards.log {len(shards)}B')
 
     print('\n== 1. 该出现的（推进证据）')
     print(f'   RESUME                 {count(r"\[seh\] RESUME", err)}')
@@ -37,9 +40,11 @@ def main():
     print(f'   entry returned         {count(r"entry returned", err)}')
     print(f'   [main] 补调/已进过      {count(r"\[main\]", err)}')
     print(f'   [fn] 0x140385f80       {count(r"\[fn\] 0x140385f80", err)}   (走到容器插入才 >0)')
-    print(f'   [extend] 0x1403862d0   {count(r"\[extend\] 0x1403862d0", err)}   (白名单补长 43 -> 443)')
-    print(f'   [merge] 共享序言合并    {count(r"\[merge\]", err)}')
-    for m in re.findall(r'\[merge\] .*', err)[:6]:
+    print(f'   [extend] 0x1403862d0   {count(r"\[extend\] 0x1403862d0", shards)}   (白名单补长 43 -> 443，在 shards.log)')
+    print(f'   [merge] 共享序言合并    {count(r"\[merge\]", shards)}   (在 shards.log)')
+    for m in re.findall(r'\[merge\] .*', shards)[:8]:
+        print(f'       {m.strip()}')
+    for m in re.findall(r'\[extend\] .*', shards)[:4]:
         print(f'       {m.strip()}')
     print(f'   [watch] 行              {count(r"\[watch\]", err)}')
     print(f'   RaiseException         {count(r"RaiseException", err)}')
