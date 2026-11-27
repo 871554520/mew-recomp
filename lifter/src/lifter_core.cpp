@@ -2223,32 +2223,40 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                         if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
                     }
                     if (jt_ok) {
-                        // default 分支**不能**写 UNIMPL：表我可能只解析到前 N 项（遇到 0 或越界值
-                        // 就停），而调用方的 `cmp/ja` 守卫范围可能比 N 大，落在这段区间的索引
-                        // 以前是靠 dispatch 正常工作的。所以 default 按原语义**当场重算目标**
-                        // （image_base + 32 位表项）再派发，行为与改造前完全一致。
-                        e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
+                        // 键必须是 jmp 寄存器里**已经解析好的绝对目标**，不是表索引：
+                        // `add r64,base` 之后寄存器里就是 image_base+RVA。当
+                        // `mov r32,[base+idx*4+RVA]` 的目的寄存器与索引寄存器是同一个
+                        // （本镜像 0x140bfcb82 就是 `mov eax,[rcx+rax*4+0xBFD26C] /
+                        // add rax,rcx / jmp rax`）时，索引在表读取那一步就被覆盖了，按索引
+                        // 作键永远不命中 -> 一律落 default -> 拿绝对地址当表索引重读表 ->
+                        // 读到 0 -> dispatch_indirect(image_base) 空转返回，序言的
+                        // `sub rsp,40` 就没有对应尾声（run 46061908947 实测
+                        // [rsp-repair] delta=-40 x39，1584 次 jump-table-rva-zero 全在这一处）。
+                        // 目的寄存器与索引寄存器不同时（`mov edx,[rsi+rcx*4]/add rdx,rsi/
+                        // jmp rdx`），jmp 处寄存器里同样是绝对目标，所以统一按绝对目标作键
+                        // 对两种形态都成立；default 也直接派发寄存器值，不再重读表。
+                        e.indirectCall = true;
+                        e.out << "  { uint64_t ix = read_reg(ctx," << jr << ",8);\n"
                                  "    switch (ix) {\n";
-                        for (size_t k = 0; k < jt.size(); ++k)
-                            e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
+                        {
+                            std::unordered_set<uint64_t> emitted;  // 多个索引可指向同一 case 体
+                            for (auto t : jt)
+                                if (emitted.insert(t).second)
+                                    e.out << "      case 0x" << hexStr(t) << "ULL: goto L_"
+                                          << hexStr(t) << ";\n";
+                        }
                         e.out << "      default: {\n"
-                                 "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
-                              << hexStr(jt_tbl) << "ULL + ix * 4);\n"
-                                 "        if (!jt_slot) {\n"
-                                 "          static int jt0_logged = 0;\n"
-                                 "          if (jt0_logged++ < 10)\n"
-                                 "            fprintf(stderr, \"[jt0] rip=0x%llx ix=%llu table=0x%llx\\n\",\n"
-                                 "                    (unsigned long long)0x" << hexStr(rip)
+                                 "        static int jt_out_logged = 0;\n"
+                                 "        if (jt_out_logged++ < 10)\n"
+                                 "          fprintf(stderr, \"[jt-out] rip=0x%llx tgt=0x%llx table=0x%llx\\n\",\n"
+                                 "                  (unsigned long long)0x" << hexStr(rip)
                               << "ULL, (unsigned long long)ix, (unsigned long long)0x"
                               << hexStr(jt_tbl) << "ULL);\n"
-                                 "          UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-zero\");\n"
-                                 "        }\n"
-                                 "        dispatch_indirect(0x" << hexStr(pe.image_base)
-                              << "ULL + jt_slot, ctx); return;\n"
+                                 "        dispatch_indirect(ix, ctx); return;\n"
                                  "      }\n"
                                  "    }\n"
                                  "  }\n";
+                        (void)jt_tbl;
                         jt_done = true;
                     }
                 }
@@ -3594,32 +3602,40 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
                     }
                     if (jt_ok) {
-                        // default 分支**不能**写 UNIMPL：表我可能只解析到前 N 项（遇到 0 或越界值
-                        // 就停），而调用方的 `cmp/ja` 守卫范围可能比 N 大，落在这段区间的索引
-                        // 以前是靠 dispatch 正常工作的。所以 default 按原语义**当场重算目标**
-                        // （image_base + 32 位表项）再派发，行为与改造前完全一致。
-                        e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
+                        // 键必须是 jmp 寄存器里**已经解析好的绝对目标**，不是表索引：
+                        // `add r64,base` 之后寄存器里就是 image_base+RVA。当
+                        // `mov r32,[base+idx*4+RVA]` 的目的寄存器与索引寄存器是同一个
+                        // （本镜像 0x140bfcb82 就是 `mov eax,[rcx+rax*4+0xBFD26C] /
+                        // add rax,rcx / jmp rax`）时，索引在表读取那一步就被覆盖了，按索引
+                        // 作键永远不命中 -> 一律落 default -> 拿绝对地址当表索引重读表 ->
+                        // 读到 0 -> dispatch_indirect(image_base) 空转返回，序言的
+                        // `sub rsp,40` 就没有对应尾声（run 46061908947 实测
+                        // [rsp-repair] delta=-40 x39，1584 次 jump-table-rva-zero 全在这一处）。
+                        // 目的寄存器与索引寄存器不同时（`mov edx,[rsi+rcx*4]/add rdx,rsi/
+                        // jmp rdx`），jmp 处寄存器里同样是绝对目标，所以统一按绝对目标作键
+                        // 对两种形态都成立；default 也直接派发寄存器值，不再重读表。
+                        e.indirectCall = true;
+                        e.out << "  { uint64_t ix = read_reg(ctx," << jr << ",8);\n"
                                  "    switch (ix) {\n";
-                        for (size_t k = 0; k < jt.size(); ++k)
-                            e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
+                        {
+                            std::unordered_set<uint64_t> emitted;  // 多个索引可指向同一 case 体
+                            for (auto t : jt)
+                                if (emitted.insert(t).second)
+                                    e.out << "      case 0x" << hexStr(t) << "ULL: goto L_"
+                                          << hexStr(t) << ";\n";
+                        }
                         e.out << "      default: {\n"
-                                 "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
-                              << hexStr(jt_tbl) << "ULL + ix * 4);\n"
-                                 "        if (!jt_slot) {\n"
-                                 "          static int jt0_logged = 0;\n"
-                                 "          if (jt0_logged++ < 10)\n"
-                                 "            fprintf(stderr, \"[jt0] rip=0x%llx ix=%llu table=0x%llx\\n\",\n"
-                                 "                    (unsigned long long)0x" << hexStr(rip)
+                                 "        static int jt_out_logged = 0;\n"
+                                 "        if (jt_out_logged++ < 10)\n"
+                                 "          fprintf(stderr, \"[jt-out] rip=0x%llx tgt=0x%llx table=0x%llx\\n\",\n"
+                                 "                  (unsigned long long)0x" << hexStr(rip)
                               << "ULL, (unsigned long long)ix, (unsigned long long)0x"
                               << hexStr(jt_tbl) << "ULL);\n"
-                                 "          UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-zero\");\n"
-                                 "        }\n"
-                                 "        dispatch_indirect(0x" << hexStr(pe.image_base)
-                              << "ULL + jt_slot, ctx); return;\n"
+                                 "        dispatch_indirect(ix, ctx); return;\n"
                                  "      }\n"
                                  "    }\n"
                                  "  }\n";
+                        (void)jt_tbl;
                         jt_done = true;
                     }
                 }
