@@ -814,7 +814,15 @@ bool tryEmitCfg(Emit& e, const PeImage& pe, const std::string& mn,
     if (op0.type != ZYDIS_OPERAND_TYPE_MEMORY || op0.mem.base != ZYDIS_REGISTER_RIP) return false;
     uint64_t slot_va = next_rip + (int64_t)op0.mem.disp.value;
     if (pe.guard_check_va && slot_va == pe.guard_check_va) {
-        e.out << "  /* CFG guard_check_icall_fptr bypassed (NOP) */\n";
+        // __guard_check_icall_fptr 的约定：目标在 RCX，校验通过后**在 RAX 里原样返回**。
+        // MSVC 的 CFG 序列是
+        //     mov rcx, <目标>
+        //     call [__guard_check_icall_fptr]   ; rax = 校验后的目标
+        //     call rax
+        // 以前这里直接当 NOP 跳过，rax 保持旧值 → 第二条 call 跳到垃圾地址。
+        // 实测后果：0x140d7a31c（calloc）内部这样调用分配器，返回了 0xc06b57xxx，
+        // 调用方拿去当指针，最终崩在 mov [r9],rdx。
+        e.out << "  ctx->rax = ctx->rcx;  /* CFG guard: 校验并把目标原样返回 rax */\n";
         return true;
     }
     if (pe.guard_dispatch_va && slot_va == pe.guard_dispatch_va) {

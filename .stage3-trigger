@@ -10,3 +10,4 @@ t=1795726400 round-J: 最小伪 PEB（gs:[0x60] -> ProcessParameters）
 t=1795726400 round-K: 观测 0x140d6a8b4 的 rcx/哨兵全局/cookie + SAFE 寄存器快照
 t=1795726400 round-L: SAFE 日志带「最近进入的垫片名」，定位崩在哪个 API 里
 t=1795726400 round-M: 每条写指令记 guest pc（SAFE 日志精确到指令）
+t=1795726400 round-N: CFG guard 改为 rax=rcx（原样返回目标）
