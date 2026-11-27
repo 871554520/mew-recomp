@@ -19,7 +19,12 @@
 #include <sys/mman.h>
 
 struct GuestHeapPool {
-    static constexpr uint64_t BASE_HINT = 0x200000000ULL;
+    // 基址必须落在 **4GB 以下**。原因：这个 exe 的 CRT 路径里存在把指针截成 32 位的
+    // 写法（手工解 0x140d7a31c/calloc 时看到 `8b f0` = mov esi,eax，最后 `mov rax,rsi`
+    // 返回）。堆放在 0x200000000（8GB）时，这种截断会直接把指针毁掉，调用方拿到就是
+    // 0xc06b57xxx 这类垃圾，最终崩在 `mov [r9],rdx`。Windows 上堆通常也在 4GB 内，
+    // 所以把堆挪到 0x10000000（256MB）既安全又符合真实环境。
+    static constexpr uint64_t BASE_HINT = 0x10000000ULL;
     static constexpr size_t   POOL_SIZE = 512ULL * 1024 * 1024;
 
     uint8_t* base = nullptr;
