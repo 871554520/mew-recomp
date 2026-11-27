@@ -2236,6 +2236,13 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
     st.total = list.size();
     st.shards = (size_t)shards;
 
+    // 占位函数清单（诊断用）：每行 `va<TAB>size<TAB>shard<TAB>mnemonics`。
+    // 为什么需要它：`[shards] … stubbed=N` 只给总数，查不出「哪 106 个函数从 ok
+    // 变成 stubbed」。run 46010953943 开了 chaininfo 家族合并后 stubbed 450→556，
+    // 而 stub_hist.txt（非分片那一趟）仍是 357/357 一个没变 —— 说明增量发生在
+    // 分片这一趟里，只有把每个占位函数的地址落到文件里才能对上账、才能按地址回退。
+    std::vector<std::string> stubList;
+
     // all_decls.h：所有函数声明 + 垫片声明
     {
         std::ofstream o(outDir + "/all_decls.h");
@@ -2275,6 +2282,12 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
                 for (const auto& m : r.stubMnems) { if (!mn.empty()) mn += ","; mn += m; }
                 o << "void sub_" << hexva(fn.first) << "(X64Ctx* ctx) {\n"
                      "  UNIMPL_FUNC_M(0x" << hexva(fn.first) << "ULL, \"" << mn << "\");\n}\n\n";
+                {
+                    std::ostringstream sl;
+                    sl << "0x" << hexva(fn.first) << "\t" << fn.second << "\t" << si
+                       << "\t" << mn << "\n";
+                    stubList.push_back(sl.str());
+                }
                 ++st.stubbed;
             } else {
                 o << "// va=0x" << hexva(fn.first) << " LIFT-FAILED:";
@@ -2320,6 +2333,13 @@ void emitShardSet(const PeImage& pe, int shards, const std::string& outDir,
         for (int si = 0; si < shards; ++si)
             for (const auto& fn : buckets[(size_t)si])
                 o << "0x" << hexva(fn.first) << "\t" << fn.second << "\t" << si << "\n";
+    }
+
+    // 占位清单（同上，诊断用；空文件也要写，方便判断「这轮是不是真没有」）
+    {
+        std::ofstream o(outDir + "/stub_list.tsv");
+        o << "va\tsize\tshard\tmnemonics\n";
+        for (const auto& line : stubList) o << line;
     }
 
     if (!st.failReasons.empty()) {
