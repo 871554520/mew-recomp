@@ -2033,3 +2033,95 @@ void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx* c) {
     if (logged++ < 3) std::fprintf(stderr, "[shim] SteamInternal_ContextInit -> 0（没有上下文）\n");
     ret0(c, 0);
 }
+
+// ---------------- GDI32 字体/文本度量（游戏 UI 布局用，不需要真渲染）----------------
+// run 46005752715 第一次跑到这里（[UNIMPL API] GDI32!CreateCompatibleDC / CreateFontIndirectW /
+// SelectObject / GetDeviceCaps / GetTextMetricsW / GetTextExtentPoint32A / DeleteDC）。
+// 这条链是「建内存 DC → 建字体 → 选入 → 取文本度量/尺寸」的纯布局代码，不涉及像素输出，
+// 所以给合理的假值就够：句柄用固定的非空假值，度量按 96 DPI、19px 行高的等宽近似。
+namespace {
+constexpr uint64_t kFakeDC = 0x7FFE0001E000ULL;
+constexpr uint64_t kFakeFont = 0x7FFE0002F000ULL;
+inline void put_i32(X64Ctx* c, uint64_t addr, int32_t v) { std::memcpy(guest_ptr_from_ctx(c, addr), &v, 4); }
+}  // namespace
+
+void shim_GDI32_CreateCompatibleDC(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 3) std::fprintf(stderr, "[shim] CreateCompatibleDC -> 假 DC\n");
+    ret0(c, kFakeDC);
+}
+void shim_GDI32_CreateFontIndirectW(X64Ctx* c) { ret0(c, kFakeFont); }
+void shim_GDI32_SelectObject(X64Ctx* c) { ret0(c, kFakeFont); }   // 返回「旧对象」，非空即可
+void shim_GDI32_DeleteDC(X64Ctx* c) { ret0(c, 1); }
+void shim_GDI32_DeleteObject(X64Ctx* c) { ret0(c, 1); }
+void shim_GDI32_GetDeviceCaps(X64Ctx* c) {
+    const int idx = (int)arg1(c);
+    int v = 0;
+    switch (idx) {
+        case 88:  v = 96; break;      // LOGPIXELSY
+        case 90:  v = 96; break;      // LOGPIXELSX
+        case 12:  v = 32; break;      // BITSPIXEL
+        case 14:  v = 1; break;       // PLANES
+        case 8:   v = 1920; break;    // HORZRES
+        case 10:  v = 1080; break;    // VERTRES
+        case 118: v = 1920; break;    // DESKTOPHORZRES
+        case 117: v = 1080; break;    // DESKTOPVERTRES
+        default:  v = 0; break;
+    }
+    ret0(c, (uint64_t)v);
+}
+void shim_GDI32_GetTextMetricsW(X64Ctx* c) {
+    const uint64_t tm = arg1(c);
+    if (!tm || !guest_mapped(tm, 0x3C)) { ret0(c, 0); return; }
+    uint8_t buf[0x3C];
+    std::memset(buf, 0, sizeof(buf));
+    auto put32 = [&](int off, int32_t v) { std::memcpy(buf + off, &v, 4); };
+    put32(0, 19);    // tmHeight
+    put32(4, 15);    // tmAscent
+    put32(8, 4);     // tmDescent
+    put32(12, 4);    // tmInternalLeading
+    put32(16, 0);    // tmExternalLeading
+    put32(20, 9);    // tmAveCharWidth
+    put32(24, 16);   // tmMaxCharWidth
+    put32(28, 400);  // tmWeight
+    put32(36, 96);   // tmDigitizedAspectX
+    put32(40, 96);   // tmDigitizedAspectY
+    const uint16_t first = ' ', last = '~', def = '?', brk = ' ';
+    std::memcpy(buf + 44, &first, 2);
+    std::memcpy(buf + 46, &last, 2);
+    std::memcpy(buf + 48, &def, 2);
+    std::memcpy(buf + 50, &brk, 2);
+    buf[56] = 1;     // tmPitchAndFamily（fixed pitch）
+    buf[57] = 0;     // tmCharSet（ANSI_CHARSET）
+    std::memcpy(guest_ptr_from_ctx(c, tm), buf, sizeof(buf));
+    ret0(c, 1);
+}
+void shim_GDI32_GetTextExtentPoint32A(X64Ctx* c) {
+    const uint64_t s = arg1(c);
+    const int n = (int)arg2(c);
+    const uint64_t psize = arg3(c);
+    (void)s;
+    if (!psize || !guest_mapped(psize, 8)) { ret0(c, 0); return; }
+    const int32_t cx = (n > 0 ? n : 0) * 9;   // 与 tmAveCharWidth 一致的等宽近似
+    const int32_t cy = 19;
+    put_i32(c, psize, cx);
+    put_i32(c, psize + 4, cy);
+    ret0(c, 1);
+}
+
+// ---------------- 同一轮里撞到的其余三个 ----------------
+// S_HELL32!SHGetFolderPathW(csidl, ...)：游戏用来定位存档目录，给一个固定路径即可。
+void shim_SHELL32_SHGetFolderPathW(X64Ctx* c) {
+    const uint64_t buf = arg4(c);
+    if (!buf) return;
+    const uint16_t path[] = {'C', ':', '\\', 'M', 'e', 'w', 'g', 'e', 'n', 'i', 'c', 's', 0};
+    if (!guest_mapped(buf, sizeof(path))) { ret0(c, (uint64_t)0x80004005); return; }  // E_FAIL
+    std::memcpy(guest_ptr_from_ctx(c, buf), path, sizeof(path));
+    static int logged = 0;
+    if (logged++ < 3) std::fprintf(stderr, "[shim] SHGetFolderPathW -> C:\\Mewgenics\n");
+    ret0(c, 0);   // S_OK
+}
+// 枚举系统 locale：不回调、直接返 0（FALSE = 一项都没有）。ucrt 会退回默认 locale。
+void shim_KERNEL32_EnumSystemLocalesW(X64Ctx* c) { (void)c; ret0(c, 0); }
+// 模态对话框：不实现界面，直接返 0（相当于「没弹出来/被取消」）。
+void shim_USER32_DialogBoxIndirectParamW(X64Ctx* c) { (void)c; ret0(c, 0); }
