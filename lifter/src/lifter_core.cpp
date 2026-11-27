@@ -2306,6 +2306,24 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                     e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
                 }
             }
+        } else if (mn == "loop" || mn == "loope" || mn == "loopne") {
+            // LOOP/LOOPE/LOOPNE：先 dec rcx，再按「rcx != 0（且 ZF 条件）」跳。
+            // **只在目标已是本函数内标签时才发射**，否则保持原占位行为：
+            // 编出一个不存在的 L_xxx 会把整片 shard 编挂，比占位更糟。
+            // stub_list 里 loope 挡住 10 个函数。
+            const uint64_t lt = next_rip + (int64_t)ops[0].imm.value.s;
+            if (lt >= va && lt < va + effSize && labelSet.count(lt)) {
+                std::string cond;
+                if (mn == "loope") cond = " && ctx->zf";
+                else if (mn == "loopne") cond = " && !ctx->zf";
+                e.out << "  { ctx->rcx -= 1; if (ctx->rcx != 0" << cond
+                      << ") goto L_" << hexStr(lt) << "; }\n";
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
+            } else {
+                e.unsupported.push_back(mn);
+            }
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
             if (g_stub_hist) (*g_stub_hist)[mn]++;
@@ -3639,6 +3657,24 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                     e.indirectCall = true;
                     e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
                 }
+            }
+        } else if (mn == "loop" || mn == "loope" || mn == "loopne") {
+            // LOOP/LOOPE/LOOPNE：先 dec rcx，再按「rcx != 0（且 ZF 条件）」跳。
+            // **只在目标已是本函数内标签时才发射**，否则保持原占位行为：
+            // 编出一个不存在的 L_xxx 会把整片 shard 编挂，比占位更糟。
+            // stub_list 里 loope 挡住 10 个函数。
+            const uint64_t lt = next_rip + (int64_t)ops[0].imm.value.s;
+            if (lt >= va && lt < va + effSize && labelSet.count(lt)) {
+                std::string cond;
+                if (mn == "loope") cond = " && ctx->zf";
+                else if (mn == "loopne") cond = " && !ctx->zf";
+                e.out << "  { ctx->rcx -= 1; if (ctx->rcx != 0" << cond
+                      << ") goto L_" << hexStr(lt) << "; }\n";
+            } else if (flags & LIFT_STUB_UNKNOWN) {
+                e.stubbed = true;
+                e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"" << mn << "\");\n";
+            } else {
+                e.unsupported.push_back(mn);
             }
         } else if (flags & LIFT_STUB_UNKNOWN) {
             e.stubbed = true;
