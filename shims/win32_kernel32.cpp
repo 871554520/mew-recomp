@@ -2040,7 +2040,7 @@ void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
     ret0(c, 1);
 }
 
-void shim_OPENGL32_glGetString(X64Ctx* c) {
+void shim_OPENGL32_glGetString(X64Ctx* c) { mew_api_hit("glGetString");
     // 每个 pname 只分配一次：早先每次调用都 guest_alloc，长跑下来会持续泄漏 guest 堆。
     static uint64_t cache[6] = {0, 0, 0, 0, 0, 0};
     const uint32_t nm = (uint32_t)arg0(c);
@@ -2056,7 +2056,7 @@ void shim_OPENGL32_glGetString(X64Ctx* c) {
     if (!cache[ix]) cache[ix] = gl_new_cstr(c, gl_string_for(nm));
     ret0(c, cache[ix]);
 }
-void shim_OPENGL32_glGetIntegerv(X64Ctx* c) {
+void shim_OPENGL32_glGetIntegerv(X64Ctx* c) { mew_api_hit("glGetIntegerv");
     const uint32_t pname = (uint32_t)arg0(c);
     const uint64_t out = arg1(c);
     if (!out) { ret0(c, 0); return; }
@@ -2093,15 +2093,15 @@ void shim_OPENGL32_glGenTextures(X64Ctx* c) {
 // 其余 GL 入口：绘制态一律 no-op（语义上是「设置成功」，不改任何宿主状态）
 void shim_OPENGL32_glBindTexture(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glBlendFunc(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glClear(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glClear(X64Ctx* c) { mew_api_hit("glClear"); ret0(c, 0); }
 void shim_OPENGL32_glClearColor(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glColorMask(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glCopyTexSubImage2D(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glDeleteTextures(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glDepthMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDisable(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDrawArrays(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glEnable(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glDisable(X64Ctx* c) { mew_api_hit("glDisable"); ret0(c, 0); }
+void shim_OPENGL32_glDrawArrays(X64Ctx* c) { mew_api_hit("glDrawArrays"); ret0(c, 0); }
+void shim_OPENGL32_glEnable(X64Ctx* c) { mew_api_hit("glEnable"); ret0(c, 0); }
 void shim_OPENGL32_glLineWidth(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glPixelStorei(X64Ctx* c) { ret0(c, 0); }
 void shim_OPENGL32_glPointSize(X64Ctx* c) { ret0(c, 0); }
