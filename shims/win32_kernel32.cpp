@@ -337,6 +337,14 @@ void shim_KERNEL32_HeapReAlloc(X64Ctx* c) {
 
     // 退化成 HeapAlloc + memcpy + 释放旧块（旧块内存不回收，杜绝 use-after-free）
     uint64_t p = g_guest_heap.alloc(n, false);
+    // 堆池拒绝（size 是坏指针算出来的天文数字）时必须先返回 NULL，
+    // 否则下面的 memcpy 会往地址 0 写，把「申请失败」变成「野写」。
+    if (!p) {
+        std::fprintf(stderr, "[shim] HeapReAlloc(0x%llx -> %zu) refused: pool declined caller=0x%llx\n",
+                     (unsigned long long)mem, n, (unsigned long long)cur_fn_va());
+        ret0(c, 0);
+        return;
+    }
     const size_t cp = old_cap < n ? old_cap : n;
     if (cp) {
         std::memcpy(reinterpret_cast<void*>((uintptr_t)(p + c->mem_bias)),
