@@ -1161,6 +1161,27 @@ static uint32_t merge_shared_frame_size(const PeImage& pe, uint64_t va, uint32_t
     return effSize;
 }
 
+// MSVC 的 /hotpatch 会在函数体前留一串 0xCC，于是「对函数起点之前那几个字节」的直接调用
+// 会落在一个既不 .pdata、也没被 lift 的地址上 —— dispatcher 命中不了就当场 return，
+// 被调函数根本没执行。
+// 实测：main（0x1409b5230）里就是 `call 0x1409b9967`，而 0x1409b9970 才是 .pdata 入口
+// （前 9 字节全是 cc cc …）。如果不归一化，即使 main 跑起来也只会立刻拿到垃圾返回值返回，
+// 整个游戏不会启动 —— 这一脚静态就能确认，先修。
+static uint64_t normalize_pad_target(const PeImage& pe, uint64_t t) {
+    if (pe.hasFunction(t)) return t;
+    const Section* sec = pe.byRva((uint32_t)(t - pe.image_base));
+    if (!sec) return t;
+    const uint32_t off = (uint32_t)(t - pe.image_base - sec->va);
+    if (off >= sec->rawsize) return t;
+    const uint8_t* p = pe.data.data() + sec->raw + off;
+    for (uint32_t k = 1; k <= 15; ++k) {
+        if (off + k >= sec->rawsize) break;
+        if (p[k - 1] != 0xCC) return t;      // 不是纯填充，原样返回
+        if (pe.hasFunction(t + k)) return t + k;
+    }
+    return t;
+}
+
 LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     const uint32_t ov = lookup_size_override(va);
     if (ov > size) {
@@ -1628,7 +1649,7 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                           << hexStr(next_rip) << "ULL);\n";
                 };
                 if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    uint64_t t = normalize_pad_target(pe, next_rip + (int64_t)ops[0].imm.value.s);
                     pushRet();
                     if (pe.hasFunction(t)) {
                         e.directCalls++;
@@ -2860,7 +2881,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                           << hexStr(next_rip) << "ULL);\n";
                 };
                 if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                    uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
+                    uint64_t t = normalize_pad_target(pe, next_rip + (int64_t)ops[0].imm.value.s);
                     pushRet();
                     if (pe.hasFunction(t)) {
                         e.directCalls++;
