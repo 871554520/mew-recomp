@@ -30,6 +30,8 @@ struct PeImage {
     const Section* byRva(uint32_t rva) const;
     const ImportSlot* importBySlot(uint64_t slot_va) const;
     bool hasFunction(uint64_t va) const;
+    // 取某条 .pdata 入口的声明长度；不是入口返回 0。
+    uint32_t functionSize(uint64_t va) const;
 };
 
 bool loadPe(const char* path, PeImage& out, std::string* err);

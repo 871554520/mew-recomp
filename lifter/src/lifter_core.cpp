@@ -32,6 +32,15 @@ bool PeImage::hasFunction(uint64_t va) const {
     return lo < functions.size() && functions[lo].first == va;
 }
 
+uint32_t PeImage::functionSize(uint64_t va) const {
+    size_t lo = 0, hi = functions.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (functions[mid].first < va) lo = mid + 1; else hi = mid;
+    }
+    return (lo < functions.size() && functions[lo].first == va) ? functions[lo].second : 0u;
+}
+
 bool loadPe(const char* path, PeImage& pe, std::string* err) {
     FILE* f = std::fopen(path, "rb");
     if (!f) { if (err) *err = "open failed"; return false; }
@@ -1120,6 +1129,42 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+    // ---- 把「共享序言/尾声」的相邻 .pdata 段并进来 ----
+    // MSVC 会把一个真实函数拆成几条 .pdata：只有第一段有 `sub rsp,N`，后面几段
+    // 直接往 [rsp+X] 存 callee-saved，再共用第一段的 `add rsp,N; ret`。
+    // 如果本函数里有一条 **jcc** 正好跳到紧邻的下一条 .pdata 入口，那就是这种拆分，
+    // 必须把那段并进来当成函数内标签；否则会被 emit 成
+    //     if (cond) return sub_T(ctx);
+    // —— 目标没有自己的序言却执行共享尾声，rsp 永久偏移。
+    // 实测（run 45959819326）：0x140be0a60 的 `jne 0x140be0a83` 就走到这条路径，
+    // ABI guard 报 target=0x140be0a83 caller=0x140be0a60 rsp_delta=48（0x28+8）。
+    // 只对「jcc + 紧邻 + 是 .pdata 入口」三个条件同时成立时生效，所以不会像
+    // 之前那版自动补长那样把无关的相邻函数吃进来（那版把 ARM64 stage4 跑成 segfault）。
+    for (int hop = 0; hop < 4; ++hop) {
+        const uint64_t nxt = va + effSize;
+        const uint32_t nsize = pe.functionSize(nxt);
+        if (!nsize) break;
+        bool jumps_in = false;
+        size_t p = 0;
+        ZydisDecodedInstruction i3;
+        ZydisDecodedOperand o3[ZYDIS_MAX_OPERAND_COUNT];
+        while (p < effSize) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, effSize - p, &i3, o3))) break;
+            const char* m3 = ZydisMnemonicGetString(i3.mnemonic);
+            const std::string lm = m3 ? m3 : "?";
+            if (lm.size() > 1 && lm[0] == 'j' && lm != "jmp" && i3.operand_count > 0 &&
+                o3[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                const uint64_t t = va + p + i3.length + (int64_t)o3[0].imm.value.s;
+                if (t == nxt) { jumps_in = true; break; }
+            }
+            p += i3.length;
+        }
+        if (!jumps_in) break;
+        std::fprintf(stderr, "[merge] 0x%llx 并入相邻入口 0x%llx（+%u 字节，共享序言/尾声）\n",
+                     (unsigned long long)va, (unsigned long long)nxt, nsize);
+        effSize = (uint32_t)((nxt + nsize) - va);
+    }
 
     // 预扫：线性解码能落到的指令起始地址（分支只能跳进这个集合，否则标签不存在）
     std::unordered_set<uint64_t> labelSet;
