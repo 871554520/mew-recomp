@@ -1,8 +1,9 @@
-# Mewgenics 阶段 5 · 未解决问题清单（2026-11-27 21:3x 收口版）
+# Mewgenics 阶段 5 · 未解决问题清单（2026-11-27 21:4x 合并终版）
 
 > 主线：**方案二（Windows exe 重编译，stage3 CI 迭代）**；iOS 路线 B 暂缓。
 > 阶段 5 判据：**仍未达成** —— `gpak` = 0、`CreateFileW` = 0。
 > 每项按 **现象 → 证据 → 根因 → 修法 → 验证状态** 组织；第 4 节是**已排除、不要再查**的方向。
+> 本版合并了两份草稿（线上实测口径来自 `小炸鱼`，静态/代码侧的判据来自本 bot），两份内容已对齐。
 
 ---
 
@@ -15,14 +16,14 @@
 - 三个 `0x140e39c0x` 调整器 thunk 的 FATAL 已消失；`0x140be07e4` vtable 标签已登记且能派发。
 - 规模：seeds 31,079 / total **76,812**（ok 76,355 · stubbed 456 · failed 1）。
 
-**在飞 / 未验证**：
+**远端与在飞**（21:4x 核对）：
 
-| 对象 | 内容 | 状态 |
-|---|---|---|
-| run `46005327501` | head `8ce7495`（SSE4.2 重写版） | lifter-build ✅、shim-syntax ✅；stage3 未出结论 |
-| `ce3192e` | pcmpestrm equal-ordered 改「前缀能比多少比多少」 | 未推（依赖下面那条 trigger） |
-| `31fab13` | 上面这条的 `.stage3-trigger` | **未推**：一推会 cancel 在跑的 `46005327501` |
-| `1dec451` | ff25 thunk 形状规则 + 本地单测 | 未验证（要到下一轮 stage3 的 `seeds.log`） |
+- 远端 `main` = `1dec451`（`31fab13..1dec451` 只动 `tools/`，无 trigger，没起新 run）。
+- **正在跑**：`46005752715`（head `31fab13`，pcmpestrm 前缀匹配版）——1–25 步全绿（`Compile all shards` / Gate 3 / Gate 1 / Stage 4 / Stage 5 run 全过），当前 26/29 `Stage 5b - reflow`，artifact 未上传。
+- 同 head 门禁：lifter-build `46005752640` ✅、shim-syntax `46005752513` ✅、arm64-verify `46005752893` ✅。
+- **被 cancel 的轮（不是失败）**：`46005327501`（`8ce7495`）被 `31fab13` 的 trigger 顶掉；`46002704286`（`dad286d`）被 `df7f774` 顶掉。真失败的只有 `46004499142`（`0f80e1e`）：16 步编译错误 = `c->af`。
+
+**基线**（下文的「上轮」都指它）：`45999239672`（head `d7dfde6`）——seeds 31,079 / total 76,812（ok 76,355 · stubbed 456 · failed 1）；`[extend]` 16 行 / 15 地址；`index=2339` 只跳 1 次、`main` 被补调 `argc=1`；调用环 144,245 帧；结尾 `ExitProcess(3)` + `0xE06D7363` ×5；UNIMPL API 2 条、UNIMPL FUNC 1 条（`0x140d1a1b0`）；FATAL `0x140bf4ff0` + `0x50934f50`；ABI 41 / rsp-repair 40 / abi-repair 40。
 
 ---
 
@@ -37,7 +38,7 @@
   - `0819698` 按 SDM 重写 `ptest` / `pcmpestrm` / `pcmpestri`：`a`=needle（长度 EAX）、`b`=haystack（EDX），位图按 haystack 下标；`CF=IntRes2≠0`、`ZF=|EDX|<上限`、`SF=|EAX|<上限`、`OF=IntRes2[0]`；`ptest` 的 CF 方向为 `(SRC2 & ~SRC1)==0`。
   - 同一提交修掉上一版草稿「从没编过」的两个硬错误：`c->af`（`X64Ctx` 只有 `zf/sf/cf/of/pf/df`）、helper 放错命名空间（定义在 `sse::avx`，发射的是 `sse::`）。
   - `ce3192e` 把 equal-ordered 从「必须整段装得下（`i+la<=lb`）」改成「能比多少比多少」：调用方拿到位图后 `bsr`→`btr` 逐个枚举候选，再对每个候选做完整 16 字节比对，只有在位图**包含部分前缀匹配**时这套重试才成立；严格 SDM 语义下 `la=lb=16` 只剩 bit0，重试循环退化。
-- **验证状态**：⏳ `46005327501` 只验到「能编、不再占位」；**前缀语义这一版还没跑**。判据：`0x140d1a1b0` 从 `UNIMPL FUNC` 表消失、`out_of_range`/`_Xran` 计数归零。
+- **验证状态**：编译 ✅（`46005752715` 1–25 步全绿，说明发射的调用被生成器吃到了）／**语义 ⏳**（前缀匹配版 `ce3192e` 就在这一轮里）。判据：`0x140d1a1b0` 从 `UNIMPL FUNC` 表消失、`out_of_range`/`_Xran` 归零。
 
 ### P0-2　两条 API 仍无实现：`KERNEL32!EnumSystemLocalesW`、`SHELL32!SHGetFolderPathW`
 
@@ -54,7 +55,8 @@
 - **证据**：16 字节 `48 85 c9 74 07 48 ff 25 f4 f6 7b 00 c3` = `test rcx,rcx` / `je +7` / `jmp qword [0x1413b46f0]` / `ret`；**不在任何 `.pdata` 区间**（前一条 `0x140bf4fb8..0x140bf4fbf`，下一条从 `0x140bf5000` 开始）；`0x140bf4fc0/4fd0/4fe0/4ff0` 是四个 16 字节一格、彼此无填充的兄弟桩。
 - **根因**：miner 的 ff25 规则只认「`48 85 /r` 守卫」这一种形态，纯 `48 ff 25` 尾跳（如 4fc0）不认；且兄弟桩会被「长度按下一个 seed 算」的区间吞掉，没有例外。
 - **修法**：`1dec451` 把形状判定抽成 `tools/thunk_shapes.py` 纯函数，认 A 纯尾跳 / B `test+je` 守卫 / C `jne` 反向守卫三种形态，槽按 16 对齐整段扫，槽尾必须落在 `c3/cc/00`；配 `tools/test_thunk_shapes.py` 8 例（含实拍字节与三个反例），本地 8/8 通过。
-- **验证状态**：⏳ 要等下一轮 stage3 的 `seeds.log`：`import-thunk` 候选数应比现在多（预期 ≥ +2），且 `0x140bf4ff0` 应出现在 `extra_seeds.txt` 里，不再依赖运行期 reflow。
+- **验证状态**：⏳ 要等下一轮 stage3 的 `seeds.log`：`import-thunk` 候选数应比现在多（预期 ≥ +2），`0x140bf4ff0`/`0x140bf4fc0` 应出现在 `extra_seeds.txt` 里。
+- **补充事实**：上一轮 `0x140bf4ff0` 只靠运行期 `discovered_entries.txt` + stage3b reflow 才进了第二遍构建（`stage3/manifest.tsv` 没有、`stage3b/manifest.tsv` 有）。`tools/` 改动本身不触发 run，所以要刻意安排一轮带 trigger 的 stage3 才验得到。
 
 ### P0-4　「把堆指针当函数调」：`0x50934f50`（in_fn=`0x140be0980` / `0x140bb067b`）
 
@@ -91,10 +93,12 @@
 
 ## 3. 工具与流程风险（长期约束，不是一次性问题）
 
-1. **单点令牌**：只有 `小炸鱼` 持可推主仓的 `GITHUB_WORKFLOW_TOKEN`；`PAT_B` 实测 401、`PAT_B2`/`PAT_B3` 不可用。→ 我无法自核远端状态，所有推送都经他转。
-2. **concurrency 会 cancel 在跑的轮**：任何带 `.stage3-trigger` 的提交都会顶掉正在跑的 stage3（`dad286d` 轮 `46002704286` 就是这么被 cancel 的）。→ trigger 提交必须等上一轮结束再推。
-3. **这台机器上 `git` 不可靠**：工作树与 HEAD 不同也会报「clean」（`0f80e1f` 那版「从没编过」的草稿就是这样躺着的）。→ 判定改动要用 `git ls-files -s` / `git hash-object` / `git show HEAD:<path>` 比 blob。
-4. **本地没有 C++ 编译器**：C++ 改动只能靠 `lifter-build` + stage3 的 `Compile all shards` 两道门。→ 语义改动尽量先用 Python 复刻逻辑做自测（`pcmp_core`、thunk 形状都这么做过）。
+1. **单点令牌 + 只能用 token-in-URL**：只有 `小炸鱼` 持可推主仓的 `GITHUB_WORKFLOW_TOKEN`；`PAT_B` 实测 401、`PAT_B2`/`PAT_B3` 不可用。而且推送只认 `https://x-access-token:<TOKEN>@github.com/...` 形式——`GIT_ASKPASS` 和 `~/.git-credentials` + `credential.helper=store` 在这台机器上都报 `Authentication failed`。
+2. **concurrency 会 cancel 在跑的轮**：任何带 `.stage3-trigger` 的提交都会顶掉正在跑的 stage3（今天两次：`46002704286`、`46005327501`）。→ trigger 提交必须等上一轮结束；想验新代码又不想顶轮，就先推不带 trigger 的提交，等窗口再推 trigger。
+3. **本机 `git status` 不可靠**：工作树与 HEAD 不同也会报 clean（`0f80e1f` 那版「从没编过」的草稿就是这样躺着的）。→ 判定改动用 `git ls-files -s` / `git hash-object` / `git show HEAD:<path>` 比 blob。
+4. **`ci-diag-stage3` 分支陈旧、免 token 取日志的通路实际失效**：最新 publish 停在 `7ce2c8e`（run `45888616405`，11-26 20:22），今天所有轮都没更新，尽管步骤 28 报 success。→ 判读只能从 artifact 拉。
+5. **artifact 直连会超时**：`curl` 两分钟无响应；要用 Python `urllib` 跟 302 Location + Range 1MB 分块重试。→ 这就是「明明有 artifact 却拉不下来」的原因。
+6. **本地没有 C++ 编译器**：C++ 改动只能靠 `lifter-build` + stage3 的 `Compile all shards` 两道门。→ 语义改动先用 Python 复刻逻辑自测（`pcmp_core`、thunk 形状都这么做）。
 
 ---
 
