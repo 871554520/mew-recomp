@@ -86,6 +86,16 @@ def main():
         if rh:
             print('   rehash 写回: ' + ', '.join(f'0x{a}{v}' for a, v in rh))
 
+    # 初始化器推进度：XC 表里那批初始化器集中在 0x14002xxxx，`_initterm` 的 call rax
+    # 返回地址固定是 0x140d6aef5，所以「最后出现的是哪个 0x14002xxxx」就是推进到哪一项。
+    inits = re.findall(r'FUNC sub_(0x14002[0-9a-f]{4})', err)
+    if inits:
+        uniq = sorted(set(inits))
+        print(f'\n== 初始化器推进度：{len(uniq)} 个不同 0x14002xxxx（最大 {uniq[-1]}）')
+        print(f'   最后 5 个: {", ".join(uniq[-5:])}')
+    else:
+        print('\n== 初始化器推进度：trace 里没出现 0x14002xxxx（还没走到 XC 表或没跑起来）')
+
     print('\n== 3. manifest 尺寸抽查（lift 之后的权威长度）')
     if manifest:
         size = {}
