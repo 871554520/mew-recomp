@@ -20,7 +20,10 @@ void sample_handler(int) {
     // （lift 出来的 L_xxx goto 循环不会产生新条目），环会完全冻结——
     // run 45978138365 就是这样：idx 卡在 12027、29 分钟一次都没动过，
     // 只剩最后一帧可看。所以采样必须同时打出**当前正在执行的函数**和最后一条内存指令。
-    std::fprintf(stderr, "[SAMPLE %d] cur_fn=0x%llx last_pc=0x%llx cur_rcx=0x%llx cur_rsp=0x%llx\n",
+    // 格式里必须带字面量 "[SAMPLE]"：run 46023439342 的 29 条采样全在日志里，
+    // 但因为写的是 "[SAMPLE 1]"（数字在括号内），`grep '\[SAMPLE\]'` 一条都搜不到，
+    // 排查时被误判成「采样没生效」。数字挪到括号外，两种 grep 都能命中。
+    std::fprintf(stderr, "[SAMPLE] #%d cur_fn=0x%llx last_pc=0x%llx cur_rcx=0x%llx cur_rsp=0x%llx\n",
                  ++tick, (unsigned long long)cur_fn_va(), (unsigned long long)last_mem_pc(),
                  cur_ctx_ptr() ? (unsigned long long)cur_ctx_ptr()->rcx : 0ULL,
                  cur_ctx_ptr() ? (unsigned long long)cur_ctx_ptr()->rsp : 0ULL);
