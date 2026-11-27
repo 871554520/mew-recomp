@@ -693,7 +693,7 @@ void shim_USER32_MessageBoxW(X64Ctx* c) {
     std::fprintf(stderr, "[shim] MessageBoxW: %s\n", guest_wstr(c, arg1(c)).c_str());
     ret0(c, 1);
 }
-void shim_USER32_GetSystemMetrics(X64Ctx* c) { ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
+void shim_USER32_GetSystemMetrics(X64Ctx* c) { mew_api_hit("GetSystemMetrics"); ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
 void shim_USER32_GetDesktopWindow(X64Ctx* c) { ret0(c, 1); }
 
 // ---------------- CRT / 时间补充 ----------------
@@ -1504,17 +1504,17 @@ void shim_USER32_CreateWindowExA(X64Ctx* c) { shim_USER32_CreateWindowExW(c); }
 void shim_USER32_RegisterClassW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_RegisterClassExW(X64Ctx* c) { mew_api_hit("RegisterClassExW"); (void)c; ret0(c, 1); }
 void shim_USER32_RegisterClassA(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_DestroyWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_DestroyWindow(X64Ctx* c) { mew_api_hit("DestroyWindow"); (void)c; ret0(c, 1); }
 void shim_USER32_IsWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_ShowWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_SetWindowPos(X64Ctx* c) {
+void shim_USER32_ShowWindow(X64Ctx* c) { mew_api_hit("ShowWindow"); (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowPos(X64Ctx* c) { mew_api_hit("SetWindowPos");
     // (hwnd, hWndInsertAfter, x, y, cx, cy, flags)：cx=第 5 个=arg4，cy=第 6 个=arg5
     const int cx = (int)arg4(c), cy = (int)arg5(c);
     if (cx > 0) win().w = cx;
     if (cy > 0) win().h = cy;
     ret0(c, 1);
 }
-void shim_USER32_GetClientRect(X64Ctx* c) {
+void shim_USER32_GetClientRect(X64Ctx* c) { mew_api_hit("GetClientRect");
     fill_rect(c, arg1(c), 0, 0, win().w, win().h);
     ret0(c, 1);
 }
@@ -1522,8 +1522,8 @@ void shim_USER32_GetWindowRect(X64Ctx* c) {
     fill_rect(c, arg1(c), 0, 0, win().w, win().h);
     ret0(c, 1);
 }
-void shim_USER32_GetDC(X64Ctx* c) { (void)c; ret0(c, kFakeHdc); }
-void shim_USER32_ReleaseDC(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_GetDC(X64Ctx* c) { mew_api_hit("GetDC"); (void)c; ret0(c, kFakeHdc); }
+void shim_USER32_ReleaseDC(X64Ctx* c) { mew_api_hit("ReleaseDC"); (void)c; ret0(c, 1); }
 void shim_USER32_GetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_GetActiveWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_SetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
@@ -1544,7 +1544,7 @@ void shim_USER32_GetWindowThreadProcessId(X64Ctx* c) {
 void shim_USER32_GetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetWindowTextA(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetWindowTextLengthW(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_USER32_SetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowTextW(X64Ctx* c) { mew_api_hit("SetWindowTextW"); (void)c; ret0(c, 1); }
 void shim_USER32_ScreenToClient(X64Ctx* c) { (void)c; ret0(c, 1); }   // 恒等变换
 void shim_USER32_ClientToScreen(X64Ctx* c) { (void)c; ret0(c, 1); }
 
@@ -1782,7 +1782,7 @@ void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) {
 // BOOL EnumDisplayMonitors(HDC, LPCRECT, MONITORENUMPROC, LPARAM)
 // 合成一次回调：回调是 guest 函数，调用方式与 runner 里 TLS 回调一致——
 // 先在栈上压一个 0 作返回哨兵（lift 出来的 ret 就是 rsp+=8; return），再 dispatch。
-void shim_USER32_EnumDisplayMonitors(X64Ctx* c) {
+void shim_USER32_EnumDisplayMonitors(X64Ctx* c) { mew_api_hit("EnumDisplayMonitors");
     const uint64_t cb = arg2(c);
     const uint64_t data = arg3(c);
     if (!cb) { ret0(c, 0); return; }
@@ -2000,7 +2000,7 @@ uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
 }  // namespace
 
 void shim_GDI32_ChoosePixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
-void shim_GDI32_SetPixelFormat(X64Ctx* c) { ret0(c, 1); }
+void shim_GDI32_SetPixelFormat(X64Ctx* c) { mew_api_hit("SetPixelFormat"); ret0(c, 1); }
 void shim_GDI32_GetPixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
 // BOOL DescribePixelFormat(HDC, int, UINT nBytes, LPPIXELFORMATDESCRIPTOR)
 void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
@@ -2019,15 +2019,15 @@ void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
 }
 void shim_GDI32_SwapBuffers(X64Ctx* c) { ret0(c, 1); }
 
-void shim_OPENGL32_wglCreateContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglCreateContext(X64Ctx* c) { mew_api_hit("wglCreateContext"); ret0(c, kFakeHglrc); }
 void shim_OPENGL32_wglCreateContextAttribsARB(X64Ctx* c) { ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglMakeCurrent(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglMakeCurrent(X64Ctx* c) { mew_api_hit("wglMakeCurrent"); ret0(c, 1); }
 void shim_OPENGL32_wglDeleteContext(X64Ctx* c) { ret0(c, 1); }
 void shim_OPENGL32_wglGetCurrentContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
 void shim_OPENGL32_wglGetCurrentDC(X64Ctx* c) { ret0(c, kFakeHdc); }
 void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { ret0(c, 1); }
 void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) {
+void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) { mew_api_hit("wglGetProcAddress");
     const char* name = (const char*)guest_ptr_from_ctx(c, arg0(c));
     ret0(c, (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0);
 }
