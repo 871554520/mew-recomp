@@ -47,6 +47,9 @@ void shim_KERNEL32_AppPolicyGetProcessTerminationMethod(X64Ctx*);
 void shim_KERNEL32_CloseHandle(X64Ctx*);
 void shim_KERNEL32_CreateEventW(X64Ctx*);
 void shim_KERNEL32_CreateFileW(X64Ctx*);
+void shim_KERNEL32_CreateFileA(X64Ctx*);
+void shim_KERNEL32_FindFirstFileExW(X64Ctx*);
+void shim_KERNEL32_GetFileAttributesExW(X64Ctx*);
 void shim_KERNEL32_CreateThread(X64Ctx*);
 void shim_KERNEL32_DecodePointer(X64Ctx*);
 void shim_KERNEL32_DeleteCriticalSection(X64Ctx*);
@@ -409,6 +412,44 @@ void shim_KERNEL32_CreateFileW(X64Ctx* c) {
     uint64_t h = HandleTable::instance().add(f);
     maybe_probe_gpak(f, h, path);
     ret0(c, h);
+}
+
+// CreateFileA：ANSI 版，语义与 W 版一致。原来没有垫片，落到自动弱桩返回 0，
+// 调用方会当成「打不开文件」——而这条路径在日志里连痕迹都没有。
+void shim_KERNEL32_CreateFileA(X64Ctx* c) {
+    std::string win = guest_wstr(c, arg0(c));            // 复用同一套 W 字符处理
+    std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
+    uint32_t access = (uint32_t)arg1(c);
+    const char* mode = (access & 0x40000000u) ? "wb+" : "rb";
+    FILE* f = std::fopen(path.c_str(), mode);
+    std::fprintf(stderr, "[shim] CreateFileA(\"%s\", 0x%x) = %p caller=0x%llx\n",
+                 path.c_str(), access, (void*)f, (unsigned long long)cur_fn_va());
+    (void)win;
+    if (!f) { ret0(c, (uint64_t)-1); return; }
+    ret0(c, HandleTable::instance().add(f));
+}
+
+// FindFirstFileExW：现代枚举入口，游戏完全可能只用它。先让它出声，
+// 并把调用环打出来（前 3 次），这样「游戏是否开始找资源」有据可查。
+void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) {
+    const std::string pattern = host_path_from_guest(c, arg0(c));
+    std::fprintf(stderr, "[shim] FindFirstFileExW(\"%s\", info=0x%llx) -> INVALID (stub) caller=0x%llx\n",
+                 pattern.c_str(), (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
+    static int traced = 0;
+    if (traced++ < 3) call_trace().dump("FindFirstFileExW stub");
+    ret0(c, (uint64_t)-1);
+}
+
+// GetFileAttributesExW：拿不到时返回 FALSE 并置 last error。
+// 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
+void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
+    const std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
+    FILE* f = std::fopen(path.c_str(), "rb");
+    const bool ok = f != nullptr;
+    if (f) std::fclose(f);
+    std::fprintf(stderr, "[shim] GetFileAttributesExW(\"%s\")=%s caller=0x%llx\n",
+                 path.c_str(), ok ? "TRUE" : "FALSE", (unsigned long long)cur_fn_va());
+    ret0(c, ok ? 1u : 0u);
 }
 
 void shim_KERNEL32_ReadFile(X64Ctx* c) {
@@ -1419,6 +1460,9 @@ RecompFn lookup_api(const char* name) {
         {"GetFileType", shim_KERNEL32_GetFileType},
         {"FlushFileBuffers", shim_KERNEL32_FlushFileBuffers},
         {"CreateFileW", shim_KERNEL32_CreateFileW},
+        {"CreateFileA", shim_KERNEL32_CreateFileA},
+        {"FindFirstFileExW", shim_KERNEL32_FindFirstFileExW},
+        {"GetFileAttributesExW", shim_KERNEL32_GetFileAttributesExW},
         {"GetFileAttributesW", shim_KERNEL32_GetFileAttributesW},
         {"SetEndOfFile", shim_KERNEL32_SetEndOfFile},
         {"GetModuleHandleExW", shim_KERNEL32_GetModuleHandleExW},
