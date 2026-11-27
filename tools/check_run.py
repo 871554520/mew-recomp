@@ -60,6 +60,8 @@ def main():
         print(f'      {t}: {fat.get(t, 0)}')
     reps = Counter(re.findall(r'\[rsp-repair\].*delta=(-?\d+)', err))
     print(f'   [rsp-repair] delta 分布：', dict(reps) if reps else '无')
+    abr = Counter(re.findall(r'\[abi-repair\] target=(0x[0-9a-f]+) caller=(0x[0-9a-f]+)', err))
+    print(f'   [abi-repair] 共 {sum(abr.values())} 条', dict(abr.most_common(5)) if abr else '')
     unimpl = Counter(re.findall(r'\[UNIMPL (?:API|FUNC)\] (\S+)', err))
     print(f'   UNIMPL distinct={len(unimpl)}', dict(unimpl.most_common(8)) if unimpl else '')
     print(f'   prefetchw              {count("prefetchw", err)}')

@@ -33,6 +33,7 @@ def metrics(d):
     m['dispatch_miss'] = c(r'Unmapped indirect target', err)
     m['ABI_VIOLATION'] = c(r'ABI VIOLATION', err)
     m['rsp_repair'] = c(r'\[rsp-repair\]', err)
+    m['abi_repair'] = c(r'\[abi-repair\]', err)
     m['SAFE'] = c(r'\[SAFE\]', err)
     m['RaiseException'] = c(r'RaiseException', err)
     m['ExitProcess'] = c(r'ExitProcess', err)
