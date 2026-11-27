@@ -2998,7 +2998,19 @@ void shim_KERNEL32_GetModuleHandleExA(X64Ctx* c) {
 void shim_KERNEL32_ExitProcess(X64Ctx* c) {
     std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
     call_trace().dump("ExitProcess");
-    std::exit((int)arg0(c));
+    // 真线程下不能用 std::exit：它会去析构静态对象（计数表/互斥量），
+    // 而 worker 线程此刻还在调 WakeAllConditionVariable -> mew_api_hit，
+    // 于是崩在 std::map 插入里（run 46068371903：
+    // [CRASH] signal=11 fault=0x0，栈 _Rb_tree_decrement <- std::map::operator[] <- mew_api_hit）。
+    // 正确收尾：① 先关计数闸门，worker 之后直接返回不再插入；
+    //           ② 等一小会让已经在锁里的插入跑完；
+    //           ③ 把 UNIMPL / API 两张表打出来（这是整轮唯一的出口，不能丢）；
+    //           ④ _exit 直接终止宿主进程，绕开所有静态析构。
+    mew_api_counting().store(false, std::memory_order_relaxed);
+    usleep(50000);
+    mew_unimpl_dump("exitprocess");
+    std::fflush(stderr);
+    _exit((int)(uint32_t)arg0(c));
 }
 
 void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {

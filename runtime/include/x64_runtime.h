@@ -13,6 +13,7 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <atomic>
 
 struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
 
@@ -899,16 +900,20 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
 // 长跑（rc=124 被 timeout 杀掉）时逐行打印会淹掉日志、也没法一眼看出「还差哪些 API」。
 // 所以每条占位同时记进聚合表，退出/收到 SIGTERM 前打一张按次数排序的表。
 inline std::mutex& mew_unimpl_mu() {
-    static std::mutex m;
-    return m;
+    // 永不析构：真线程（MEW_REAL_THREADS=1）下主线程走 ExitProcess -> std::exit 时，
+    // worker 可能还在调 mew_api_hit；静态对象一析构就崩在 map 插入里。
+    // run 46068371903 的 [CRASH] signal=11 fault=0x0 栈顶就是
+    // _Rb_tree_decrement <- std::map::operator[] <- mew_api_hit。
+    static std::mutex* m = new std::mutex();
+    return *m;
 }
 inline std::map<std::string, unsigned long long>& mew_unimpl_api_counts() {
-    static std::map<std::string, unsigned long long> m;
-    return m;
+    static auto* m = new std::map<std::string, unsigned long long>();
+    return *m;
 }
 inline std::map<unsigned long long, unsigned long long>& mew_unimpl_func_counts() {
-    static std::map<unsigned long long, unsigned long long> m;
-    return m;
+    static auto* m = new std::map<unsigned long long, unsigned long long>();
+    return *m;
 }
 
 inline void mew_unimpl_note_api(const char* name) {
@@ -929,10 +934,16 @@ inline void mew_unimpl_note_func(unsigned long long va) {
 // 这里对这些「调没调过比返回什么更重要」的 API 做独立计数，退出/收信号时和
 // UNIMPL 表一起打出来。
 inline std::map<std::string, unsigned long long>& mew_api_call_counts() {
-    static std::map<std::string, unsigned long long> m;
-    return m;
+    static auto* m = new std::map<std::string, unsigned long long>();
+    return *m;
+}
+// 退出闸门：ExitProcess 一进来就关掉，worker 之后不再插入（主线程随后打表 + _exit）。
+inline std::atomic<bool>& mew_api_counting() {
+    static auto* b = new std::atomic<bool>(true);
+    return *b;
 }
 inline void mew_api_hit(const char* name) {
+    if (!mew_api_counting().load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lk(mew_unimpl_mu());
     mew_api_call_counts()[name]++;
 }
