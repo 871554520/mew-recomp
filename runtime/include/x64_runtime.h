@@ -16,6 +16,10 @@
 
 struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
 
+// 运行时兜底桥（定义在 shims/win32_kernel32.cpp）：按 API 名直接执行垫片。
+// dispatch_indirect 遇到「未绑定的 IAT 槽」时把槽里的 RVA 解成 API 名，再经这里调用实现。
+extern "C" int mew_call_api_by_name(const char* name, X64Ctx* ctx);
+
 struct alignas(16) XmmReg {
     union {
         uint8_t  u8[16];
@@ -622,6 +626,44 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
         }
         tracer_done(trace_this, target_va, ctx);
         return;
+    }
+    // ---- 未绑定的 IAT 槽（P0-A）------------------------------------------
+    // `call qword [0x140e3f620]` 这种槽如果**没被 lifter 枚举到**（延迟导入、或描述符
+    // 被跳过），运行期读到的还是文件里的原值：一个指向 IMAGE_IMPORT_BY_NAME 的 RVA
+    // （实测 0x12e651a，落在 .rdata）。真值本应是函数指针，于是被当函数调 → FATAL/卡死。
+    // 这里把 RVA 反解成 API 名并按「未实现的导入」处理（返回 0、调用形态补弹返回地址），
+    // 既不再 abort，也让日志直接报出缺的是哪个 API。
+    {
+        static const uint64_t kImageBase = 0x140000000ULL;
+        if (ctx && target_va >= 0x1000 && target_va < kImageBase) {
+            char api[128] = {0};
+            const uint64_t name_va = kImageBase + target_va + 2;   // 跳过 WORD hint
+            if (guest_mapped(name_va, 1)) {
+                for (int i = 0; i < 127; ++i) {
+                    const char ch = (char)mem_read<uint8_t>(ctx, name_va + (uint64_t)i);
+                    if (!ch) break;
+                    api[i] = ch;
+                }
+            }
+            static int iat_logged = 0;
+            const bool handled = api[0] && mew_call_api_by_name(api, ctx) != 0;
+            if (iat_logged++ < 40)
+                std::fprintf(stderr,
+                             "[iat-unbound] slot_rva=0x%llx api=%s in_fn=0x%llx is_call=%d -> %s\n",
+                             (unsigned long long)target_va,
+                             api[0] ? api : "<unreadable>",
+                             (unsigned long long)cur_fn_va(), (int)is_call,
+                             handled ? "调用垫片" : "返回 0");
+            if (handled) {
+                if (is_call) ctx->rsp += 8;   // 与 lifter 改写路径一致：垫片返回后弹掉返回地址
+                tracer_done(trace_this, target_va, ctx);
+                return;
+            }
+            ctx->rax = 0;
+            if (is_call) ctx->rsp += 8;
+            tracer_done(trace_this, target_va, ctx);
+            return;
+        }
     }
     // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
     auto& v = dispatch_vas();
