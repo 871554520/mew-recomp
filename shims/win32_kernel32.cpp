@@ -1927,6 +1927,66 @@ void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
     ret0(c, 1);
 }
 
+// ---- P0-B：MSVC C++ 异常飞行记录器 --------------------------------------
+// 0xE06D7363 = MSVC C++ 异常。RaiseException 的参数里已经带了
+// magic / pExceptionObject / pThrowInfo / ImageBase，但旧日志只打了三个裸指针，
+// 看不出「抛的是哪个类、what() 是什么」，5 次异常里哪一次打死 main 就无从判断。
+// 这里按 x64 RTTI 布局把类型名和 what() 解出来（结构见 MSVC CRT 的 ThrowInfo）。
+namespace {
+struct MsvcThrowInfo {
+    uint32_t attributes, pmfnUnwind, pForwardCompat, pCatchableTypeArray;
+};
+struct MsvcCatchableTypeArray { int32_t n; uint32_t rva[1]; };
+struct MsvcCatchableType {
+    uint32_t properties, pType;
+    int32_t mdisp, pdisp, vdisp, sizeOrOffset;
+    uint32_t copyFunction;
+};
+
+std::string read_cstr(X64Ctx* c, uint64_t va, size_t cap = 96) {
+    std::string out;
+    if (!va || !guest_mapped(va, 1)) return out;
+    const char* p = (const char*)guest_ptr_from_ctx(c, va);
+    for (size_t i = 0; i < cap && p && p[i]; ++i) out.push_back(p[i]);
+    return out;
+}
+
+void dump_cxx_throw(X64Ctx* c, const uint64_t* p, uint32_t n) {
+    static int logged = 0;
+    if (logged++ >= 8) return;
+    const uint64_t obj = p[1], ti = p[2];
+    const uint64_t base = (n >= 4 && p[3]) ? p[3] : 0;
+    std::string type = "<unknown>";
+    if (guest_mapped(ti, sizeof(MsvcThrowInfo))) {
+        const MsvcThrowInfo* ti_p = (const MsvcThrowInfo*)guest_ptr_from_ctx(c, ti);
+        const uint64_t cta_va = base + ti_p->pCatchableTypeArray;
+        if (guest_mapped(cta_va, sizeof(MsvcCatchableTypeArray))) {
+            const MsvcCatchableTypeArray* cta = (const MsvcCatchableTypeArray*)guest_ptr_from_ctx(c, cta_va);
+            if (cta->n > 0) {
+                const uint64_t ct_va = base + cta->rva[0];
+                if (guest_mapped(ct_va, sizeof(MsvcCatchableType))) {
+                    const MsvcCatchableType* ct = (const MsvcCatchableType*)guest_ptr_from_ctx(c, ct_va);
+                    const uint64_t td_va = base + ct->pType;
+                    // TypeDescriptor: 前 16 字节两个指针，随后是修饰名
+                    if (guest_mapped(td_va + 16, 1)) {
+                        std::string nm = read_cstr(c, td_va + 16);
+                        if (!nm.empty()) type = nm;
+                    }
+                }
+            }
+        }
+    }
+    std::string what;
+    if (guest_mapped(obj + 8, 8)) {
+        const uint64_t w = mem_read<uint64_t>(c, obj + 8);   // std::exception::_What
+        what = read_cstr(c, w, 120);
+    }
+    std::fprintf(stderr, "[cxx-eh] #%d type=%s what=\"%.120s\" obj=0x%llx ti=0x%llx base=0x%llx\n",
+                 logged, type.c_str(), what.empty() ? "<n/a>" : what.c_str(),
+                 (unsigned long long)obj, (unsigned long long)ti, (unsigned long long)base);
+}
+}  // namespace
+
 void shim_KERNEL32_RaiseException(X64Ctx* c) {
     // RaiseException(Code, Flags, NumberParameters, lpExceptionInformation)
     const uint32_t code = (uint32_t)arg0(c);
@@ -1941,6 +2001,8 @@ void shim_KERNEL32_RaiseException(X64Ctx* c) {
     }
     std::fprintf(stderr, "[shim] RaiseException(code=0x%x, flags=0x%x, n=%u)\n",
                  code, flags, nparams);
+    if (code == 0xE06D7363u && nparams >= 3 && arg3(c))
+        dump_cxx_throw(c, reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c)), nparams);
     // C++ EH 依赖真正的两阶段派发：先走 .pdata 链条问 personality routine。
     // MEW_SEH_DISPATCH=1 时才真的调用 handler；否则只打印帧链（观测模式）。
     const uint64_t* params = nullptr;
