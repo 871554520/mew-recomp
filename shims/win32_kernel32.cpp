@@ -1656,15 +1656,6 @@ void shim_USER32_EnumClipboardFormats(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_IsClipboardFormatAvailable(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetClipboardSequenceNumber(X64Ctx* c) { (void)c; ret0(c, 0); }
 
-// ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
-namespace {
-
-struct DynApi { const char* name; RecompFn fn; };
-
-uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
-
-uint64_t synth_va_for(const char* name);
-
 // ---------------- 动态表剩余高频：绘制 / 输入 / 图标 / 注册表 / COM ----------------
 // 这 30 个在引擎动态表里出现、我们此前**完全没有实现**（走 UNIMPL 弱占位，
 // 一律 ret0 = 0）。对 Reg* 这类「0 = ERROR_SUCCESS」的 API 而言，返回 0 且不回填
@@ -2029,6 +2020,14 @@ void shim_USER32_SystemParametersInfoW(X64Ctx*);
 void shim_USER32_ToUnicode(X64Ctx*);
 void shim_USER32_TranslateMessage(X64Ctx*);
 void shim_USER32_UnhookWindowsHookEx(X64Ctx*);
+
+// ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
+namespace {
+
+struct DynApi { const char* name; RecompFn fn; };
+
+uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
+
 
 // 映射表：引擎/CRT 会 GetProcAddress 的常见入口
 RecompFn lookup_api(const char* name) {
