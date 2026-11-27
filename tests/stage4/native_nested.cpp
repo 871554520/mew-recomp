@@ -10,6 +10,20 @@
 
 void lifted_entry(X64Ctx* ctx);
 
+// 转译代码的「按名派发」路径始终引用 mew_call_api_by_name：dispatch_indirect 遇到
+// 未绑定的 IAT 槽时会把槽里的 RVA 解成 API 名再经它调用实现（x64_runtime.h:662）。
+// stage3 里这个定义由 shims/win32_kernel32.cpp 提供，而 nested PoC 的链接行不带垫片 TU，
+// 于是 8 个候选里有 5 个在链接期全灭（run 46065291572：
+// `undefined reference to mew_call_api_by_name`，其余 3 个败在编译期声明）。
+// 这里给一个 weak 兜底：返回 0 = 本 harness「未处理该 API」，语义上等价于
+// 「PoC 不跑垫片」，不会假装执行成功。weak 的好处是将来 harness 真把 shims 带进来时，
+// 强定义会自动覆盖它，不用再改测试。
+extern "C" __attribute__((weak)) int mew_call_api_by_name(const char* name, X64Ctx* ctx) {
+    (void)name;
+    (void)ctx;
+    return 0;
+}
+
 namespace {
 constexpr size_t kBufSize = 0x20000;
 constexpr size_t kBufBias = 0x8000;
