@@ -102,7 +102,13 @@ try:
         run = j - i
         if run >= 3 and j < limit and n_pad < 30000:
             va = text_start + j
-            if va % 16 == 0 and va not in known and va not in seeds and not _inside_known(va):
+            # 8 对齐就够了：MSVC 的「跳转 thunk 表」每项只有 8 字节
+            # （`e9 rel32` + 3 个 cc），表内第 2、3 项是 8 对齐但**不是** 16 对齐。
+            # run 45991101871 的三条 FATAL 里有两条正是这种中间项：
+            #   0x140d4cb38 (nearest_lo=0x140d4cb30 delta=8)
+            #   0x140d3eee8 (nearest_lo=0x140d3eee0 delta=8)
+            # 只认 16 对齐就会把它们漏掉，vtable 里换个槽位就是一次 FATAL。
+            if va % 8 == 0 and va not in known and va not in seeds and not _inside_known(va):
                 seeds.add(va)
                 n_pad += 1
         i = j
@@ -158,6 +164,26 @@ try:
 except Exception as exc:  # noqa: BLE001
     print('thunk scan failed:', exc)
 print('back-to-back thunk-entry candidates:', n_thunk)
+
+# 纯跳转 thunk 表：`e9 rel32` + 3 个 cc，每项 8 字节，表项之间**没有** cc 填充
+# （上一项末尾的 3 个 cc 就是下一项的「前置填充」，但如果表项是 5 字节紧凑排布，
+#  上一项后面就没有 cc 了）。这条规则按「e9 + 紧随 3 个 cc」精确匹配，8 对齐。
+n_jmp = 0
+try:
+    limit = len(text_bytes) - 8
+    for k in range(0, limit):
+        if text_bytes[k] != 0xE9:
+            continue
+        if text_bytes[k + 5:k + 8] != b'\xcc\xcc\xcc':
+            continue
+        va = text_start + k
+        if va % 8 or va in known or va in seeds or _inside_known(va):
+            continue
+        seeds.add(va)
+        n_jmp += 1
+except Exception as exc:  # noqa: BLE001
+    print('jmp-thunk scan failed:', exc)
+print('jmp-thunk (e9+ccc) candidates:', n_jmp)
 
 print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))

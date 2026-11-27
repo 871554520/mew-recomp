@@ -55,3 +55,7 @@
 # 所以 merge_shared_frame_size 的「jcc + 紧邻」判定抓不到，只能在这里显式登记。
 # 登记成 fragment 后，间接跳转才能命中，而不是 dispatch miss 后当场 return、把返回地址留在栈上。
 0x140bc5e04
+# run 45991101871 的 FATAL：0x140be07e4 (nearest_lo=0x140be07a0 delta=68)
+# 是 0x140be07a0 函数体内部的标签，但被当成函数指针存进了 vtable（外部间接调用），
+# 所以必须登记成 fragment；只按 .pdata 入口是找不到它的。
+0x140be07e4
