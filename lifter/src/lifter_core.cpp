@@ -949,6 +949,47 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                  "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i] = (uint32_t)(int32_t)(int8_t)s_.u8[i]; }\n";
         return true;
     }
+    // ---- pmulld：4 个 dword 相乘（stub_list: 12 个函数）----
+    if (mn == "pmulld") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg s_ = " << src << "; for (int i=0;i<4;++i) ctx->xmm[" << dx
+              << "].u32[i] = ctx->xmm[" << dx << "].u32[i] * s_.u32[i]; }\n";
+        return true;
+    }
+    // ---- cmpps/cmpss/cmppd/cmpsd：imm8 是谓词（0..7 legacy：eq/lt/le/unord/neq/nlt/nle/ord）----
+    // 结果写掩码：单精度 lane 写 0xFFFFFFFF，双精度 lane 写全 1。
+    // stub_list 里 cmpps 14 + cmpss 11 个函数只缺这条。
+    if (mn == "cmpps" || mn == "cmpss" || mn == "cmppd" || mn == "cmpsd") {
+        const unsigned pred = (unsigned)ops[2].imm.value.u & 7u;
+        const bool single = (mn == "cmpps" || mn == "cmpss");
+        const bool scalar = (mn == "cmpss" || mn == "cmpsd");
+        const int lanes = scalar ? 1 : (single ? 4 : 2);
+        const char* FT = single ? "f32" : "f64";
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg s_ = " << src << ";\n";
+        for (int i = 0; i < lanes; ++i) {
+            e.out << "    { double a_=(double)ctx->xmm[" << dx << "]." << FT << "[" << i << "];"
+                  << " double b_=(double)s_." << FT << "[" << i << "]; uint64_t m_;\n      ";
+            switch (pred) {
+                case 0: e.out << "m_ = (a_ == b_) ? ~0ULL : 0ULL;"; break;
+                case 1: e.out << "m_ = (a_ <  b_) ? ~0ULL : 0ULL;"; break;
+                case 2: e.out << "m_ = (a_ <= b_) ? ~0ULL : 0ULL;"; break;
+                case 3: e.out << "m_ = (a_ != a_ || b_ != b_) ? ~0ULL : 0ULL;"; break;
+                case 4: e.out << "m_ = (a_ != b_) ? ~0ULL : 0ULL;"; break;
+                case 5: e.out << "m_ = !(a_ <  b_) ? ~0ULL : 0ULL;"; break;
+                case 6: e.out << "m_ = !(a_ <= b_) ? ~0ULL : 0ULL;"; break;
+                default: e.out << "m_ = (a_ == a_ && b_ == b_) ? ~0ULL : 0ULL;"; break;
+            }
+            if (single) e.out << " ctx->xmm[" << dx << "].u32[" << i << "] = (uint32_t)m_; }\n";
+            else e.out << " ctx->xmm[" << dx << "].u64[" << i << "] = m_; }\n";
+        }
+        if (scalar) {
+            // 标量比较只改低 lane，高位从源 1 复制
+            e.out << "    ctx->xmm[" << dx << "].u64[1] = s_.u64[1];\n";
+        }
+        e.out << "  }\n";
+        return true;
+    }
     if (mn == "shufps") {
         uint8_t imm = (uint8_t)ops[2].imm.value.u;
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
@@ -1442,6 +1483,15 @@ static uint32_t lookup_size_override(uint64_t va) {
         // 只到 0x292（收尾 ret 之后）会漏掉它，补到 0x2a2 之外则没必要。
         // 该函数全 .text 没有一条 e8/e9 直接指向它（0 条），是纯间接/表调用。
         {0x140062450ULL, 0x29f},
+        // 0x1409694c0 / 0x1400e9070：chaininfo **嵌套回指**的拆段家族（续段指向中间续段），
+        // 按「直接回指」分组会裂成两个子组、两个子组都不连续，所以 chain 规则给不出 span，
+        // 首段只按 .pdata 的 0x38 / 0x48 被 lift，fall-through 到续段就变成 dispatch；
+        // 续段按独立函数执行、恢复不了外层帧 → run 46010953943 实测
+        //   [ABI VIOLATION] target=0x1409694f8 caller=0x1409694c0 rsp_delta=48
+        //   [ABI VIOLATION] target=0x1400e90b8 caller=0x1400e9070 rsp_delta=32
+        // 长度取「整族最后一段的 end」：0x9694c0..0x969676 = 0x1b6、0xe9070..0xe91cb = 0x15b。
+        {0x1409694c0ULL, 0x1b6},
+        {0x1400e9070ULL, 0x15b},
         // 0x140c11370 这条白名单**已删除**：它会把 chaininfo 家族截断在 0x140c11be6，
         // 而 0x140c11be6..0x140c11c5c 是同族的续段（flags=4，chain 回指首段）。
         // 续段被单独当函数调用时 rsp 语义不成立（它依赖外层已压的帧），
@@ -3508,8 +3558,6 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
     std::unordered_map<uint32_t, uint32_t> own_end;   // .pdata 入口 -> 自己的 EndAddress
     for (const auto& en : ents) own_end[en.b] = en.e;
 
-    // 续段 -> 它 chaininfo 直接回指的那一段
-    std::unordered_map<uint32_t, uint32_t> chain_of;
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> pieces;
     for (const auto& en : ents) {
         const Section* us = pe.byRva(en.u);
@@ -3526,39 +3574,8 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
         const size_t qoff = (size_t)qs->raw + (size_t)(qrva - qs->va);
         if (qoff + 12 > pe.data.size()) continue;
         uint32_t cb = 0;
-        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress
-        chain_of[en.b] = cb;
-    }
-    // **嵌套回指**：MSVC 的拆段家族里，续段既可能直接回指真正的首段，也可能回指
-    // 另一个续段。实测 0x1409694f8 家族（run 46010953943 的两条残余 ABI 违规就是它）：
-    //   0x1409694f8 chain->0x1409694c0
-    //   0x14096950c chain->0x1409694f8   ← 指向中间段
-    //   0x140969600 chain->0x1409694f8
-    //   0x140969656 chain->0x1409694c0
-    // 按「直接回指」分组会切成两个子组，两个子组各自都不连续 → 真首段 0x1409694c0
-    // 拿不到 span（只有 .pdata 的 0x38），fall-through 到 0x1409694f8 就变成
-    // dispatch，续段按独立函数执行 → rsp_delta=48 的 ABI 违规；而中间段 0x1409694f8
-    // 反倒拿到 350 字节的 span，等于从函数中间 lift 了 350 字节。
-    // 所以必须顺着 chain 一路追到**根**（自身不带 chaininfo 的那一段）再分组。
-    const auto root_of = [&](uint32_t b) -> uint32_t {
-        std::unordered_set<uint32_t> seen;
-        for (int hop = 0; hop < 8; ++hop) {
-            auto it = chain_of.find(b);
-            if (it == chain_of.end()) return b;
-            if (!seen.insert(b).second) return 0;           // 环：放弃这一条
-            b = it->second;
-        }
-        return 0;                                           // 过深：放弃
-    };
-    for (const auto& kv : chain_of) {
-        if (kv.first == kv.second) continue;
-        const uint32_t root = root_of(kv.first);
-        if (!root) continue;
-        auto oe = own_end.find(root);
-        auto ce = own_end.find(kv.first);
-        if (oe == own_end.end() || ce == own_end.end()) continue;
-        if (kv.first == root) continue;
-        pieces[root].push_back({kv.first, ce->second});
+        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress = 首段
+        pieces[cb].push_back({en.b, en.e});
     }
 
     for (auto& kv : pieces) {

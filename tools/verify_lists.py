@@ -82,6 +82,11 @@ KNOWN_SPAN_EXCEPTIONS = {
     # 0x140062450：五条 .pdata 首尾相接，但**全都没有 CHAININFO**（flags=1 EHANDLER），
     # 首段 `ja` 直接跳到第 5 段，所以必须整段补长（逐段核过，见 lifter_core.cpp 注释）。
     0x140062450,
+    # 0x1409694c0 / 0x1400e9070：chaininfo **嵌套回指**（续段指向中间续段），
+    # 按直接回指分组会裂成两个不连续的子组，所以 chain 规则给不出 span；
+    # 逐段核过整族最后一段的 end（0x969676 / 0xe91cb）后整族补长。
+    0x1409694c0,
+    0x1400e9070,
 }
 
 
