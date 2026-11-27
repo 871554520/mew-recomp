@@ -1089,7 +1089,8 @@ std::string shimSym(const ImportSlot& im) { return "shim_" + im.dll + "_" + im.n
 // 返回 true 时 *out_targets 是所有落在 .text 内的表项目标；是否全在本函数范围内
 // 由调用方判定（两处调用方各有自己的 va/effSize）。
 static bool matchRvaJumpTable(const PeImage& pe, uint64_t jmp_rip, uint8_t jmp_len, int jmp_reg,
-                              std::vector<uint64_t>* out_targets, int* out_idx_reg) {
+                              std::vector<uint64_t>* out_targets, int* out_idx_reg,
+                              uint64_t* out_table) {
     const int kBack = 32;                     // 往回最多看 32 字节（够 `mov`+`add`）
     if (jmp_rip < pe.image_base + 8) return false;
     ZydisDecoder dec;
@@ -1158,6 +1159,7 @@ static bool matchRvaJumpTable(const PeImage& pe, uint64_t jmp_rip, uint8_t jmp_l
             if (targets.size() < 2) continue;
             if (out_targets) *out_targets = targets;
             if (out_idx_reg) *out_idx_reg = gprId(o1[1].mem.index);
+            if (out_table) *out_table = tbl;
             return true;
         }
     }
@@ -1756,19 +1758,30 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                 const int jr = gprId(ops[0].reg.value);
                 std::vector<uint64_t> jt;
                 int jt_idx = -1;
+                uint64_t jt_tbl = 0;
                 if (jr >= 0 &&
-                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx) && jt_idx >= 0) {
+                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx, &jt_tbl) && jt_idx >= 0) {
                     bool jt_ok = true;
                     for (auto t : jt) {
                         if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
                     }
                     if (jt_ok) {
+                        // default 分支**不能**写 UNIMPL：表我可能只解析到前 N 项（遇到 0 或越界值
+                        // 就停），而调用方的 `cmp/ja` 守卫范围可能比 N 大，落在这段区间的索引
+                        // 以前是靠 dispatch 正常工作的。所以 default 按原语义**当场重算目标**
+                        // （image_base + 32 位表项）再派发，行为与改造前完全一致。
                         e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
                                  "    switch (ix) {\n";
                         for (size_t k = 0; k < jt.size(); ++k)
                             e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
-                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-oor\");\n"
+                        e.out << "      default: {\n"
+                                 "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
+                              << hexStr(jt_tbl) << "ULL + ix * 4);\n"
+                                 "        if (!jt_slot) { UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-zero\"); }\n"
+                                 "        dispatch_indirect(0x" << hexStr(pe.image_base)
+                              << "ULL + jt_slot, ctx); return;\n"
+                                 "      }\n"
                                  "    }\n"
                                  "  }\n";
                         jt_done = true;
@@ -2685,7 +2698,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                     const int jr = gprId(ops[0].reg.value);
                     std::vector<uint64_t> jt;
                     int jt_idx = -1;
-                    if (jr >= 0 && matchRvaJumpTable(pe, cur, insn.length, jr, &jt, &jt_idx)) {
+                    uint64_t jt_tbl = 0;
+                    if (jr >= 0 &&
+                        matchRvaJumpTable(pe, cur, insn.length, jr, &jt, &jt_idx, &jt_tbl)) {
                         bool all_in = true;
                         for (auto t : jt) if (t < va || t >= va + size) { all_in = false; break; }
                         if (all_in)
@@ -3060,19 +3075,30 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                 const int jr = gprId(ops[0].reg.value);
                 std::vector<uint64_t> jt;
                 int jt_idx = -1;
+                uint64_t jt_tbl = 0;
                 if (jr >= 0 &&
-                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx) && jt_idx >= 0) {
+                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx, &jt_tbl) && jt_idx >= 0) {
                     bool jt_ok = true;
                     for (auto t : jt) {
                         if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
                     }
                     if (jt_ok) {
+                        // default 分支**不能**写 UNIMPL：表我可能只解析到前 N 项（遇到 0 或越界值
+                        // 就停），而调用方的 `cmp/ja` 守卫范围可能比 N 大，落在这段区间的索引
+                        // 以前是靠 dispatch 正常工作的。所以 default 按原语义**当场重算目标**
+                        // （image_base + 32 位表项）再派发，行为与改造前完全一致。
                         e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
                                  "    switch (ix) {\n";
                         for (size_t k = 0; k < jt.size(); ++k)
                             e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
-                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-oor\");\n"
+                        e.out << "      default: {\n"
+                                 "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
+                              << hexStr(jt_tbl) << "ULL + ix * 4);\n"
+                                 "        if (!jt_slot) { UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-zero\"); }\n"
+                                 "        dispatch_indirect(0x" << hexStr(pe.image_base)
+                              << "ULL + jt_slot, ctx); return;\n"
+                                 "      }\n"
                                  "    }\n"
                                  "  }\n";
                         jt_done = true;
