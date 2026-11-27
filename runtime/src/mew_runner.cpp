@@ -33,6 +33,7 @@ void sample_handler(int) {
 
 void timeout_handler(int) {
     std::fprintf(stderr, "\n[TIMEOUT] terminated by watchdog\n");
+    mew_ind_dump();          // 卡死前最后 64 条间接调用（MEW_TRACE_IND=1 才有内容）
     call_trace().dump("timeout");
     // 聚合表放在最末：workflow 只 tail 40 行，这张表要落在尾巴上才看得见
     mew_unimpl_dump("timeout");
@@ -47,6 +48,7 @@ void crash_handler(int sig, siginfo_t* si, void*) {
                  (unsigned long long)(uintptr_t)si->si_addr, n);
     backtrace_symbols_fd(bt, n, 2);
     // 崩溃时把最近 64 层调用环打出来：哪个 guest 函数、rcx 是什么、谁调的
+    mew_ind_dump();
     call_trace().dump("crash");
     std::fflush(stderr);
     _exit(139);

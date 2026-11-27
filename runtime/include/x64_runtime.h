@@ -486,6 +486,43 @@ inline void tracer_done(bool on, uint64_t target, X64Ctx* c) {
                  (unsigned long long)c->rdi);
 }
 
+// ---- 间接调用环形缓冲（MEW_TRACE_IND=1）----
+// 为什么不是「前 300 行」：卡死发生在 29 分钟之后，前 300 行全被开头几分钟的
+// 普通间接调用占满，反而拿不到卡死那一次。这里只保留**最后 64 条**，
+// 由 mew_ind_dump() 在 timeout/崩溃时吐出来。
+struct IndRec { uint64_t target, caller; uint8_t is_call, in_tbl; };
+inline IndRec* mew_ind_ring() {
+    static IndRec buf[64];
+    return buf;
+}
+inline uint64_t& mew_ind_head() {
+    static uint64_t h = 0;
+    return h;
+}
+inline void mew_ind_note(uint64_t target, uint64_t caller, bool is_call, bool in_tbl) {
+    IndRec* b = mew_ind_ring();
+    const uint64_t h = mew_ind_head();
+    b[h & 63].target = target;
+    b[h & 63].caller = caller;
+    b[h & 63].is_call = is_call ? 1 : 0;
+    b[h & 63].in_tbl = in_tbl ? 1 : 0;
+    mew_ind_head() = h + 1;
+}
+inline void mew_ind_dump() {
+    const uint64_t h = mew_ind_head();
+    if (!h) return;
+    const uint64_t n = h < 64 ? h : 64;
+    std::fprintf(stderr, "[indring] 最近 %llu 条间接调用/跳转（共 %llu 条）:\n",
+                 (unsigned long long)n, (unsigned long long)h);
+    for (uint64_t i = 0; i < n; ++i) {
+        const IndRec& r = mew_ind_ring()[(h - n + i) & 63];
+        std::fprintf(stderr, "[indring] target=0x%llx caller=0x%llx is_call=%d in_tbl=%d\n",
+                     (unsigned long long)r.target, (unsigned long long)r.caller,
+                     (int)r.is_call, (int)r.in_tbl);
+    }
+    std::fflush(stderr);
+}
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
     const bool trace_this = mew_trace_caller() && cur_fn_va() == mew_trace_caller();
     const uint64_t t_rsp0 = ctx ? ctx->rsp : 0;
@@ -502,8 +539,9 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     // shim 的对象完全不同，所以先把实际值打出来。最多 300 行，避免刷爆日志。
     if (const char* ti = std::getenv("MEW_TRACE_IND")) {
         if (ti[0] == '1') {
+            mew_ind_note(target_va, cur_fn_va(), is_call, it != tbl.end());
             static int ind_logged = 0;
-            if (ind_logged < 300) {
+            if (ind_logged < 20) {
                 ++ind_logged;
                 std::fprintf(stderr, "[ind] #%d target=0x%llx caller=0x%llx is_call=%d in_tbl=%d\n",
                              ind_logged, (unsigned long long)target_va,
