@@ -31,6 +31,8 @@ def main():
     # [merge]/[extend] 是 **lifter 阶段**打的，落在 shards.log（stage3 那一步
     # `--shards 64 ... 2>&1 | tee generated/shards.log`），不在 runner.err 里。
     shards = load(d, 'shards.log')
+    # manifest 是「lift 之后」的权威视图：每条形如 `0x<va>\t<size>\t<shard>`。
+    manifest = load(d, os.path.join('stage3', 'manifest.tsv'))
     print(f'== artifact: {d}')
     print(f'   runner.err {len(err)}B  runner_nosafe.err {len(nosafe)}B  runner.out {len(out)}B  hot_functions {len(hot)}B  shards.log {len(shards)}B')
 
@@ -64,7 +66,33 @@ def main():
     print(f'   ABI VIOLATION          {count(r"ABI VIOLATION", err)}')
     print(f'   CRASH                  {count(r"\[CRASH\]", err)}   TIMEOUT {count(r"\[TIMEOUT\]", err)}   LIVELOCK {count(r"LIVELOCK", err)}')
 
-    print('\n== 3. lifted C++ 抽查（hot_functions.txt）')
+    print('\n== 3. manifest 尺寸抽查（lift 之后的权威长度）')
+    if manifest:
+        size = {}
+        for line in manifest.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 2 and parts[0].startswith('0x'):
+                try:
+                    size[parts[0].lower()] = int(parts[1])
+                except ValueError:
+                    pass
+        # 期望值写在注释里，方便一眼对照
+        want = {
+            '0x1409b5230': '21   main 包装器（要进派发表，MEW_CALL_MAIN 才调得动）',
+            '0x1403862d0': '443  白名单补长后 0x1bb（旧 43）',
+            '0x140be0a60': '120  合并后 0x78（旧 0x23=35）',
+            '0x140386180': '336  rehash 算桶数',
+            '0x140385f80': '503  insert(range) 本体',
+            '0x140d6aef5': '?     SEH 恢复点 fragment',
+            '0x140d6aedd': '?     _initterm 循环头 fragment',
+        }
+        for va, note in want.items():
+            got = size.get(va)
+            print(f'   {va} = {got if got is not None else "缺"}   ({note})')
+    else:
+        print('   manifest.tsv 不在 artifact 里')
+
+    print('\n== 4. lifted C++ 抽查（hot_functions.txt）')
     if hot:
         for va in ('140385f80', '140386180', '140386250', '1403862d0'):
             print(f'   sub_{va}: {"有" if ("void sub_"+va) in hot else "缺"}')
