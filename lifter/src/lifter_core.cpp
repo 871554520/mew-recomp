@@ -1129,6 +1129,31 @@ static uint32_t lookup_size_override(uint64_t va) {
         //   保持和 present 版本一样的「段外 jcc」处理，不把 bb16 那个 call+int3 桩并进来，
         //   免得 int3 进预扫把整个函数判成 UNIMPL。
         {0x14004ba20ULL, 0xf6},
+        // ── 同一族的「热点批」（2026-11-27 18:5x，按 tools/scan_split_functions.py 的
+        //    证据批量补长）：这几条都是 chaininfo 拆段家族、各段连续、首段末尾 fall-through，
+        //    而且**直接调用者极多**（括号里是 e8 直接调用点数，全 .text 扫出来的）：
+        //      0x140048010(3399) vector::push_back  ← 增长路径 0x140048032 整段落在段外，
+        //                                          现在只有「不增长」那条路是对的
+        //      0x1400520d0(1349) string::assign/append（SSO 0xf 那套）
+        //      0x140051350(1175) string 按区间赋值
+        //      0x140bd88b0(430) 0x140051920(412) 0x140830770(360) 0x140052640(307)
+        //      0x140051b80(296) 0x14004b930(250) 0x1400490d0(245)
+        //      0x14004c850(14)  = 0x14004ba20 的 fill 兄弟（`_Fill_unchecked`），
+        //                         被 14 处直接调用，少它 assign/string 的填充永远不生效
+        //    共同后果和 0x14004ba20 一样：段外 fall-through 走 `dispatch_indirect`，
+        //    下一段在没有本段序言/尾声的帧里执行 → 寄存器/栈错位，而且**不崩**，
+        //    只是结果悄悄不对。补齐后整段是一个函数，jcc 全部变成本地标签。
+        {0x140048010ULL, 0x8f},
+        {0x1400520d0ULL, 0x10c},
+        {0x140051350ULL, 0xb9},
+        {0x140bd88b0ULL, 0xef},
+        {0x140051920ULL, 0x160},
+        {0x140830770ULL, 0x1ba},
+        {0x140052640ULL, 0x8b},
+        {0x140051b80ULL, 0xea},
+        {0x14004b930ULL, 0xeb},
+        {0x1400490d0ULL, 0x150},
+        {0x14004c850ULL, 0x84},
     };
     auto it = m.find(va);
     return it == m.end() ? 0u : it->second;
