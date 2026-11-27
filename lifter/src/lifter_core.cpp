@@ -289,7 +289,8 @@ static bool is_noop_insn(const std::string& mn) {
     return mn == "sfence" || mn == "lfence" || mn == "mfence" ||
            mn == "fwait" || mn == "wait" || mn == "fnop" ||
            mn == "fnclex" || mn == "finit" || mn == "fninit" ||
-           mn == "clflush" || mn == "clflushopt" || mn == "cldemote";
+           mn == "clflush" || mn == "clflushopt" || mn == "cldemote" ||
+           mn == "sti" || mn == "cli";
 }
 
 static bool is_xmm_reg(const ZydisDecodedOperand& o) {
@@ -734,10 +735,59 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         }
         return true;
     }
+    // ---- movhpd / movlpd：只动一个 64 位半区（stub_list: movhpd 10 个函数）----
+    if (mn == "movhpd" || mn == "movlpd") {
+        const bool high = (mn == "movhpd");
+        if (is_xmm_reg(ops[0]) && ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            e.out << "  ctx->xmm[" << dx << "].u64[" << (high ? 1 : 0) << "] = g_u64("
+                  << addrExpr(pe, ops[1], next_rip, e) << ");\n";
+            return true;
+        }
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            e.out << "  g_st64(" << addrExpr(pe, ops[0], next_rip, e) << ", ctx->xmm["
+                  << xmmId(ops[1].reg.value) << "].u64[" << (high ? 1 : 0) << "]);\n";
+            return true;
+        }
+        return false;
+    }
+    // ---- 非临时 16 字节存储（movntps/movntpd/movntdq）----
+    if (mn == "movntps" || mn == "movntpd" || mn == "movntdq") {
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            std::string a = addrExpr(pe, ops[0], next_rip, e);
+            const int sx = xmmId(ops[1].reg.value);
+            e.out << "  g_st64(" << a << ", ctx->xmm[" << sx << "].u64[0]);\n"
+                     "  g_st64(" << a << " + 8ULL, ctx->xmm[" << sx << "].u64[1]);\n";
+            return true;
+        }
+        return false;
+    }
+    // ---- VEX 标量搬移 vmovsd/vmovss（2 操作数：低 lane 赋值 + 高位清零）----
+    if ((mn == "vmovsd" || mn == "vmovss") && insn.operand_count == 2) {
+        const bool sd = (mn == "vmovsd");
+        const char* FT = sd ? "f64" : "f32";
+        if (is_xmm_reg(ops[0])) {
+            std::string src = is_xmm_reg(ops[1])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]." + FT + "[0]")
+                : (sd ? ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")")
+                      : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")"));
+            e.out << "  ctx->xmm[" << dx << "]." << FT << "[0] = " << src << ";\n"
+                     "  ctx->xmm[" << dx << "].u64[1] = 0ULL;\n";
+            return true;
+        }
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            const std::string a = addrExpr(pe, ops[0], next_rip, e);
+            const int sx = xmmId(ops[1].reg.value);
+            if (sd) e.out << "  g_st64(" << a << ", ctx->xmm[" << sx << "].u64[0]);\n";
+            else e.out << "  g_st32(" << a << ", ctx->xmm[" << sx << "].u32[0]);\n";
+            return true;
+        }
+        return false;
+    }
     // ---- AVX / VEX（128 位与 256 位）----
     // 语义全部在 runtime/include/x64_sse_helpers.h 的 avx::* 里实现（含 VEX 128 位
     // 写清零高半的规矩），生成代码只发一次函数调用，减少 codegen 出错面。
     if (mn == "vmovdqa" || mn == "vmovdqu" || mn == "vmovaps" || mn == "vmovups" ||
+        mn == "vmovapd" || mn == "vmovupd" || mn == "vmovntps" || mn == "vmovntpd" ||
         mn == "vmovntdq" || mn == "vmovntdqa") {
         const int bytes = (ops[0].size == 256) ? 32 : 16;
         if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
