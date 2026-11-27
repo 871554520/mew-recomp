@@ -3692,6 +3692,18 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         if (blocks.count(next_rip)) {
             e.out << "  goto L_" << hexStr(next_rip) << ";\n";
         } else {
+            // 诊断：走到这里意味着**函数末尾没有以 ret 收尾**——lift 出来的代码
+            // 会 dispatch 到 next_rip 然后 return，被调方压的返回地址留在栈上。
+            // 运行期表现就是 `[rsp-repair] target=… delta=0 -> 8`
+            // （run 46023439342 里 target=0x140be0980 正是这么来的）。
+            // 生成期打一行，shards.log 里就能看到哪些函数是「走掉」的。
+            static int walkoff_logged = 0;
+            if (walkoff_logged < 300) {
+                ++walkoff_logged;
+                std::fprintf(stderr, "[walkoff] fn=0x%llx rip=0x%llx next=0x%llx\n",
+                             (unsigned long long)va, (unsigned long long)rip,
+                             (unsigned long long)next_rip);
+            }
             e.out << "  dispatch_indirect(0x" << hexStr(next_rip) << "ULL, ctx); return;\n";
         }
     }
