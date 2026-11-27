@@ -84,6 +84,17 @@ static inline uint64_t x64_clz(uint64_t v, int bits) {
     if (bits == 64) return (uint64_t)__builtin_clzll(v);
     return (uint64_t)(__builtin_clzll(v) - (64 - bits));
 }
+// BSR 与 LZCNT 不是一回事：
+//   bsr  = "从高位往低位扫，最高的 1 在第几位"（bit index，0 起）
+//   lzcnt/clz = "前面有几个 0"
+// 之前 bsr 被映射到 x64_clz，于是 0x0FFFFFFFFFFFFFFF 得到 4 而不是 59，
+// 随后 `shl rax,cl` 把 1<<59 算成 1<<4=16，`cmp rdx,rax / ja` 于是把
+// 合法的 newcount=64 判成非法，抛 length_error("invalid hash bucket count")。
+static inline uint64_t x64_bsr(uint64_t v, int bits) {
+    if (!v) return (uint64_t)bits;          // 未定义，按 0 处理（上层只用来算移位量）
+    return (uint64_t)((bits - 1) - (int)x64_clz(v, bits));
+}
+
 static inline uint64_t x64_popcnt(uint64_t v, int bits) {
     (void)bits;
     return (uint64_t)__builtin_popcountll(v);

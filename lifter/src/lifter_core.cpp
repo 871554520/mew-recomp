@@ -1046,13 +1046,61 @@ static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
 
 }  // namespace
 
-LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags);
+LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags);
+
+// 找到「第一条收尾指令（ret/jmp）之后」的偏移；找不到或没超过声明长度就返回 size。
+// 用途：MSVC 会把一个函数的冷块单独列一条 .pdata，于是主块那条 .pdata 的 size
+// 会**短于真实函数体**。实测 0x1403862d0：.pdata 说 43 字节，真实到 0x14038647d（ret），
+// 中间缺的正是 std::_Hash 的 rehash 主体（_Vec.assign + mask/_Maxidx 写回 + 重链循环）。
+// 按 43 字节收尾的后果不只是「rehash 变成空操作」，更糟的是
+// `push rdi / sub rsp,0x20` 配不到对应的 `add rsp,0x20 / pop rdi`，
+// **guest 的 rsp 会永远低 0x20**，返回后所有 [rsp+off] 局部变量全部错位。
+static uint32_t extendToTerminator(const PeImage& pe, uint64_t va, uint32_t size) {
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return size;
+    const uint32_t secOff = (uint32_t)(va - pe.image_base - sec->va);
+    if (secOff >= sec->rawsize) return size;
+    const uint8_t* code = pe.data.data() + sec->raw + secOff;
+    uint32_t avail = sec->rawsize - secOff;
+    uint32_t limit = size + 0x400;
+    if (limit > avail) limit = avail;
+    if (limit <= size) return size;
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    uint32_t p = 0, term = 0;
+    while (p < limit) {
+        ZydisDecodedInstruction ins;
+        ZydisDecodedOperand o[ZYDIS_MAX_OPERAND_COUNT];
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, limit - p, &ins, o))) break;
+        const char* m = ZydisMnemonicGetString(ins.mnemonic);
+        const std::string lm = m ? m : "?";
+        p += ins.length;
+        if (lm == "ret" || lm == "jmp") { term = p; break; }
+    }
+    return (term > size) ? term : size;
+}
+
+LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+    LiftResult r1 = liftLinearExCore(pe, va, size, flags);
+    if (r1.ok && !r1.fallsOffEnd) return r1;
+    const uint32_t ext = extendToTerminator(pe, va, size);
+    if (ext > size) {
+        LiftResult r2 = liftLinearExCore(pe, va, ext, flags);
+        if (r2.ok) {
+            std::fprintf(stderr, "[extend] 0x%llx %u -> %u bytes（%s）\n",
+                         (unsigned long long)va, size, ext,
+                         r1.ok ? "原本 fallsOffEnd" : "原本 lift 失败");
+            return r2;
+        }
+    }
+    return r1;
+}
 
 LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
     return liftLinearEx(pe, va, size, 0);
 }
 
-LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     LiftResult res;
     const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
     if (!sec) { res.unsupported.push_back("no-section"); return res; }
@@ -1267,7 +1315,8 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
             int w = ops[0].size / 8;
             std::string src = valExpr(pe, insn, ops[1], next_rip, e);
             std::string fn = (mn == "bsf" || mn == "tzcnt") ? "x64_ctz"
-                           : (mn == "bsr" || mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
+                           : (mn == "bsr") ? "x64_bsr"
+                           : (mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
             storeExpr(pe, insn, ops[0], fn + "(" + src + ", " + std::to_string(w * 8) + ")", next_rip, w, e);
             if (mn == "bsf" || mn == "bsr") {
                 e.out << "  (void)sub_flags(ctx," << src << ",0ULL," << w << ");\n";
@@ -2492,7 +2541,8 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             int w = ops[0].size / 8;
             std::string src = valExpr(pe, insn, ops[1], next_rip, e);
             std::string fn = (mn == "bsf" || mn == "tzcnt") ? "x64_ctz"
-                           : (mn == "bsr" || mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
+                           : (mn == "bsr") ? "x64_bsr"
+                           : (mn == "lzcnt") ? "x64_clz" : "x64_popcnt";
             storeExpr(pe, insn, ops[0], fn + "(" + src + ", " + std::to_string(w * 8) + ")", next_rip, w, e);
             if (mn == "bsf" || mn == "bsr") {
                 e.out << "  (void)sub_flags(ctx," << src << ",0ULL," << w << ");\n";
