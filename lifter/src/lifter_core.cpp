@@ -2368,9 +2368,17 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                         e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx, true);\n";
                     }
                 } else {
-                    pushRet();
+                    // 操作数是内存形式时**必须先取值再压栈**：先 pushRet 会把 rsp 减 8，
+                    // 再用 rsp 当基址算 `[rsp+disp]` 就整整差 8 字节。
+                    // run 46051381022 的 `[indring] target=0x58 caller=0x140be0980` 就是它：
+                    // 0x140be0980 的 `call [rsp+0x38]` 被翻译成「push 之后读 [rsp+0x30]」，
+                    // 读到的正是入口处 `mov [rsp+8],rdx` 存下的 rdx=0x58；
+                    // 真正的函数指针（填槽例程写的 0x140c11d10）被错过，改去打垃圾地址。
                     e.indirectCall = true;
-                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
+                    e.out << "  { const uint64_t _tgt = "
+                          << valExpr(pe, insn, ops[0], next_rip, e) << ";\n";
+                    pushRet();
+                    e.out << "    dispatch_indirect(_tgt, ctx, true); }\n";
                 }
             }
         } else if (mn == "loop" || mn == "loope" || mn == "loopne") {
@@ -3720,9 +3728,17 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         e.out << "  dispatch_indirect(mem_read<uint64_t>(ctx,0x" << hexStr(slot) << "ULL), ctx, true);\n";
                     }
                 } else {
-                    pushRet();
+                    // 操作数是内存形式时**必须先取值再压栈**：先 pushRet 会把 rsp 减 8，
+                    // 再用 rsp 当基址算 `[rsp+disp]` 就整整差 8 字节。
+                    // run 46051381022 的 `[indring] target=0x58 caller=0x140be0980` 就是它：
+                    // 0x140be0980 的 `call [rsp+0x38]` 被翻译成「push 之后读 [rsp+0x30]」，
+                    // 读到的正是入口处 `mov [rsp+8],rdx` 存下的 rdx=0x58；
+                    // 真正的函数指针（填槽例程写的 0x140c11d10）被错过，改去打垃圾地址。
                     e.indirectCall = true;
-                    e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx, true);\n";
+                    e.out << "  { const uint64_t _tgt = "
+                          << valExpr(pe, insn, ops[0], next_rip, e) << ";\n";
+                    pushRet();
+                    e.out << "    dispatch_indirect(_tgt, ctx, true); }\n";
                 }
             }
         } else if (mn == "loop" || mn == "loope" || mn == "loopne") {
