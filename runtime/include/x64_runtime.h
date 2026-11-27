@@ -474,10 +474,16 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
     if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
         static int logged = 0;
         if (logged < 20) {
-            std::fprintf(stderr, "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx\n",
+            std::fprintf(stderr,
+                         "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
-                         (unsigned long long)mew_guest_ret(ctx));
+                         (unsigned long long)mew_guest_ret(ctx),
+                         (unsigned long long)ctx->rax, (unsigned long long)ctx->rcx,
+                         (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
+                         (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
+                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp);
             if (logged < 3) call_trace().dump("safe-mem");
             ++logged;
         }
@@ -500,10 +506,16 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
     if (mew_safe_mem() && !guest_mapped(guest_addr, sizeof(T))) {
         static int logged = 0;
         if (logged < 20) {
-            std::fprintf(stderr, "[SAFE] unmapped write addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx\n",
+            std::fprintf(stderr,
+                         "[SAFE] unmapped write addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
-                         (unsigned long long)mew_guest_ret(ctx));
+                         (unsigned long long)mew_guest_ret(ctx),
+                         (unsigned long long)ctx->rax, (unsigned long long)ctx->rcx,
+                         (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
+                         (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
+                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp);
             if (logged < 3) call_trace().dump("safe-mem-w");
             ++logged;
         }
