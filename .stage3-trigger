@@ -35,3 +35,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-28T01:2xZ  [walkoff] 诊断 + 关键 VA 生成代码 dump + 关 SKIP_INIT 对照
 2026-11-28T02:0xZ  pcmp 三处语义修复 + cxx-eh 飞行记录器 + ff25 审计（等主线 46042045237 结束后推）
 2026-11-27T19:0xZ  EDEADLK 修复 + INFINITE 返回 TRUE + IAT 兜底收紧
+2026-11-27T19:1xZ  前置声明恢复 + SRW try-lock + INFINITE TRUE
