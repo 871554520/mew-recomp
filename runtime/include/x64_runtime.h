@@ -164,6 +164,7 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
                 mew_probe_qword("[fn:rcx+0x88]", (CTX)->rcx + 0x88);              \
                 mew_probe_qword("[fn:rdx]", (CTX)->rdx);                          \
                 for (uint64_t _a : mew_trace_mem()) mew_probe_qword("[mem]", _a); \
+                mew_probe_chain("[fn:[[rcx]]]", (CTX)->rcx);                      \
             }                                                                     \
         }                                                                         \
     } while (0)
@@ -728,6 +729,30 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
 }
 
 // 读一个 guest 指针指向的 qword；不可映射时打印 n/a
+// 读 [va] 得到指针 p，再依次打印 p、[p]、[p+8]、[p+0x10]。
+// 用来一次看清「容器 -> 节点头 -> 节点三个字段」这条链（0x140d6a8b4 就是这么走的）。
+inline void mew_probe_chain(const char* tag, uint64_t va) {
+    if (!va || !guest_mapped(va, 8) || !cur_ctx_ptr()) {
+        std::fprintf(stderr, "    %s=0x%llx -> n/a\n", tag, (unsigned long long)va);
+        return;
+    }
+    uint64_t p = 0;
+    std::memcpy(&p, reinterpret_cast<void*>(va + cur_ctx_ptr()->mem_bias), 8);
+    std::fprintf(stderr, "    %s: ptr=0x%llx\n", tag, (unsigned long long)p);
+    if (!p) return;
+    for (int i = 0; i < 3; ++i) {
+        uint64_t at = p + (uint64_t)i * 8;
+        if (!guest_mapped(at, 8)) {
+            std::fprintf(stderr, "    %s: [0x%llx] -> n/a\n", tag, (unsigned long long)at);
+            continue;
+        }
+        uint64_t v = 0;
+        std::memcpy(&v, reinterpret_cast<void*>(at + cur_ctx_ptr()->mem_bias), 8);
+        std::fprintf(stderr, "    %s: [0x%llx] = 0x%016llx\n", tag,
+                     (unsigned long long)at, (unsigned long long)v);
+    }
+}
+
 inline void mew_probe_qword(const char* tag, uint64_t va) {
     if (!va || !guest_mapped(va, 8) || !cur_ctx_ptr()) {
         std::fprintf(stderr, "    %s=0x%llx -> n/a\n", tag, (unsigned long long)va);
