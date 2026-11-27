@@ -106,24 +106,35 @@ jobs:
       - name: Mine hidden entries (.reloc + GFIDS)
         run: |
           python3 tools/mine_hidden_entries.py Mewgenics.exe generated/pe_meta.json generated/extra_seeds.txt 2>&1 | tee generated/seeds.log
-          # 已知的「函数中间标签」兜底：MSVC 会把 memcpy/memset 这类例程编成
-          # 「间接跳转到本函数内部的 case 标签」。这些地址不是函数，运行时才能发现，
-          # 而 runtime_seeds 只反馈上一轮 build 的结果，追不上同一轮里新走到的路径
-          # （实测二次构建仍在 0x140dab860 内部 0x140dab88e/0x140dab8c8 上空转 93 万次）。
-          # 静态表里放已经踩过的标签，两轮 build 都带上。
-          if [ -s tools/known_internal_labels.txt ]; then
-            grep -E '^0x[0-9a-fA-F]+$' tools/known_internal_labels.txt \
-              | tee -a generated/extra_seeds.txt >/dev/null
-            echo "known internal labels merged: $(grep -cE '^0x[0-9a-fA-F]+$' tools/known_internal_labels.txt)"
-          fi
-          sort -u generated/extra_seeds.txt -o generated/extra_seeds.txt
           wc -l generated/extra_seeds.txt || true
+
+      # 「函数中间标签」= 跳转表的 case。这些地址落在已翻译函数的内部，
+      # 必须走 --seeds-inside（addExtraEntriesAllowInside），走 --seeds 会被
+      # addExtraEntriesImpl 的 inside_known 判断直接丢掉。
+      # 注意区分：跳转表 case 原地以 ret 收尾，弹的是调用者的返回地址，作为独立
+      # 入口是正确的；而共享尾声（add rsp,0x20; pop rbx; ret）作为入口会错位，
+      # 那种由 lifter 的 LIFT_FRAGMENT 在所属函数内处理，不要往这里塞。
+      - name: Mine jump-table case labels (inside-function entries)
+        run: |
+          python3 tools/mine_jump_tables.py Mewgenics.exe generated/jump_table_labels.txt 2>&1 | tee generated/jump_tables.log
+          : > generated/inside_seeds.txt
+          if [ -s generated/jump_table_labels.txt ]; then
+            grep -E '^0x[0-9a-fA-F]+$' generated/jump_table_labels.txt >> generated/inside_seeds.txt || true
+          else
+            echo "WARN: jump table miner produced no labels"
+          fi
+          if [ -s tools/known_internal_labels.txt ]; then
+            grep -E '^0x[0-9a-fA-F]+$' tools/known_internal_labels.txt >> generated/inside_seeds.txt || true
+          fi
+          sort -u generated/inside_seeds.txt -o generated/inside_seeds.txt
+          grep -vc '^#' generated/inside_seeds.txt || true
 
       - name: Generate 64 shards + dispatch table + shims
         run: |
           mkdir -p generated/stage3
           ./build/mew_lifter --shards 64 --out-dir generated/stage3 --exe Mewgenics.exe \
-            --seeds generated/extra_seeds.txt 2>&1 | tee generated/shards.log
+            --seeds generated/extra_seeds.txt \
+            --seeds-inside generated/inside_seeds.txt 2>&1 | tee generated/shards.log
           du -sh generated/stage3
           ls generated/stage3 | head
           head -3 generated/stage3/manifest.tsv
@@ -385,9 +396,13 @@ jobs:
           test -s generated/runtime_seeds.txt || echo "WARN: no runtime seeds this round (nothing discovered)"
           cat generated/extra_seeds.txt generated/runtime_seeds.txt | sort -u > generated/all_seeds.txt
           echo "all seeds: $(wc -l < generated/all_seeds.txt)"
+          # 二次构建的 --seeds-inside = 静态挖出的跳转表 case + 上一轮运行期发现的入口。
+          # 两者都必须走 inside 通道，否则落在函数体内的会被静默丢掉。
+          cat generated/inside_seeds.txt generated/runtime_seeds.txt | sort -u > generated/all_inside.txt
+          echo "all inside seeds: $(wc -l < generated/all_inside.txt)"
           mkdir -p generated/stage3b
           ./build/mew_lifter --shards 64 --out-dir generated/stage3b --seeds generated/all_seeds.txt \
-              --seeds-inside generated/runtime_seeds.txt --exe Mewgenics.exe 2>&1 | tail -6
+              --seeds-inside generated/all_inside.txt --exe Mewgenics.exe 2>&1 | tail -6
           python3 tools/build_stage3.py \
             --src-dir generated/stage3b --obj-dir build-stage3b \
             --archive build-stage3b/libmew_recomp.a --jobs "$(nproc)" --opt=-O0 2>&1 | tail -6

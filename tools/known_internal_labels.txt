@@ -1,23 +1,22 @@
-# 已知的「函数中间标签」（不是函数入口，是被间接跳转命中的 case 标签）
+# 已知的「函数中间标签」（不是函数入口，是被间接跳转命中的目标）
 #
-# 背景：MSVC 会把 memcpy/memset 这类例程编成
-#     cmp/jmp 一张表 → jmp [表+索引] 跳到**本函数内部**的偏移
-# 我们的 dispatcher 只认函数入口，命中不了就记录一条 miss 并当场 return，
-# 于是被调函数走不到自己的 ret，返回地址滞留在栈上（详见 d286ae3 的栈纪律修复）。
+# 大部分标签由 tools/mine_jump_tables.py 从跳转表**静态挖出**（每次构建自动生成
+# generated/jump_table_labels.txt），不用维护在这里。这个文件只留静态挖不到的那几个。
 #
-# runtime_seeds 只能反馈「上一轮 build 跑出来的 miss」，追不上同一轮里新走到的路径；
-# 这个静态表放已经踩过的标签，stage3 会把它并进 seeds，两轮 build 都带上。
+# 机制回顾：MSVC 把 memcpy/memset 这类长度分派例程编成
+#     lea r10,[__ImageBase]
+#     cmp r8,0xf ; ja big
+#     mov r9d,[r10+rax*4+TABLE] ; add r9,r10 ; jmp r9
+# 目标落在**本函数内部**，我们的 dispatcher 只认函数入口 → 命中不了 → 记 miss
+# 并当场 return → 被调函数走不到自己的 ret → 返回地址滞留栈上 → 上层收尾寄存器
+# 整体错位一格（rbx 被读成返回地址，见 d286ae3）。
 #
-# 来源：discovered_entries.txt（runtime 记录）
-#   0x140d6adc8  caller 0x140d3e654   （CFG guard 蹦床后真正的目标）
-#   0x140dac177  caller 0x140dabfe0   memset 内部 case
-#   0x140dac332  caller 0x140dabfe0   memset 内部 case（run 45937873457 实证）
-#   0x140dab88e  caller 0x140dab860   memcpy 内部 case（二次构建实证，delta 46）
-#   0x140dab8c8  caller 0x140dab860   memcpy 内部 case（二次构建实证，delta 104）
+# 这些地址必须通过 `--seeds-inside` 进入（addExtraEntriesAllowInside）；
+# 走 `--seeds` 会被 addExtraEntriesImpl 的 inside_known 判断静默丢弃。
 #
-# 每行一个 0x 开头的 VA；注释和空行会被忽略。
+# 注意不要往这里塞「共享尾声」（add rsp,0x20; pop rbx; ret 这类）：
+# 那种入口会跳过 prologue 导致栈错位，只能由 lifter 的 LIFT_FRAGMENT 在函数内处理。
+#
+# 来源：discovered_entries.txt（runtime 记录，非跳转表类）
+#   0x140d6adc8  caller 0x140d3e654   CFG guard 蹦床之后真正的目标
 0x140d6adc8
-0x140dac177
-0x140dac332
-0x140dab88e
-0x140dab8c8
