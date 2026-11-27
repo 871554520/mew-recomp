@@ -2116,6 +2116,8 @@ void shim_OPENGL32_glViewport(X64Ctx* c) { ret0(c, 0); }
 
 // ---- 动态表登记的 159 个符号：定义散落在本文件各处，这里统一前置声明 ----
 void shim_GDI32_CreateCompatibleDC(X64Ctx*);
+void shim_GDI32_CreateDCW(X64Ctx*);
+void shim_GDI32_CreateDCA(X64Ctx*);
 void shim_GDI32_CreateFontIndirectW(X64Ctx*);
 void shim_GDI32_DeleteDC(X64Ctx*);
 void shim_GDI32_DeleteObject(X64Ctx*);
@@ -2525,6 +2527,8 @@ RecompFn lookup_api(const char* name) {
         {"CompareStringA", shim_KERNEL32_CompareStringA},
         {"CompareStringW", shim_KERNEL32_CompareStringW},
         {"CreateCompatibleDC", shim_GDI32_CreateCompatibleDC},
+        {"CreateDCW", shim_GDI32_CreateDCW},
+        {"CreateDCA", shim_GDI32_CreateDCA},
         {"CreateDirectoryW", shim_KERNEL32_CreateDirectoryW},
         {"CreateFontIndirectW", shim_GDI32_CreateFontIndirectW},
         {"CreateIconFromResource", shim_USER32_CreateIconFromResource},
@@ -3199,6 +3203,18 @@ constexpr uint64_t kFakeDC = 0x7FFE0001E000ULL;
 constexpr uint64_t kFakeFont = 0x7FFE0002F000ULL;
 inline void put_i32(X64Ctx* c, uint64_t addr, int32_t v) { std::memcpy(guest_ptr_from_ctx(c, addr), &v, 4); }
 }  // namespace
+
+// run 46070229625 的 UNIMPL API TABLE 里，真线程轮唯一被调到的图形相关缺项就是
+// GDI32!CreateDCW（1 次，返回 0）。initGraphics 在建 GL 上下文之前要先拿设备 DC，
+// 拿不到就等于图形初始化第一步就失败——而 appmain 的返回值正是 3。
+// 这里返回一个假 HDC（和 kFakeHdc 一致），让 GetDeviceCaps / wgl 那条链能继续走。
+void shim_GDI32_CreateDCW(X64Ctx* c) {
+    mew_api_hit("CreateDCW");
+    std::fprintf(stderr, "[shim] CreateDCW(...) -> fake hdc=0x%llx caller=0x%llx\n",
+                 (unsigned long long)kFakeHdc, (unsigned long long)cur_fn_va());
+    ret0(c, kFakeHdc);
+}
+void shim_GDI32_CreateDCA(X64Ctx* c) { mew_api_hit("CreateDCA"); ret0(c, kFakeHdc); }
 
 void shim_GDI32_CreateCompatibleDC(X64Ctx* c) {
     static int logged = 0;
