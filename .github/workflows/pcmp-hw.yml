@@ -20,24 +20,20 @@ jobs:
           import importlib.util
           spec = importlib.util.spec_from_file_location('m', 'tools/test_pcmp_semantics.py')
           m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-          out = ['#include <smmintrin.h>', '#include <stdio.h>', 'static int fails;']
-          out.append('static void ck(const char* n, const unsigned char* a, const unsigned char* b, int la, int lb, int imm, unsigned model, int allow_diff){')
-          out.append('  __m128i va=_mm_loadu_si128((const __m128i*)a), vb=_mm_loadu_si128((const __m128i*)b);')
-          out.append('  __m128i r=_mm_cmpestrm(va, la, vb, lb, imm);')
-          out.append('  unsigned hw=(unsigned)_mm_extract_epi16(r,0)&0xffffu;')
-          out.append('  const char* tag=(hw==model)?"MATCH":(allow_diff?"DIFF-ALLOWED":"MISMATCH");')
-          out.append('  if(hw!=model && !allow_diff) ++fails;')
-          out.append('  printf("case %-42s hw=0x%04x model=0x%04x %s\\n", n, hw, model, tag);')
-          out.append('}')
-          out.append('int main(void){')
+          out = ['#include <smmintrin.h>', '#include <stdio.h>', 'static int fails;', 'int main(void){']
           for name,a,b,nA,nB,imm,want in m.CASES:
               pa=(a+b'\x00'*16)[:16]; pb=(b+b'\x00'*16)[:16]
               model=m.pcmp_core(pa,pb,nA,nB,imm)
               allow=1 if '前缀' in name else 0
               ba=','.join(str(x) for x in pa); bb=','.join(str(x) for x in pb)
               nc=name.replace('"','\\"')
-              out.append(f'  {{ static const unsigned char a[16]={{{ba}}}; static const unsigned char b[16]={{{bb}}};')
-              out.append(f'    ck("{nc}", a, b, {nA}, {nB}, 0x{imm:02x}, 0x{model:04x}u, {allow}); }}')
+              out.append('  { static const unsigned char a[16]={%s}; static const unsigned char b[16]={%s};' % (ba,bb))
+              out.append('    __m128i va=_mm_loadu_si128((const __m128i*)a), vb=_mm_loadu_si128((const __m128i*)b);')
+              out.append('    __m128i r=_mm_cmpestrm(va, %d, vb, %d, 0x%02x);' % (nA,nB,imm))
+              out.append('    unsigned hw=(unsigned)_mm_extract_epi16(r,0)&0xffffu, model=0x%04xu;' % model)
+              out.append('    const char* tag=(hw==model)?"MATCH":(%d?"DIFF-ALLOWED":"MISMATCH");' % allow)
+              out.append('    if(hw!=model && !%d) ++fails;' % allow)
+              out.append('    printf("case %%-42s hw=0x%%04x model=0x%%04x %%s\\n", "%s", hw, model, tag); }' % nc)
           out.append('  printf("\\nfails=%d\\n", fails);')
           out.append('  return fails ? 1 : 0;')
           out.append('}')
