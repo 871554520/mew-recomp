@@ -2054,6 +2054,13 @@ void shim_OPENGL32_glGetString(X64Ctx* c) { mew_api_hit("glGetString");
         default: ix = 5; break;
     }
     if (!cache[ix]) cache[ix] = gl_new_cstr(c, gl_string_for(nm));
+    // 把 pname 和返回内容打出来：initGraphics 里的 "This game requires OpenGL 3.2
+    // or higher" 就在这里判，GL_EXTENSIONS 现在返回空串，引擎只要 strstr 查扩展
+    // 就会失败——到底是查版本还是查扩展，看这几行就知道。
+    static int logged = 0;
+    if (logged++ < 24)
+        std::fprintf(stderr, "[shim] glGetString(0x%04x) -> \"%s\" caller=0x%llx\n",
+                     nm, gl_string_for(nm), (unsigned long long)cur_fn_va());
     ret0(c, cache[ix]);
 }
 void shim_OPENGL32_glGetIntegerv(X64Ctx* c) { mew_api_hit("glGetIntegerv");
