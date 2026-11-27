@@ -527,12 +527,6 @@ inline void mew_ind_dump() {
     std::fflush(stderr);
 }
 
-// 前置声明：下面 dispatch_indirect 的「未绑定 IAT 槽」分支要用 guest_mapped / mem_read，
-// 而它们的定义在文件更后面（shim-syntax 门禁 run 46047193129 报的就是这里）。
-inline bool guest_mapped(uint64_t addr, size_t n);
-template <typename T>
-inline T mem_read(X64Ctx* ctx, uint64_t guest_addr);
-
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
     const bool trace_this = mew_trace_caller() && cur_fn_va() == mew_trace_caller();
     const uint64_t t_rsp0 = ctx ? ctx->rsp : 0;
@@ -626,9 +620,6 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
             std::fprintf(stderr,
                          "[api] indirect call target=0（未解析的导入）in_fn=0x%llx is_call=%d -> 当作返回 0\n",
                          (unsigned long long)cur_fn_va(), (int)is_call);
-        // 前三次把调用环尾巴打出来：`call [rsp+0x38]` 这种站点的"0"到底是谁传下来的，
-        // 只有看调用链才知道（run 46047307348 的三次视频初始化失败全靠这条定位）。
-        if (null_logged <= 3) call_trace().dump("null-target");
         if (ctx) {
             ctx->rax = 0;
             if (is_call) ctx->rsp += 8;
@@ -644,7 +635,9 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     // 既不再 abort，也让日志直接报出缺的是哪个 API。
     {
         static const uint64_t kImageBase = 0x140000000ULL;
-        if (ctx && target_va >= 0x1000 && target_va < kImageBase) {
+        // 只把「像映像内 RVA」的值当未绑定 IAT 槽：堆指针(如 0x50934f30)也小于 image base，
+        // 用 64 MB 上限把它们排除（实测 RVA 0x12e651a ≈ 19.8 MB）。
+        if (ctx && target_va >= 0x1000 && target_va < 0x4000000ULL) {
             char api[128] = {0};
             const uint64_t name_va = kImageBase + target_va + 2;   // 跳过 WORD hint
             if (guest_mapped(name_va, 1)) {
@@ -663,10 +656,6 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
                              api[0] ? api : "<unreadable>",
                              (unsigned long long)cur_fn_va(), (int)is_call,
                              handled ? "调用垫片" : "返回 0");
-            // api=<unreadable> 说明目标既不是镜像 RVA 也不是函数指针，而是**从栈/堆上读来的
-            // 垃圾值**（实测 0x58 / 0x2 / 0x50934f30 / 0x7f34793ff700）。前三次打调用环，
-            // 才能看出是谁把这种东西当函数指针传下来的。
-            if (!api[0] && iat_logged <= 3) call_trace().dump("bad-pointer");
             if (handled) {
                 if (is_call) ctx->rsp += 8;   // 与 lifter 改写路径一致：垫片返回后弹掉返回地址
                 tracer_done(trace_this, target_va, ctx);
@@ -1056,28 +1045,10 @@ inline void mew_probe_qword(const char* tag, uint64_t va) {
                  (unsigned long long)v);
 }
 
-// __fastfail 的 ecx 子码（附录 E / The Old New Thing）。0xC0000409 只是外壳，
-// 真正原因在子码里；垫片里同时打印名字，避免被 STATUS_STACK_BUFFER_OVERRUN 误导。
-inline const char* mew_fastfail_name(unsigned code) {
-    switch (code) {
-        case 0: return "LEGACY_GS_VIOLATION";
-        case 1: return "VTGUARD_CHECK_FAILURE";
-        case 2: return "STACK_COOKIE_CHECK_FAILURE";
-        case 3: return "CORRUPT_LIST_ENTRY";
-        case 4: return "INCORRECT_STACK";
-        case 5: return "INVALID_ARG";
-        case 6: return "GS_COOKIE_INIT";
-        case 7: return "FATAL_APP_EXIT";
-        case 8: return "RANGE_CHECK_FAILURE";
-        default: return "UNKNOWN";
-    }
-}
-
 #define MEW_FASTFAIL(CTX, RIP, CODE)                                             \
     do {                                                                         \
-        std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x name=%s in_fn=0x%llx\n", \
+        std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x in_fn=0x%llx\n",     \
                      (unsigned long long)(RIP), (unsigned)(CODE),                \
-                     mew_fastfail_name((unsigned)(CODE)),                        \
                      (unsigned long long)cur_fn_va());                           \
         std::fprintf(stderr, "    rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx\n", \
                      (unsigned long long)(CTX)->rcx, (unsigned long long)(CTX)->rdx,     \
