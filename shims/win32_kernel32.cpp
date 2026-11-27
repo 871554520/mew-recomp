@@ -52,6 +52,10 @@ void shim_KERNEL32_CreateFileA(X64Ctx*);
 void shim_KERNEL32_FindFirstFileExW(X64Ctx*);
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx*);
 void shim_KERNEL32_CreateThread(X64Ctx*);
+// steam_api64 三个（定义在文件末尾的强符号，覆盖 shims_auto.cpp 的弱占位）
+void shim_STEAM_API64_SteamAPI_RestartAppIfNecessary(X64Ctx*);
+void shim_STEAM_API64_SteamInternal_SteamAPI_Init(X64Ctx*);
+void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx*);
 void shim_KERNEL32_DecodePointer(X64Ctx*);
 void shim_KERNEL32_DeleteCriticalSection(X64Ctx*);
 void shim_KERNEL32_EncodePointer(X64Ctx*);
@@ -1431,6 +1435,10 @@ RecompFn lookup_api(const char* name) {
         {"CompareStringEx", shim_KERNEL32_CompareStringEx},
         {"LCMapStringEx", shim_KERNEL32_LCMapStringEx},
         {"AreFileApisANSI", shim_KERNEL32_AreFileApisANSI},
+        // steam_api64：GetProcAddress 也会问这三个名字（0x1409b5380 走的就是动态路径）
+        {"SteamAPI_RestartAppIfNecessary", shim_STEAM_API64_SteamAPI_RestartAppIfNecessary},
+        {"SteamInternal_SteamAPI_Init", shim_STEAM_API64_SteamInternal_SteamAPI_Init},
+        {"SteamInternal_ContextInit", shim_STEAM_API64_SteamInternal_ContextInit},
         {"InitializeCriticalSectionAndSpinCount", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"InitializeCriticalSection", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"InitializeCriticalSectionEx", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
@@ -1938,4 +1946,29 @@ void shim_KERNEL32_WideCharToMultiByte(X64Ctx* c) {
         std::memcpy(guest_ptr_from_ctx(c, dst), s.data(), (size_t)cb);  // 满额拷贝后按失败返回
         ret0(c, 0);
     }
+}
+
+// ---------------- steam_api64（游戏静态导入，见 run 45991101871 的 UNIMPL API 表）--------
+// 这三个名字在 import 表里是 **静态**导入（不是 LoadLibrary 动态取），所以自动生成的
+// 弱占位会把它们打成 UNIMPL_API 然后返回 0。返回 0 恰好是「没有 Steam」的正确语义，
+// 但我们需要**明确**写出来，理由有两条：
+//   1) `SteamAPI_RestartAppIfNecessary` 返回 0 是「别重启进程」，绝不能被后来的改动
+//      改成别的值（真机上这条一旦非 0，游戏会直接退出）；
+//   2) 后面要接离线模式时，只有强符号能覆盖 `shims_auto.cpp` 的弱占位。
+// 现阶段刻意保持「没有 Steam」：`SteamInternal_ContextInit` 返回 0，调用方必须自己判空
+// （0x1409b5380 里那次调用已经确认会走 target=0 的降级路径，不会崩）。
+void shim_STEAM_API64_SteamAPI_RestartAppIfNecessary(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 3) std::fprintf(stderr, "[shim] SteamAPI_RestartAppIfNecessary -> 0（不重启）\n");
+    ret0(c, 0);
+}
+void shim_STEAM_API64_SteamInternal_SteamAPI_Init(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 3) std::fprintf(stderr, "[shim] SteamInternal_SteamAPI_Init -> 0（没有 Steam）\n");
+    ret0(c, 0);
+}
+void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 3) std::fprintf(stderr, "[shim] SteamInternal_ContextInit -> 0（没有上下文）\n");
+    ret0(c, 0);
 }
