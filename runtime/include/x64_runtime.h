@@ -163,7 +163,10 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
                     (unsigned long long)(CTX)->rax);                              \
                 mew_probe_qword("[fn:rcx+0x88]", (CTX)->rcx + 0x88);              \
                 mew_probe_qword("[fn:rdx]", (CTX)->rdx);                          \
-                for (uint64_t _a : mew_trace_mem()) mew_probe_qword("[mem]", _a); \
+                for (uint64_t _a : mew_trace_mem()) {                              \
+                    mew_probe_qword("[mem]", _a);                                   \
+                    mew_probe_triple("[triple]", _a);                               \
+                }                                                                   \
                 mew_probe_chain("[fn:[[rcx]]]", (CTX)->rcx);                      \
             }                                                                     \
         }                                                                         \
@@ -787,6 +790,24 @@ inline void mew_probe_chain(const char* tag, uint64_t va) {
         uint64_t v = 0;
         std::memcpy(&v, reinterpret_cast<void*>(at + cur_ctx_ptr()->mem_bias), 8);
         std::fprintf(stderr, "    %s: [0x%llx] = 0x%016llx\n", tag,
+                     (unsigned long long)at, (unsigned long long)v);
+    }
+}
+
+// 一次打印 [va]、[va+8]、[va+0x10] 三个字段。用于容器全局
+// （0x1413bb4e8 是 {begin,tail,end} 三连，三个都 cookie 表示空表，
+// 只看第一个 qword 会误判成「装了编码值」）。
+inline void mew_probe_triple(const char* tag, uint64_t va) {
+    if (!va || !cur_ctx_ptr()) return;
+    for (int i = 0; i < 3; ++i) {
+        uint64_t at = va + (uint64_t)i * 8;
+        if (!guest_mapped(at, 8)) {
+            std::fprintf(stderr, "    %s[0x%llx] -> n/a\n", tag, (unsigned long long)at);
+            continue;
+        }
+        uint64_t v = 0;
+        std::memcpy(&v, reinterpret_cast<const void*>((uintptr_t)(at + cur_ctx_ptr()->mem_bias)), 8);
+        std::fprintf(stderr, "    %s[0x%llx] = 0x%016llx\n", tag,
                      (unsigned long long)at, (unsigned long long)v);
     }
 }

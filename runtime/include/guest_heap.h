@@ -70,9 +70,17 @@ struct GuestHeapPool {
         if (!base) init();
         size_t aligned = (sz + 15ULL) & ~static_cast<size_t>(15ULL);
         if (aligned == 0) aligned = 16;
-        if (cursor + aligned > POOL_SIZE) {
-            std::fprintf(stderr, "[FATAL] GuestHeapPool OOM! cursor=%zu need=%zu\n", cursor, aligned);
-            std::abort();
+        // 申请不到就返回 0，**不 abort**：Windows 的 HeapAlloc/VirtualAlloc 语义就是
+        // 失败返回 NULL，让 guest 自己走错误路径。实测有 4.76 GiB 的请求
+        // （GuestHeapPool OOM need=5114261360），当时直接 abort 把一整轮日志废掉，
+        // 而 abort 之前的现场才是我们要看的。
+        if (aligned > POOL_SIZE || cursor + aligned > POOL_SIZE) {
+            static int refused = 0;
+            if (refused++ < 20)
+                std::fprintf(stderr,
+                             "[heap] alloc(%zu) refused (cursor=%zu pool=%zuMB) -> NULL\n",
+                             sz, cursor, (size_t)(POOL_SIZE >> 20));
+            return 0;
         }
         uint8_t* ptr = base + cursor;
         cursor += aligned;
