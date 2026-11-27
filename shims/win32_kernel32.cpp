@@ -1058,8 +1058,40 @@ const char* locale_value(uint32_t type) {
         case 0x1002: return "United States";          // LOCALE_SENGCOUNTRY
         case 0x1003: return "h:mm:ss tt";             // LOCALE_STIMEFORMAT
         case 0x1004: return "MMMM d, yyyy";           // LOCALE_SLONGDATE（旧名）
+        // 货币一族（run 45993665762 的 16 条 GetLocaleInfoEx 采样里出现过这些）
+        case 0x14:   return "$";                      // LOCALE_SCURRENCY
+        case 0x15:   return "USD";                    // LOCALE_SINTLSYMBOL
+        case 0x16:   return ".";                      // LOCALE_SMONDECIMALSEP
+        case 0x17:   return ",";                      // LOCALE_SMONTHOUSANDSEP
+        case 0x18:   return "3;0";                    // LOCALE_SMONGROUPING
         default:     return "";
     }
+}
+// LOCALE_RETURN_NUMBER(0x20000000)：数值型 LCType 要往 lpLCData 写一个 **DWORD** 并返回 2，
+// 不是写字符串。run 45993665762 里 CRT 问过 0x20001004 / 0x2000001a（各 1 次），
+// 而旧实现一律走字符串路径：locale_value() 返回空串 → 写一个 NUL、返回 1，
+// 调用方读出来的「货币小数位」永远是 0 而不是 2。
+// 返回值取一组足以让 ucrt 正常工作的数：货币/整数小数位=2、前导零/公历=1、其余 0。
+bool write_locale_number(X64Ctx* c, uint32_t type, uint64_t buf, int cch) {
+    uint32_t v = 0;
+    switch (type & ~0x20000000u) {
+        case 0x11:   // LOCALE_IDIGITS
+        case 0x19:   // LOCALE_ICURRDIGITS
+        case 0x1A:   // LOCALE_IINTLCURRDIGITS
+            v = 2;
+            break;
+        case 0x12:   // LOCALE_ILZERO
+        case 0x1009: // LOCALE_ICALENDARTYPE（1 = 公历）
+            v = 1;
+            break;
+        default:
+            v = 0;
+            break;
+    }
+    if (!buf || cch <= 0) return false;           // 只问长度：调用方看返回的 2
+    if (cch < 2 || !guest_mapped(buf, 4)) return false;
+    std::memcpy(guest_ptr_from_ctx(c, buf), &v, 4);
+    return true;
 }
 void write_utf16(X64Ctx* c, uint64_t dst, const char* s) {
     uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, dst);
@@ -1073,6 +1105,11 @@ void shim_KERNEL32_GetLocaleInfoW(X64Ctx* c) {
     const uint32_t type = (uint32_t)arg1(c);
     const uint64_t buf = arg2(c);
     const int cch = (int)arg3(c);
+    if (type & 0x20000000u) {   // LOCALE_RETURN_NUMBER
+        write_locale_number(c, type, buf, cch);
+        ret0(c, 2);
+        return;
+    }
     const char* v = locale_value(type);
     const int need = (int)std::strlen(v) + 1;
     if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
@@ -1084,6 +1121,11 @@ void shim_KERNEL32_GetLocaleInfoA(X64Ctx* c) {
     const uint32_t type = (uint32_t)arg1(c);
     const uint64_t buf = arg2(c);
     const int cch = (int)arg3(c);
+    if (type & 0x20000000u) {   // LOCALE_RETURN_NUMBER（A/W 一样返回 DWORD）
+        write_locale_number(c, type, buf, cch);
+        ret0(c, 2);
+        return;
+    }
     const char* v = locale_value(type);
     const int need = (int)std::strlen(v) + 1;
     if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
@@ -1097,13 +1139,32 @@ void shim_KERNEL32_GetLocaleInfoA(X64Ctx* c) {
 // 另外：这个函数以前**没有进 lookup_api**，所以 CRT 的 GetProcAddress("GetLocaleInfoEx")
 // 一直返回 0（run 45985646254 的 unmapped 清单里就有它）。
 void shim_KERNEL32_GetLocaleInfoEx(X64Ctx* c) {
-    const uint32_t type = (uint32_t)arg2(c);
-    const uint64_t buf = arg3(c);
-    const int cch = (int)arg4(c);
+    // 参数映射必须按 Win64 顺序：rcx=localeName, rdx=LCType, r8=lpLCData, r9=cchData。
+    // 第一次实现把三个参数整体错位了一格（type 取 r8、buf 取 r9、cch 取栈上第 5 个），
+    // 于是 buf 变成了 r9 的垃圾值，write_utf16 往地址 0x2 写 → SIGSEGV
+    // （run 45993665762：`[CRASH] signal=11 fault=0x2` 落在这个垫片 +0xb4）。
+    const uint32_t type = (uint32_t)arg1(c);
+    const uint64_t buf = arg2(c);
+    const int cch = (int)arg3(c);
+    if (type & 0x20000000u) {   // LOCALE_RETURN_NUMBER
+        write_locale_number(c, type, buf, cch);
+        ret0(c, 2);
+        return;
+    }
     const char* v = locale_value(type);
     const int need = (int)std::strlen(v) + 1;
-    if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
+    if (!buf || cch <= 0) { ret0(c, (uint64_t)need); return; }   // 只问所需长度
     if (cch < need) { ret0(c, 0); return; }
+    // 兜底：写之前确认目标确实可写。这个垫片以前没注册、调用方一直拿到 0 自己降级，
+    // 一旦接上就会用它给的指针直接写，参数不对就是野写。
+    if (!guest_mapped(buf, (uint64_t)need * 2)) {
+        static int logged = 0;
+        if (logged++ < 5)
+            std::fprintf(stderr, "[shim] GetLocaleInfoEx 目标不可写 buf=0x%llx need=%d，返回失败\n",
+                         (unsigned long long)buf, need);
+        ret0(c, 0);
+        return;
+    }
     write_utf16(c, buf, v);
     ret0(c, (uint64_t)need);
 }
