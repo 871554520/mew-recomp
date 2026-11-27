@@ -82,6 +82,7 @@ KNOWN_SPAN_EXCEPTIONS = {
     # 0x140062450：五条 .pdata 首尾相接，但**全都没有 CHAININFO**（flags=1 EHANDLER），
     # 首段 `ja` 直接跳到第 5 段，所以必须整段补长（逐段核过，见 lifter_core.cpp 注释）。
     0x140062450,
+    0x140c11370,   # 同样是「三段相接、全无 CHAININFO、主路径收尾在第三段」
 }
 
 

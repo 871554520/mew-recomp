@@ -130,6 +130,15 @@ jobs:
           grep -vc '^#' generated/inside_seeds.txt || true
 
       - name: Generate 64 shards + dispatch table + shims
+        env:
+          # chaininfo 家族自动补长（见 lifter/src/lifter_core.cpp 的 chain_family_spans）：
+          # 用 .pdata 的 UNW_FLAG_CHAININFO 元数据把「各段 VA 连续」的拆段家族并成一条。
+          # 实测证据：0x14004ba20 / 0x140048010 / 0x140062450 / 0x140c11370 这些
+          # 手工逐条白名单过的家族，续段上**都带 CHAININFO**（首段 flags=0、续段 flags=4，
+          # chain.BeginAddress 回指首段）——也就是说这一族本来就能被自动规则覆盖，
+          # 之前一直靠人工逐条补是因为开关没开。
+          # 全镜像 3,574 个段连续家族（共 14,972 段）；段间有空隙的 1,017 个规则不动。
+          MEW_SPLIT_CHAIN: "1"
         run: |
           mkdir -p generated/stage3
           ./build/mew_lifter --shards 64 --out-dir generated/stage3 --exe Mewgenics.exe \
@@ -387,6 +396,8 @@ jobs:
           tail -25 generated/gpak_call_$LEVEL.err | tee -a generated/gpak_call.log
 
       - name: Stage 5b - reflow runtime-missed entries (second build)
+        env:
+          MEW_SPLIT_CHAIN: "1"
         run: |
           set -euo pipefail
           if [ ! -s discovered_entries.txt ]; then
