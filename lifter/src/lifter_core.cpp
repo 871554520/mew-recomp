@@ -422,7 +422,10 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         return true;
     }
     // ---- 打包移位（立即数或 xmm 低 64 位计数）----
-    if (mn == "pslld" || mn == "psllq" || mn == "psrld" || mn == "psrlq" || mn == "psrad" || mn == "psraw") {
+    if (mn == "pslld" || mn == "psllq" || mn == "psrld" || mn == "psrlq" ||
+        mn == "psllw" || mn == "psrlw" || mn == "psrad" || mn == "psraw") {
+        // psllw/psrlw 以前漏在白名单外 —— 实现本身（按 mn[2]/mn[4] 取方向和宽度）是通用的，
+        // 补两个名字即可。artifact stub_list 里 psrlw 挡住 510 个函数、psllw 151 个。
         bool left = (mn[2] == 'l');
         bool arith = (mn == "psrad" || mn == "psraw");
         char sz = mn[4];
@@ -824,6 +827,45 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                                                : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + " + " + std::to_string(lane * 4) + "ULL)");
             e.out << "  ctx->xmm[" << dx << "].f32[" << lane << "] = ctx->xmm[" << dx << "].f32["
                   << lane << "] " << opch << " " << b << ";\n";
+        }
+        return true;
+    }
+    // ---- 打包 min/max（stub_list: minps 182 / maxps 182 个函数）----
+    if (mn == "minps" || mn == "maxps") {
+        const bool is_min = (mn == "minps");
+        for (int lane = 0; lane < 4; ++lane) {
+            std::string b = is_xmm_reg(ops[1])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[" + std::to_string(lane) + "]")
+                : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + " + " + std::to_string(lane * 4) + "ULL)");
+            e.out << "  ctx->xmm[" << dx << "].f32[" << lane << "] = std::"
+                  << (is_min ? "fmin" : "fmax") << "(ctx->xmm[" << dx << "].f32[" << lane
+                  << "], " << b << ");\n";
+        }
+        return true;
+    }
+    // ---- 打包开方（stub_list: sqrtpd 218 个函数）----
+    if (mn == "sqrtps" || mn == "sqrtpd") {
+        const bool pd = (mn == "sqrtpd");
+        const int lanes = pd ? 2 : 4;
+        for (int lane = 0; lane < lanes; ++lane) {
+            std::string b = is_xmm_reg(ops[1])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]." +
+                   (pd ? "f64[" : "f32[") + std::to_string(lane) + "]")
+                : (pd ? ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + " + " + std::to_string(lane * 8) + "ULL)")
+                      : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + " + " + std::to_string(lane * 4) + "ULL)"));
+            e.out << "  ctx->xmm[" << dx << "]." << (pd ? "f64[" : "f32[") << lane
+                  << "] = std::sqrt(" << b << ");\n";
+        }
+        return true;
+    }
+    // ---- andnps / andnpd：(~dest) & src（stub_list: andnps 109 个函数）----
+    if (mn == "andnps" || mn == "andnpd") {
+        for (int lane = 0; lane < 2; ++lane) {
+            std::string b = is_xmm_reg(ops[1])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].u64[" + std::to_string(lane) + "]")
+                : ("g_u64(" + addrExpr(pe, ops[1], next_rip, e) + (lane ? " + 8ULL)" : ")"));
+            e.out << "  ctx->xmm[" << dx << "].u64[" << lane << "] = (~ctx->xmm[" << dx
+                  << "].u64[" << lane << "]) & " << b << ";\n";
         }
         return true;
     }
