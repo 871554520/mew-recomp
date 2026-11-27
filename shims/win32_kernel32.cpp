@@ -694,8 +694,25 @@ void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_SetCurrentDirectoryW(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_FindFirstFileW(X64Ctx* c) { ret0(c, (uint64_t)-1); }
-void shim_KERNEL32_FindNextFileW(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_FindFirstFileW(X64Ctx* c) {
+    // 这原本是个静默返回 INVALID_HANDLE_VALUE 的桩：如果游戏是靠目录枚举
+    // 去找 *.gpak / 资源目录，它会在这里静默失败，日志里连一条痕迹都没有，
+    // 于是「阶段 5 没进展」看起来像「还没走到文件 IO」。
+    // 先让它出声（pattern 与调用环），再决定要不要真实现枚举。
+    const std::string pattern = host_path_from_guest(c, arg0(c));
+    if (!pattern.empty())
+        std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> INVALID (stub) caller=0x%llx\n",
+                     pattern.c_str(), (unsigned long long)cur_fn_va());
+    static int traced = 0;
+    if (traced++ < 3) call_trace().dump("FindFirstFileW stub");
+    ret0(c, (uint64_t)-1);
+}
+
+void shim_KERNEL32_FindNextFileW(X64Ctx* c) {
+    std::fprintf(stderr, "[shim] FindNextFileW(h=0x%llx) -> FALSE (stub) caller=0x%llx\n",
+                 (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
+    ret0(c, 0);
+}
 void shim_KERNEL32_FindClose(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetFileSize(X64Ctx* c) {
     FILE* f = file_from_handle(arg0(c));
