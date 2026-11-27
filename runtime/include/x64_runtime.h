@@ -145,8 +145,18 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
             }                                                                     \
         }                                                                         \
     } while (0)
+// 最近一次进入的垫片（Win32 API）名字。垫片不经过 MEW_SET_CUR_FN，所以
+// cur_fn_va() 会停在调用者的函数上，`[SAFE]` 日志就指错人；有了这个名字，
+// 能直接看出「是不是垫片里写崩的、是哪个垫片」。
+inline const char*& cur_api_name() {
+    static const char* v = "";
+    return v;
+}
 #define MEW_TRACE_API(CTX, NAME) \
-    call_trace().push(0, (NAME), (CTX)->rcx, mew_guest_ret(CTX))
+    do {                                                                       \
+        cur_api_name() = (NAME);                                               \
+        call_trace().push(0, (NAME), (CTX)->rcx, mew_guest_ret(CTX));          \
+    } while (0)
 
 struct X64Ctx {
     uint64_t rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
@@ -499,14 +509,15 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
         if (logged < 20) {
             std::fprintf(stderr,
                          "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
-                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx\n",
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
                          (unsigned long long)mew_guest_ret(ctx),
                          (unsigned long long)ctx->rax, (unsigned long long)ctx->rcx,
                          (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
                          (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
-                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp);
+                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp,
+                         cur_api_name()[0] ? cur_api_name() : "-");
             if (logged < 3) call_trace().dump("safe-mem");
             ++logged;
         }
@@ -531,14 +542,15 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
         if (logged < 20) {
             std::fprintf(stderr,
                          "[SAFE] unmapped write addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
-                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx\n",
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
                          (unsigned long long)mew_guest_ret(ctx),
                          (unsigned long long)ctx->rax, (unsigned long long)ctx->rcx,
                          (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
                          (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
-                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp);
+                         (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp,
+                         cur_api_name()[0] ? cur_api_name() : "-");
             if (logged < 3) call_trace().dump("safe-mem-w");
             ++logged;
         }

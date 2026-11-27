@@ -8,3 +8,4 @@ t=1795726400 round-H2: 修 setup_pe_tls 裸 return（uint64_t 签名）
 t=1795726400 round-I: TEB+0x58 两级间接（ThreadLocalStoragePointer -> slots[0]）
 t=1795726400 round-J: 最小伪 PEB（gs:[0x60] -> ProcessParameters）
 t=1795726400 round-K: 观测 0x140d6a8b4 的 rcx/哨兵全局/cookie + SAFE 寄存器快照
+t=1795726400 round-L: SAFE 日志带「最近进入的垫片名」，定位崩在哪个 API 里
