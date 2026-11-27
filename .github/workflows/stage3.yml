@@ -347,15 +347,16 @@ jobs:
           #      "算新桶数"函数（无 .pdata，但是直接 call 目标，lifter 会当函数入口）。
           #   3) MEW_CALL_MAIN=1：CRT 的 `ret` 是 return 回宿主，_initterm 跑完不会
           #      自己走到 main，必须链尾显式补一次。
-          #   4) MEW_WATCH 再补 0x1413c4758 / 0x1413c62c0 / 0x1413c62d0 / 0x1413c62e0：
-          #      livelock 现场是 MSVC 的 std::call_once（_Init_thread）——
-          #      0x140a3af80(CFG 回调) -> 0x140a3ae10 -> _Cnd_wait(0x140d1f7e4)，
-          #      守卫状态 @0x1413c4758、初始化函数指针 @0x1413c62c0/0x1413c62d0、
-          #      SRW 锁 @0x1413c62e0、条件变量对象 @0x1412f8090。
-          #      实测 20 次 wait / 0 次 wake：守卫停在 busy 永不完成。要看清是谁、
-          #      在哪个 pc 把它写成 busy、又有没有人尝试写回 done。
+          #   4) 守卫 0x1413c4758 已结案（run 46069971296：全场只被写一次、值=1，
+          #      in_fn=0x140a3ae10，之后 240 条全是读 1，没有写回 0/2），
+          #      而且那条链属于 CRT 的 onexit 退出路径，不是 exit(3) 的原因。
+          #      现在换成本轮真正要看的两个 .data 运行期跳板槽：
+          #        0x1412e8800  0x140ba7e50 的 jmp [slot]，CRT 经 0x1409b5140 尾跳进 WinMain
+          #        0x1412e8588  0x140ba7850 的 jmp [slot]，appmain 末尾尾调用的那个函数
+          #      这两个槽在文件里是 0（没有延迟导入目录），运行期才被填成函数指针；
+          #      看 [watch] R 打出来的 val 就知道真实目标地址。
           MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400,0x1400598f0,0x140386250,0x140d6aec8,0x140386180,0x1409b5230 MEW_TRACE_MEM=0x1413bb4e8,0x1413bb500,0x1412f2880,0x1413c60dc,0x1413c60e4,0x1413c60c0,0x1413c60e8,0x1413c60b0,0x1413c59e0,0x1413c59e8,0x1413c60e0,0x1413c60c8,0x1413c60d0 \
-          MEW_WATCH=0x1413c59e0,0x1413c59e8,0x1413c59f0,0x1413c60c0,0x1413c60b8,0x1413c60c8,0x1413c60d0,0x1413c60d8,0x1413c60e0,0x1413c60e8,0x1413c60b0,0x1413c4758,0x1413c62c0,0x1413c62d0,0x1413c62e0 \
+          MEW_WATCH=0x1413c59e0,0x1413c59e8,0x1413c59f0,0x1413c60c0,0x1413c60b8,0x1413c60c8,0x1413c60d0,0x1413c60d8,0x1413c60e0,0x1413c60e8,0x1413c60b0,0x1412e8800,0x1412e8588 \
           MEW_SAMPLE_SEC=60 MEW_TRACE_IND=1 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEH_SKIP_INIT=1 MEW_SEED_MLF=1 MEW_CALL_MAIN=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 600 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
