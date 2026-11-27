@@ -296,7 +296,12 @@ jobs:
       - name: Dump stage3b bodies of abort chain
         run: |
           : > generated/stage3b_abort_chain.txt
-          for VA in 140d79870 140d79928 140d79600; do
+          # 2026-11-28：卡点从「锁自旋」追到「out 槽被写成垃圾」，怀疑生成代码本身
+          # 跟源指令不一致。这几个 VA 是证据链上的关键几环：
+          #   140be0980  填槽 + `call [rsp+0x38]` 的宿主（[rsp-repair] delta=0 -> 8 就是它）
+          #   140bfef60  填槽例程（按 rcx/rdx/r8/r9 四个形参条件写指针）
+          #   140bb0660  调用 140be0980 的那一层
+          for VA in 140d79870 140d79928 140d79600 140be0980 140bfef60 140bb0660; do
             echo "===== stage3b sub_$VA =====" >> generated/stage3b_abort_chain.txt
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3b/shard_*.cpp >> generated/stage3b_abort_chain.txt 2>/dev/null || true
           done
