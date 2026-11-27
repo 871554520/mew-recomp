@@ -1194,15 +1194,13 @@ static uint32_t lookup_size_override(uint64_t va) {
         // 只到 0x292（收尾 ret 之后）会漏掉它，补到 0x2a2 之外则没必要。
         // 该函数全 .text 没有一条 e8/e9 直接指向它（0 条），是纯间接/表调用。
         {0x140062450ULL, 0x29f},
-        // 0x140c11370：同一形状（run 46005752715 的 5 条 `[rsp-repair] delta=-72`）。
-        // 三段首尾相接、**全都没有 CHAININFO**（flags=1）：
-        //   0x140c11370..0x140c113b6 (0x46 声明)  ← 序言 mov [rsp+0x18],r8 / push r13,r14,r15 / sub rsp,0x30
-        //   0x140c113b6..0x140c11be6 (0x830)      ← 主路径 fall-through 进来的主体
-        //   0x140c11be6..(共享收尾)               ← `add rsp,0x30; pop r15,r14,r13; ret`
-        // 序言 0x46 字节里只有 rcx==-1 的早退收尾（0x140c11396），主路径的收尾在第三段，
-        // 所以声明 0x46 时帧永远差 72 字节。补到 0x876（= 0x140c11be6）后，walk 在边界处
-        // 收尾并 dispatch 到共享收尾那一段，帧就补齐了。
-        {0x140c11370ULL, 0x876},
+        // 0x140c11370 这条白名单**已删除**：它会把 chaininfo 家族截断在 0x140c11be6，
+        // 而 0x140c11be6..0x140c11c5c 是同族的续段（flags=4，chain 回指首段）。
+        // 续段被单独当函数调用时 rsp 语义不成立（它依赖外层已压的帧），
+        // run 46010953943 实测就是这样崩的：
+        //   [ABI VIOLATION] target=0x140c11be6 caller=0x140c118e3 rsp_delta=80 → SIGSEGV
+        //   （调用环里 ret=0x3ff 出现 152 次，返回地址已被覆盖）
+        // 现在交给 MEW_SPLIT_CHAIN 按 chaininfo 并到 0x140c11c5c（共 0x8ec）。
     };
     auto it = m.find(va);
     return it == m.end() ? 0u : it->second;

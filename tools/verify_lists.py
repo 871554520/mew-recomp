@@ -82,7 +82,6 @@ KNOWN_SPAN_EXCEPTIONS = {
     # 0x140062450：五条 .pdata 首尾相接，但**全都没有 CHAININFO**（flags=1 EHANDLER），
     # 首段 `ja` 直接跳到第 5 段，所以必须整段补长（逐段核过，见 lifter_core.cpp 注释）。
     0x140062450,
-    0x140c11370,   # 同样是「三段相接、全无 CHAININFO、主路径收尾在第三段」
 }
 
 
@@ -124,6 +123,33 @@ def main(argv):
         crossing = [b for b, _e in funcs if va < b < end]
         # 跨过的条目必须都属于**同一个 chaininfo 家族**（链式 RUNTIME_FUNCTION 指回本 VA）。
         # 不属于任何家族的条目被圈进来 = 把别的函数并进了本函数体，必须报错。
+        # 家族完整性：chaininfo 家族的续段如果落在补长区间之外，就会留成「独立函数」，
+        # 运行期被单独调用时 rsp 语义不成立（续段依赖外层已压的帧）。
+        # run 46010953943 实测：0x140c11370 补到 0x876、家族实际到 0x8ec，
+        # 尾巴 0x140c11be6 被单独调用 → [ABI VIOLATION] → SIGSEGV。
+        fam_end = va
+        tail_at_boundary = None
+        for b, e in funcs:
+            if b < va or b > va + size:
+                continue
+            if chained.get(b - image_base) != va - image_base:
+                continue
+            if b == va + size:
+                # 续段正好从补长边界开始：可能是**故意**只补到收尾之前
+                # （例 0x14004ba20 末尾那个 call+int3 冷桩，并进来会让 int3 进预扫、
+                # 把整函数判成 UNIMPL），也可能是**漏掉**（例 0x140c11370 那次 SIGSEGV）。
+                # 这里只提示，交给人判断。
+                tail_at_boundary = (b, e)
+                continue
+            fam_end = max(fam_end, e)
+        if tail_at_boundary is not None:
+            print('   ℹ️ 0x%x + 0x%x 之后紧跟 0x%x 的 chaininfo 续段（至 0x%x）——'
+                  '确认是故意还是漏掉' % (va, size, tail_at_boundary[0], tail_at_boundary[1]))
+        if fam_end > va + size:
+            bad += 1
+            print('   ⚠️ 0x%x + 0x%x 会截断 chaininfo 家族（家族到 0x%x，少 0x%x 字节）'
+                  % (va, size, fam_end, fam_end - (va + size)))
+            continue
         alien = [b for b in crossing if chained.get(b - image_base) != va - image_base]
         if va in KNOWN_SPAN_EXCEPTIONS:
             print('   OK 0x%x + 0x%x -> 0x%x （手核例外：跨 %d 个非本家族入口）'
