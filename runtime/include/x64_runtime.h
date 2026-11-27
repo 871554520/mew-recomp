@@ -230,6 +230,16 @@ inline void mew_note_entry(uint64_t va) {
                     (unsigned long long)(CTX)->rdx, (unsigned long long)(CTX)->r8, \
                     (unsigned long long)(CTX)->r9, (unsigned long long)(CTX)->rsp, \
                     (unsigned long long)(CTX)->rax);                              \
+                /* callee-saved 也要打：0x140385f80 里紧跟容量检查的是            \
+                   `cmp [_Mysize], r12` + `je <too long>`，r12 的取值直接分流     \
+                   「第 9 次被一个假的 max_size 卡住」和「该 rehash 却没 rehash」。*/ \
+                std::fprintf(stderr,                                               \
+                    "[fn]   rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx "          \
+                    "r12=0x%llx r13=0x%llx r14=0x%llx r15=0x%llx\n",              \
+                    (unsigned long long)(CTX)->rbx, (unsigned long long)(CTX)->rsi, \
+                    (unsigned long long)(CTX)->rdi, (unsigned long long)(CTX)->rbp, \
+                    (unsigned long long)(CTX)->r12, (unsigned long long)(CTX)->r13, \
+                    (unsigned long long)(CTX)->r14, (unsigned long long)(CTX)->r15); \
                 mew_probe_qword("[fn:rcx+0x88]", (CTX)->rcx + 0x88);              \
                 mew_probe_qword("[fn:rdx]", (CTX)->rdx);                          \
                 for (uint64_t _a : mew_trace_mem()) {                              \
