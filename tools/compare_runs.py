@@ -35,6 +35,10 @@ def metrics(d):
     m['rsp_repair'] = c(r'\[rsp-repair\]', err)
     m['abi_repair'] = c(r'\[abi-repair\]', err)
     m['SAFE'] = c(r'\[SAFE\]', err)
+    # nosafe 趟的 fault 点是最灵敏的"真崩在哪"信号（safe 趟会把非法访问吞掉）
+    nosafe = load(d, 'runner_nosafe.err')
+    fm = re.search(r'\[CRASH\][^\n]*fault=(0x[0-9a-f]+)', nosafe)
+    m['nosafe_fault'] = int(fm.group(1), 16) if fm else 0
     m['RaiseException'] = c(r'RaiseException', err)
     m['ExitProcess'] = c(r'ExitProcess', err)
     m['TIMEOUT'] = c(r'\[TIMEOUT\]', err)
