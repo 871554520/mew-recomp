@@ -25,10 +25,16 @@ struct GuestHeapPool {
     // 0xc06b57xxx 这类垃圾，最终崩在 `mov [r9],rdx`。Windows 上堆通常也在 4GB 内，
     // 所以把堆挪到 0x10000000（256MB）既安全又符合真实环境。
     static constexpr uint64_t BASE_HINT = 0x10000000ULL;
-    static constexpr size_t   POOL_SIZE = 512ULL * 1024 * 1024;
+    // 512MB → 2.5GB：实测游戏会申请 **1 GiB** 的整块（调用环
+    // sub_0x1409da1d0(rcx=0x40000000)），512MB 池直接拒成 NULL，随后那条路径
+    // 一路降级到「invalid hash bucket count」C++ 异常 + NULL 间接跳转。
+    // 上界约束仍然是「结尾必须 < 4GB」：0x10000000 + 0xA0000000 = 0xB0000000 ✓
+    // 匿名 mmap 是惰性提交，只有真正写到的页才占物理内存。
+    static constexpr size_t   POOL_SIZE = 2560ULL * 1024 * 1024;
 
     uint8_t* base = nullptr;
     size_t   cursor = 0;
+    size_t   pool_size = POOL_SIZE;   // 实际拿到的池大小（mmap 失败会逐级缩小）
     std::mutex mtx;
     std::unordered_map<uint64_t, size_t> alloc_sizes;
     std::unordered_map<uint64_t, size_t> alloc_req;   // 调用方请求的字节数（诊断用）
@@ -36,8 +42,21 @@ struct GuestHeapPool {
 
     void init() {
         if (base) return;
-        void* p = mmap(reinterpret_cast<void*>(BASE_HINT), POOL_SIZE,
-                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        // 大池拿不到就逐级退：CI 上偶尔会遇到地址空间/ulimit 限制，
+        // 那时宁可用小池跑（会打印实际大小），也不要 abort 把整轮日志毁掉。
+        for (size_t want : {POOL_SIZE, (size_t)(512ULL << 20), (size_t)(256ULL << 20)}) {
+            pool_size = want;
+            void* q = mmap(reinterpret_cast<void*>(BASE_HINT), want,
+                           PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (q != MAP_FAILED) {
+                base = static_cast<uint8_t*>(q);
+                cursor = 0x1000;
+                std::fprintf(stderr, "[heap] pool base=0x%llx size=%zuMB (requested %zuMB)\n",
+                             (unsigned long long)(uintptr_t)base, want >> 20, POOL_SIZE >> 20);
+                return;
+            }
+        }
+        void* p = reinterpret_cast<void*>(MAP_FAILED);
 #ifdef MAP_FIXED_NOREPLACE
         if (p == MAP_FAILED) {
             // 地址被占：退回系统挑选，但依然登记在 alloc_sizes 里，SAFE_MEM 靠 owns() 放行
@@ -56,13 +75,14 @@ struct GuestHeapPool {
         }
 #endif
         if (p == MAP_FAILED) {
-            std::fprintf(stderr, "[FATAL] GuestHeapPool mmap 512MB failed\n");
+            std::fprintf(stderr, "[FATAL] GuestHeapPool mmap failed for every size\n");
             std::abort();
         }
         base = static_cast<uint8_t*>(p);
+        pool_size = POOL_SIZE;
         cursor = 0x1000;  // 留空首页，防低偏移误碰
         std::fprintf(stderr, "[heap] pool base=0x%llx size=%zuMB\n",
-                     (unsigned long long)(uintptr_t)base, (size_t)(POOL_SIZE >> 20));
+                     (unsigned long long)(uintptr_t)base, (size_t)(pool_size >> 20));
     }
 
     uint64_t alloc(size_t sz, bool zero_init) {
@@ -74,7 +94,7 @@ struct GuestHeapPool {
         // 失败返回 NULL，让 guest 自己走错误路径。实测有 4.76 GiB 的请求
         // （GuestHeapPool OOM need=5114261360），当时直接 abort 把一整轮日志废掉，
         // 而 abort 之前的现场才是我们要看的。
-        if (aligned > POOL_SIZE || cursor + aligned > POOL_SIZE) {
+        if (aligned > pool_size || cursor + aligned > pool_size) {
             static int refused = 0;
             if (refused++ < 20)
                 std::fprintf(stderr,
@@ -146,7 +166,7 @@ struct GuestHeapPool {
         if (new_aligned <= old) return true;                       // 够大，不缩
         if (addr + old != reinterpret_cast<uint64_t>(base) + cursor) return false;  // 不是最新块
         size_t need = new_aligned - old;
-        if (cursor + need > POOL_SIZE) return false;
+        if (cursor + need > pool_size) return false;
         if (zero_new) std::memset(base + cursor, 0, need);
         cursor += need;
         it->second = new_aligned;

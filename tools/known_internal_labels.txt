@@ -19,4 +19,7 @@
 #
 # 来源：discovered_entries.txt（runtime 记录，非跳转表类）
 #   0x140d6adc8  caller 0x140d3e654   CFG guard 蹦床之后真正的目标
+#   0x140d1ba18  caller 0x1409694c0   0x140d1ba10 的 +8（MSVC 把两个叶子函数
+#                                      打包进同一条 .pdata，前 8 字节是 xor eax,eax; ret）
 0x140d6adc8
+0x140d1ba18
