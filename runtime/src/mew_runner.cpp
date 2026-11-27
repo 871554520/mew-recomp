@@ -388,6 +388,13 @@ int main(int argc, char** argv) {
     std::printf("runner: entry returned rax=%llu resumes=%d\n",
                 (unsigned long long)ctx.rax, rounds);
 
+    // 初始化链到此为止：_initterm 的 ret 已经回宿主，resume 目标（0x140d6aef5）
+    // 不再有效。必须在这里把 SKIP_INIT 的 resume 关掉，否则下面补调的 main 只要
+    // 抛一次异常就会被拽回已经走完的 _initterm 循环（run 45985646254：
+    // `[main] main 内部又走到 resume（rip=0x140d6aef5），不再继续`），
+    // main 的调用栈被整根扔掉，gpak/CreateFileW 永远不会出现。
+    seh::skip_init_after_chain() = true;
+
     // ---- 链尾补 main（MEW_CALL_MAIN=1）----
     // 为什么必须要补：`ret` 被 lift 成 `ctx->rsp += 8; return;`，也就是每个 guest
     // 函数都直接**返回宿主**。我们从 _initterm 内部 resume 回去、把剩下的全局构造器

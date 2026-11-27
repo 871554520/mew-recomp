@@ -402,6 +402,17 @@ inline bool seh_phase2_on() {
     return v == 1;
 }
 
+// SKIP_INIT 只在**初始化链还没跑完**的时候有意义：它的做法是在帧链里找
+// `_initterm`（0x140d6aec8..0x140d6af09）并 resume 回它的循环头，让下一项继续。
+// 链一旦返回（`_initterm` 的 ret 被 lift 成 `ctx->rsp += 8; return;`，直接回宿主），
+// 这个 resume 目标就失效了 —— 但 run 45985646254 实测它**没有失效**：
+//   [main] 链尾补调 main 0x1409b5230 …
+//   [main] main 内部又走到 resume（rip=0x140d6aef5），不再继续
+// 也就是 main 只要一抛异常，就会被拽回**已经走完的** `_initterm` 循环，
+// main 的调用栈被整根扔掉，`gpak`/`CreateFileW` 永远不可能出现。
+// 所以链结束后把它标记为"已收工"，phase 2 / skip-init 这两条老路径都不再抢栈。
+inline bool& skip_init_after_chain() { static bool v = false; return v; }
+
 inline bool seh_dispatch_enabled() {
     static int v = [] { const char* e = std::getenv("MEW_SEH_DISPATCH"); return (e && e[0] == '1') ? 1 : 0; }();
     return v == 1;
@@ -587,7 +598,7 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
         std::fprintf(stderr, "[seh] unhandled -> 主动跑第二阶段（MEW_SEH_PHASE2=1）\n");
         unwind_phase2(c, 0, 0, record_va);
     }
-    if (seh_skip_init_on()) {
+    if (seh_skip_init_on() && !skip_init_after_chain()) {
         Ctx64 w;
         ctx_to_win(c, &w);
         // 与 phase 2 同一个坑：X64Ctx 里没有可靠的 guest PC，起点必须取 [rsp] 的
