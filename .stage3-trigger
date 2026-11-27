@@ -22,3 +22,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T19:5xZ  skip-init 游标推进 + 4 个 KERNEL32 注册 + seed 长度按下一个 seed 截断
 2026-11-27T20:2xZ  locale 数值型(LOCALE_RETURN_NUMBER) + GetLocaleInfoEx 参数修正 + thunk 表 8 对齐 + steam 强符号
 2026-11-27T20:5xZ  miner: import thunk (ff 25) 规则 + 0x140062450 白名单
+2026-11-27T21:1xZ  SSE4.2 重写（修 c->af 编不过 / CF 方向 / equal-ordered 下标）
