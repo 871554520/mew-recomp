@@ -23,6 +23,9 @@
 #include "seh_x64.h"
 
 // ---- 前向声明：动态加载表可能在定义之前引用 ----
+// wglGetProcAddress 要用；**必须放在全局作用域**——放进匿名命名空间会与
+// 文件后段的定义构成两个候选，gcc 报 "call of overloaded ... is ambiguous"。
+uint64_t shim_KERNEL32_LookupSynthetic(const char* name);
 void shim_KERNEL32_FlsAlloc(X64Ctx*);
 void shim_KERNEL32_FlsFree(X64Ctx*);
 void shim_KERNEL32_FlsGetValue(X64Ctx*);
@@ -1727,8 +1730,6 @@ void shim_OLE32_CoInitializeEx(X64Ctx* c) { ret0(c, 0); }
 void shim_OLE32_OleInitialize(X64Ctx* c) { ret0(c, 0); }
 void shim_OLE32_CoUninitialize(X64Ctx* c) { ret0(c, 0); }
 void shim_OLE32_OleUninitialize(X64Ctx* c) { ret0(c, 0); }
-
-uint64_t shim_KERNEL32_LookupSynthetic(const char* name);   // 定义在文件后段，wglGetProcAddress 要用
 
 // ---------------- GDI32 像素格式 + OPENGL32 / wgl：假 GL 3.3 上下文 ----------------
 // 依据（run 46055985114 之后）：
