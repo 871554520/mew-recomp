@@ -3079,6 +3079,26 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
         const uint32_t span = all.back().second - prim;
         if (span > 0 && span <= 0x20000) spans[pe.image_base + prim] = span;
     }
+
+    // 嵌套拆段：某个家族里的一段自己又被拆开（内层 primary 落在外层区间内部），
+    // 它的 end 要一起吸收进来。全镜像只有 41 个家族属于这种，但它们的 span
+    // 收在 ret 上而不是收在一条 jcc/mov 中间，合并后走路才干净。
+    // 注意只在「内层 primary 严格落在区间内部」时吸收，段间有空隙的仍然不动。
+    std::vector<std::pair<uint64_t, uint32_t>> vec(spans.begin(), spans.end());
+    std::sort(vec.begin(), vec.end());
+    for (size_t i = 0; i < vec.size(); ++i) {
+        uint64_t end = vec[i].first + vec[i].second;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (size_t j = i + 1; j < vec.size() && vec[j].first < end; ++j) {
+                const uint64_t e2 = vec[j].first + vec[j].second;
+                if (e2 > end) { end = e2; grew = true; }
+            }
+        }
+        vec[i].second = (uint32_t)(end - vec[i].first);
+    }
+    spans.clear();
+    for (const auto& p : vec) spans[p.first] = p.second;
     return spans;
 }
 
