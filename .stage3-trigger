@@ -41,3 +41,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T19:0xZ  EDEADLK 修复 + INFINITE 返回 TRUE + IAT 兜底收紧
 2026-11-27T19:1xZ  前置声明恢复 + SRW try-lock + INFINITE TRUE
 2026-11-28T03:2xZ  补登记 159 个「动态表∩强垫片」名字（建窗/消息/GDI 全家）
+2026-11-28T03:5xZ  补 159 个符号的前置声明（修 shim-syntax 编译错）
