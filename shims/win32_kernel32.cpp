@@ -1087,7 +1087,22 @@ void shim_KERNEL32_GetLocaleInfoA(X64Ctx* c) {
     std::memcpy(guest_ptr_from_ctx(c, buf), v, (size_t)need);
     ret0(c, (uint64_t)need);
 }
-void shim_KERNEL32_GetLocaleInfoEx(X64Ctx* c) { shim_KERNEL32_GetLocaleInfoW(c); }
+// GetLocaleInfoEx(lpLocaleName, LCType, lpLCData, cchData)：与 W 版只差第一个参数
+// 是 locale **名字** 而不是 LCID，所以不能直接转调 GetLocaleInfoW（那会把一个指针
+// 当 LCID 读，返回错的字符串）。按 arg2/arg3/arg4 取类型和缓冲区，复用 locale_value。
+// 另外：这个函数以前**没有进 lookup_api**，所以 CRT 的 GetProcAddress("GetLocaleInfoEx")
+// 一直返回 0（run 45985646254 的 unmapped 清单里就有它）。
+void shim_KERNEL32_GetLocaleInfoEx(X64Ctx* c) {
+    const uint32_t type = (uint32_t)arg2(c);
+    const uint64_t buf = arg3(c);
+    const int cch = (int)arg4(c);
+    const char* v = locale_value(type);
+    const int need = (int)std::strlen(v) + 1;
+    if (!buf || cch == 0) { ret0(c, (uint64_t)need); return; }
+    if (cch < need) { ret0(c, 0); return; }
+    write_utf16(c, buf, v);
+    ret0(c, (uint64_t)need);
+}
 
 // CompareString*：按码点序比较，返回 1/2/3（CSTR_LESS/EQUAL/GREATER）
 namespace {
@@ -1409,6 +1424,13 @@ uint64_t synth_va_for(const char* name);
 // 映射表：引擎/CRT 会 GetProcAddress 的常见入口
 RecompFn lookup_api(const char* name) {
     static const DynApi kApis[] = {
+        // 这四个早就实现了，但一直没进 lookup_api —— 于是 CRT 的
+        // GetProcAddress("GetLocaleInfoEx"/"CompareStringEx"/"LCMapStringEx"/
+        // "AreFileApisANSI") 全都返回 0（run 45985646254 的 unmapped 清单）。
+        {"GetLocaleInfoEx", shim_KERNEL32_GetLocaleInfoEx},
+        {"CompareStringEx", shim_KERNEL32_CompareStringEx},
+        {"LCMapStringEx", shim_KERNEL32_LCMapStringEx},
+        {"AreFileApisANSI", shim_KERNEL32_AreFileApisANSI},
         {"InitializeCriticalSectionAndSpinCount", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"InitializeCriticalSection", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
         {"InitializeCriticalSectionEx", shim_KERNEL32_InitializeCriticalSectionAndSpinCount},
