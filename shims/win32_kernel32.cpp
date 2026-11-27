@@ -450,14 +450,9 @@ void shim_KERNEL32_CreateFileA(X64Ctx* c) {
 
 // FindFirstFileExW：现代枚举入口，游戏完全可能只用它。先让它出声，
 // 并把调用环打出来（前 3 次），这样「游戏是否开始找资源」有据可查。
-void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) {
-    const std::string pattern = host_path_from_guest(c, arg0(c));
-    std::fprintf(stderr, "[shim] FindFirstFileExW(\"%s\", info=0x%llx) -> INVALID (stub) caller=0x%llx\n",
-                 pattern.c_str(), (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
-    static int traced = 0;
-    if (traced++ < 3) call_trace().dump("FindFirstFileExW stub");
-    ret0(c, (uint64_t)-1);
-}
+// FindFirstFileExW 只是 FindFirstFileW 的带 flag 版本；infoLevel 我们一律按
+// FindExInfoStandard 处理（dir/path 直接 stat 就有），所以共用同一套枚举。
+void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) { shim_KERNEL32_FindFirstFileW(c); }
 
 // GetFileAttributesExW：拿不到时返回 FALSE 并置 last error。
 // 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
@@ -1040,26 +1035,160 @@ void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
     ret0(c, 0);
 }
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
+namespace {
+// ---- 目录枚举（FindFirstFileW / FindNextFileW / FindClose）----
+// 为什么必须真实现：这三个以前是「返回 INVALID / FALSE」的静默桩，
+// 引擎扫 saves/、找 *.gpak、列 audio/music/*.ogg 全都会拿到空列表，
+// 然后在上游报一个和真实原因毫无关系的错（和 GetFileAttributesExW 同一个病：
+// 返回值说"失败"，但从来没让它成功过）。
+struct FindState {
+    DIR* dir = nullptr;
+    std::string dirpath;
+    std::string pattern;
+};
+
+// Windows 通配匹配：大小写不敏感，支持 * 和 ?
+static bool win_wild_match(const char* pat, const char* name) {
+    while (*pat) {
+        if (*pat == '*') {
+            ++pat;
+            if (!*pat) return true;
+            for (const char* s = name;; ++s) {
+                if (win_wild_match(pat, s)) return true;
+                if (!*s) return false;
+            }
+        } else if (*pat == '?') {
+            if (!*name) return false;
+            ++pat; ++name;
+        } else {
+            if (!*name) return false;
+            if (std::tolower((unsigned char)*pat) != std::tolower((unsigned char)*name)) return false;
+            ++pat; ++name;
+        }
+    }
+    return *name == 0;
+}
+
+// 填 WIN32_FIND_DATAW（x64 布局，592 字节）
+//   +0   dwFileAttributes      DWORD
+//   +4   ftCreationTime        FILETIME
+//   +12  ftLastAccessTime      FILETIME
+//   +20  ftLastWriteTime       FILETIME
+//   +28  nFileSizeHigh         DWORD
+//   +32  nFileSizeLow          DWORD
+//   +36  dwReserved0           DWORD
+//   +40  dwReserved1           DWORD
+//   +44  cFileName             WCHAR[260]
+//   +564 cAlternateFileName    WCHAR[14]
+static void fill_find_data(X64Ctx* c, uint64_t out, const std::string& name, const struct stat& st) {
+    if (!out) return;
+    const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
+    const uint64_t ft = ((uint64_t)st.st_mtime + 11644473600ULL) * 10000000ULL;
+    const uint64_t at = ((uint64_t)st.st_atime + 11644473600ULL) * 10000000ULL;
+    const uint64_t sz = (uint64_t)st.st_size;
+    mem_write<uint32_t>(c, out + 0,  attr);
+    mem_write<uint32_t>(c, out + 4,  (uint32_t)(ft & 0xFFFFFFFFu));
+    mem_write<uint32_t>(c, out + 8,  (uint32_t)(ft >> 32));
+    mem_write<uint32_t>(c, out + 12, (uint32_t)(at & 0xFFFFFFFFu));
+    mem_write<uint32_t>(c, out + 16, (uint32_t)(at >> 32));
+    mem_write<uint32_t>(c, out + 20, (uint32_t)(ft & 0xFFFFFFFFu));
+    mem_write<uint32_t>(c, out + 24, (uint32_t)(ft >> 32));
+    mem_write<uint32_t>(c, out + 28, (uint32_t)(sz >> 32));
+    mem_write<uint32_t>(c, out + 32, (uint32_t)(sz & 0xFFFFFFFFu));
+    mem_write<uint32_t>(c, out + 36, 0);   // dwReserved0（重解析点/符号链接标志）
+    mem_write<uint32_t>(c, out + 40, 0);   // dwReserved1
+    if (guest_mapped(out + 44, 520)) {
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, out + 44);
+        std::memset(p, 0, 520);
+        size_t i = 0;
+        for (; i < 259 && i < name.size(); ++i) p[i] = (uint16_t)(unsigned char)name[i];
+        p[i] = 0;
+    }
+    if (guest_mapped(out + 564, 28))
+        std::memset(guest_ptr_from_ctx(c, out + 564), 0, 28);   // 8.3 名留空
+}
+
+// 从当前游标继续找下一个匹配项；成功则填 out 并返回 true
+static bool find_take_next(X64Ctx* c, FindState* fs, uint64_t out) {
+    if (!fs || !fs->dir || !out) return false;
+    for (;;) {
+        struct dirent* de = ::readdir(fs->dir);
+        if (!de) return false;
+        const std::string nm = de->d_name;
+        if (nm == "." || nm == "..") continue;           // Windows 不返回这两个
+        if (!win_wild_match(fs->pattern.c_str(), nm.c_str())) continue;
+        const std::string full = fs->dirpath + "/" + nm;
+        struct stat st;
+        if (::stat(full.c_str(), &st) != 0) continue;
+        fill_find_data(c, out, nm, st);
+        return true;
+    }
+}
+}  // namespace
+
 void shim_KERNEL32_FindFirstFileW(X64Ctx* c) {
-    // 这原本是个静默返回 INVALID_HANDLE_VALUE 的桩：如果游戏是靠目录枚举
-    // 去找 *.gpak / 资源目录，它会在这里静默失败，日志里连一条痕迹都没有，
-    // 于是「阶段 5 没进展」看起来像「还没走到文件 IO」。
-    // 先让它出声（pattern 与调用环），再决定要不要真实现枚举。
-    const std::string pattern = host_path_from_guest(c, arg0(c));
-    if (!pattern.empty())
-        std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> INVALID (stub) caller=0x%llx\n",
-                     pattern.c_str(), (unsigned long long)cur_fn_va());
+    const std::string full = host_path_from_guest(c, arg0(c));
+    const uint64_t out = arg1(c);
+    // 拆成「目录 + 通配模式」，最后一个 '/' 处切开
+    std::string dir = ".";
+    std::string pat = "*";
+    const size_t slash = full.find_last_of('/');
+    if (slash != std::string::npos) {
+        dir = full.substr(0, slash);
+        pat = full.substr(slash + 1);
+        if (dir.empty()) dir = "/";
+    } else if (!full.empty()) {
+        pat = full;   // 没有目录部分，例如 "*.gpak"
+    }
+    if (pat.empty()) pat = "*";
+    DIR* d = ::opendir(dir.c_str());
     static int traced = 0;
-    if (traced++ < 3) call_trace().dump("FindFirstFileW stub");
-    ret0(c, (uint64_t)-1);
+    if (!d) {
+        const int e = errno;
+        if (traced++ < 16)
+            std::fprintf(stderr,
+                         "[shim] FindFirstFileW(\"%s\") dir=\"%s\" pat=\"%s\" -> INVALID (opendir errno=%d)\n",
+                         full.c_str(), dir.c_str(), pat.c_str(), e);
+        ret0(c, (uint64_t)-1);
+        return;
+    }
+    FindState* fs = new FindState();
+    fs->dir = d;
+    fs->dirpath = dir;
+    fs->pattern = pat;
+    if (!find_take_next(c, fs, out)) {
+        ::closedir(d);
+        delete fs;
+        if (traced++ < 16)
+            std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> INVALID (\"%s\" 里没有匹配 \"%s\")\n",
+                         full.c_str(), dir.c_str(), pat.c_str());
+        ret0(c, (uint64_t)-1);
+        return;
+    }
+    const uint64_t h = HandleTable::instance().add(fs);
+    if (traced++ < 16)
+        std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> h=0x%llx caller=0x%llx\n",
+                     full.c_str(), (unsigned long long)h, (unsigned long long)cur_fn_va());
+    ret0(c, h);
 }
 
 void shim_KERNEL32_FindNextFileW(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] FindNextFileW(h=0x%llx) -> FALSE (stub) caller=0x%llx\n",
-                 (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
-    ret0(c, 0);
+    FindState* fs = (FindState*)(uintptr_t)HandleTable::instance().get(arg0(c));
+    const uint64_t out = arg1(c);
+    const bool ok = find_take_next(c, fs, out);
+    ret0(c, ok ? 1u : 0u);
 }
-void shim_KERNEL32_FindClose(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_FindClose(X64Ctx* c) {
+    const uint64_t h = arg0(c);
+    FindState* fs = (FindState*)(uintptr_t)HandleTable::instance().get(h);
+    if (fs) {
+        if (fs->dir) ::closedir(fs->dir);
+        fs->dir = nullptr;
+        delete fs;
+        HandleTable::instance().erase(h);
+    }
+    ret0(c, 1);
+}
 void shim_KERNEL32_GetFileSize(X64Ctx* c) {
     FILE* f = file_from_handle(arg0(c));
     long cur = f ? ftell(f) : 0; long size = 0;
