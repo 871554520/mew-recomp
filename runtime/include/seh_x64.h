@@ -614,10 +614,19 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
                 const unsigned long long base = 0x140e3fee0ULL;   // XC 表首（实测 2351 项）
                 long long idx = -1;
                 if (cur >= base) idx = (long long)((cur - base) / 8);
+                // 游标必须**在这里就推到下一项**，不能再指望 resume 到
+                // 0x140d6aef5 之后由 fragment 里的 `add rbx,8` 来完成。
+                // run 45985646254 实测：129 次跳过**全部**报 index=2339，
+                // 每次 resume 回去又跑同一个初始化器（抛点固定 0x140026967、
+                // 函数 0x140026890），127 次 RESUME 后撞上 runner 的 128 轮上限
+                // （`entry returned rax=1 resumes=128`）—— 初始化链实际停在
+                // 第 2339 项，最后 11 项一项都没跑到，main 是在残缺状态下被补调的。
+                // 所以这里直接改上下文：Rbx = 下一项，Rip = 循环头 0x140d6aedd。
+                w.Rbx = cur + 8;
+                w.Rip = 0x140d6aeddULL;   // `mov rax,[rbx]`（跳过 add rbx,8 那一步）
                 std::fprintf(stderr,
-                    "[seh] 跳过当前初始化器，回到 _initterm 循环 0x140d6aec8"
-                    "（rip=0x%llx rsp=0x%llx rbx=0x%llx index=%lld）\n",
-                    (unsigned long long)w.Rip, (unsigned long long)w.Rsp, cur, idx);
+                    "[seh] 跳过初始化器 index=%lld（rbx=0x%llx -> 0x%llx，回循环头 0x140d6aedd）\n",
+                    idx, cur, (unsigned long long)w.Rbx);
                 resume_at(w.Rip, w);   // longjmp，循环继续下一项
                 return true;
             }

@@ -55,6 +55,25 @@ def main():
         print(f'       {m.strip()}')
     for m in re.findall(r'\[extend\] .*', shards)[:4]:
         print(f'       {m.strip()}')
+    # ── 拆分家族 / thunk / NULL 调用 这三类新判据（2026-11-27 19:xx 加）──
+    ext = re.findall(r'\[extend\] (0x[0-9a-f]+) (\d+) -> (\d+)', shards)
+    print(f'   [extend] 总行数        {len(ext)}   (12 个热点家族 + 0x1403862d0/0x140be0a60；'
+          f'两趟构建所以 0x140386180 会算两次)')
+    if ext:
+        uniq_ext = sorted({va for va, _a, _b in ext})
+        print(f'   [extend] 去重地址      {len(uniq_ext)} 个')
+    print(f'   [chain] 家族合并        {count(r"\[chain\]", shards)}   (只有 MEW_SPLIT_CHAIN=1 才会有)')
+    # init 链推进到第几项：跳过初始化器那行带 index=（XC 表 2351 项）
+    idx = [int(v) for v in re.findall(r'跳过当前初始化器.*index=(\d+)', err)]
+    print(f'   跳过初始化器 index=max  {max(idx) if idx else "无"}   (表尾 2350)')
+    # main 的三态：正常返回 / 被 resume 抢走 / 根本没调
+    print(f'   runner: main returned   {count(r"runner: main returned", err)}   (>0 才是 main 正常跑完)')
+    print(f'   main 内被 resume        {count(r"main 内部又走到 resume", err)}   (必须 0)')
+    # 未解析导入的 NULL 调用：in_fn 就是「谁在调没实现的 API」
+    nulls = re.findall(r'indirect call target=0（未解析的导入）in_fn=(0x[0-9a-f]+)', err)
+    nc = Counter(nulls)
+    print(f'   [api] target=0 调用     {len(nulls)}   distinct in_fn={len(nc)}'
+          + (f'   {dict(nc.most_common(6))}' if nc else ''))
     print(f'   [watch] 行              {count(r"\[watch\]", err)}')
     print(f'   RaiseException         {count(r"RaiseException", err)}')
     for k in ('gpak', 'CreateFileW', 'FindFirstFileW', 'FindNextFileW'):
