@@ -1154,6 +1154,18 @@ static uint32_t lookup_size_override(uint64_t va) {
         {0x14004b930ULL, 0xeb},
         {0x1400490d0ULL, 0x150},
         {0x14004c850ULL, 0x84},
+        // 0x140062450：`push rbx; push r13; sub rsp,0x48`（88 字节帧）的函数，被 MSVC 拆成
+        // **五条首尾完全相接的 .pdata**，而且五条 UNW flags 全是 1（EHANDLER）、
+        // 一条 CHAININFO 都没有 —— 所以 chaininfo 家族合并（MEW_SPLIT_CHAIN）收不到它，
+        // 只能逐条白名单（这五段是人工按 .pdata + UNWIND_INFO 逐段核过的）：
+        //   0x140062450..484(0x34) / 484..4d2(0x4e) / 4d2..6cb(0x1f9) / 6cb..6e2(0x17) / 6e2..6ef(0x0d)
+        // 症状：首段第 0x2a 字节是 `ja 0x1400626e2`，目标落在**第 5 段**，超出声明的 0x34；
+        // lifter 走到 0x140062484 就收尾，88 字节帧没恢复 →
+        // `[rsp-repair] target=0x140062450 delta=-88`（run 45993665762 里 18 条）。
+        // 补到 0x29f（= 0x1400626ef，含第 5 段那条 tail-call 区）刚好覆盖 ja 目标；
+        // 只到 0x292（收尾 ret 之后）会漏掉它，补到 0x2a2 之外则没必要。
+        // 该函数全 .text 没有一条 e8/e9 直接指向它（0 条），是纯间接/表调用。
+        {0x140062450ULL, 0x29f},
     };
     auto it = m.find(va);
     return it == m.end() ? 0u : it->second;

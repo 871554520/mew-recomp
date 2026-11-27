@@ -76,7 +76,13 @@ def chain_primary(data, secs, raw_ents):
 #   0x1403862d0：rehash 主体跨 3 条 .pdata，但中间那条是独立子函数、不带 chaininfo；
 #   0x140386180：同上，并且它把 0x1403862d0 整个并进来（`jmp 0x1403862d0` 尾跳）。
 # 两条都在 lifter_core.cpp 的注释里逐字节说明过。
-KNOWN_SPAN_EXCEPTIONS = {0x1403862d0, 0x140386180}
+KNOWN_SPAN_EXCEPTIONS = {
+    0x1403862d0,
+    0x140386180,
+    # 0x140062450：五条 .pdata 首尾相接，但**全都没有 CHAININFO**（flags=1 EHANDLER），
+    # 首段 `ja` 直接跳到第 5 段，所以必须整段补长（逐段核过，见 lifter_core.cpp 注释）。
+    0x140062450,
+}
 
 
 def main(argv):
