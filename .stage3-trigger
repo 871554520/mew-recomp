@@ -6,3 +6,4 @@ t=1795726400 round-G2: 修 setup_pe_tls 调用顺序（ctx 未声明）+ stage3 
 t=1795726400 round-H: 执行 PE TLS 回调（DLL_PROCESS_ATTACH）
 t=1795726400 round-H2: 修 setup_pe_tls 裸 return（uint64_t 签名）
 t=1795726400 round-I: TEB+0x58 两级间接（ThreadLocalStoragePointer -> slots[0]）
+t=1795726400 round-J: 最小伪 PEB（gs:[0x60] -> ProcessParameters）

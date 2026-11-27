@@ -173,6 +173,27 @@ static uint64_t setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx
     return addrCb;
 }
 
+// ---- 最小伪 PEB ----
+// x64 的 TEB+0x60 是 PROCESS_ENVIRONMENT_BLOCK 指针。扫了整个 exe，只有两处
+// `mov rax,gs:[60h]`，都在 CRT 初始化里，用法固定：
+//     rax = gs:[0x60]      ; PEB
+//     rcx = [rax+0x20]     ; PEB->ProcessParameters
+//     cmp dword [rcx+8], 0
+// 我们的伪 TEB 是清零页，这一格是 0 → TLS 修好之后紧接着就会在这里崩。
+// 所以补一个够用的 PEB：ProcessParameters 指向一块清零的 RTL_USER_PROCESS_PARAMETERS，
+// 顺带把 ImageBaseAddress 填上（有些 CRT 路径会用它算模块范围）。
+static void setup_peb(const GuestImage& img, X64Ctx* ctx) {
+    uint64_t peb = g_guest_heap.alloc(0x400, /*zero_init=*/true);
+    uint64_t params = g_guest_heap.alloc(0x100, /*zero_init=*/true);
+    if (!peb || !params) return;
+    *reinterpret_cast<uint64_t*>(guest_ptr(img, peb + 0x10)) = img.orig_image_base;  // ImageBaseAddress
+    *reinterpret_cast<uint64_t*>(guest_ptr(img, peb + 0x20)) = params;               // ProcessParameters
+    *reinterpret_cast<uint64_t*>(guest_ptr(img, ctx->gs_base + 0x60)) = peb;          // TEB.ProcessEnvironmentBlock
+    std::fprintf(stderr, "[peb] 伪 PEB=0x%llx ProcessParameters=0x%llx image_base=0x%llx\n",
+                 (unsigned long long)peb, (unsigned long long)params,
+                 (unsigned long long)img.orig_image_base);
+}
+
 // ---- 执行 TLS 回调 ----
 // Windows 加载器在进 entry 之前，会按数组顺序把每个 TLS 回调以
 // DLL_PROCESS_ATTACH(1) 调一遍。CRT 里有不少线程级初始化就挂在这里，
@@ -257,6 +278,7 @@ int main(int argc, char** argv) {
     // 必须在 init_guest_thread_ctx 之后：要往伪 TEB 的 TlsSlots 里写模块 TLS 块指针
     uint64_t tls_callbacks = setup_pe_tls(exe, img, &ctx);
     probe_security_cookie(exe, img);
+    setup_peb(img, &ctx);
     run_tls_callbacks(img, &ctx, tls_callbacks);
     if (!call_va) {
         ctx.rcx = 0;   // hInstance
