@@ -997,6 +997,54 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         e.out << "  }\n";
         return true;
     }
+    // ---- VEX 标量三操作数算术：dest = op1 <op> op2（上 64 位从 op1 复制）----
+    // stub_list 里 vmulsd 14 / vsubsd 12 / vaddsd 12 走的就是这条。
+    if (insn.operand_count >= 3 &&
+        (mn == "vaddsd" || mn == "vsubsd" || mn == "vmulsd" || mn == "vdivsd" ||
+         mn == "vaddss" || mn == "vsubss" || mn == "vmulss" || mn == "vdivss" ||
+         mn == "vminsd" || mn == "vmaxsd" || mn == "vminss" || mn == "vmaxss")) {
+        const bool sd = (mn.back() == 'd');
+        const char* FT = sd ? "f64" : "f32";
+        const int a_i = xmmId(ops[1].reg.value);
+        std::string b = is_xmm_reg(ops[2])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[2].reg.value)) + "]." + FT + "[0]")
+            : (sd ? ("g_f64(" + addrExpr(pe, ops[2], next_rip, e) + ")")
+                  : ("g_f32(" + addrExpr(pe, ops[2], next_rip, e) + ")"));
+        std::string body;
+        const std::string a = "ctx->xmm[" + std::to_string(a_i) + "]." + std::string(FT) + "[0]";
+        if (mn == "vaddsd" || mn == "vaddss") body = a + " + " + b;
+        else if (mn == "vsubsd" || mn == "vsubss") body = a + " - " + b;
+        else if (mn == "vmulsd" || mn == "vmulss") body = a + " * " + b;
+        else if (mn == "vdivsd" || mn == "vdivss") body = a + " / " + b;
+        else if (mn == "vminsd" || mn == "vminss") body = "std::fmin(" + a + ", " + b + ")";
+        else body = "std::fmax(" + a + ", " + b + ")";
+        e.out << "  ctx->xmm[" << dx << "]." << FT << "[0] = " << body << ";\n";
+        e.out << "  ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << a_i << "].u64[1];\n";
+        return true;
+    }
+    // ---- FMA：vfmadd213sd/ss 与 vfmadd231sd/ss ----
+    //   213: dest = op1 * dest + op2     231: dest = op1 * op2 + dest
+    // stub_list 里 vfmadd213sd 12 + vfmadd231sd 11，是 AVX2 的数学核心。
+    if (mn == "vfmadd213sd" || mn == "vfmadd231sd" ||
+        mn == "vfmadd213ss" || mn == "vfmadd231ss") {
+        const bool sd = (mn.back() == 'd');
+        const char* FT = sd ? "f64" : "f32";
+        const int b_i = xmmId(ops[1].reg.value);
+        const int c_i = is_xmm_reg(ops[2]) ? xmmId(ops[2].reg.value) : -1;
+        std::string c = (c_i >= 0) ? ("ctx->xmm[" + std::to_string(c_i) + "]." + FT + "[0]")
+                                   : (sd ? ("g_f64(" + addrExpr(pe, ops[2], next_rip, e) + ")")
+                                         : ("g_f32(" + addrExpr(pe, ops[2], next_rip, e) + ")"));
+        const bool f213 = (mn.find("213") != std::string::npos);
+        e.out << "  { double a_=(double)ctx->xmm[" << b_i << "]." << FT << "[0];\n"
+                 "    double b_=(double)";
+        if (f213) e.out << "ctx->xmm[" << dx << "]." << FT << "[0];\n";
+        else e.out << (c_i >= 0 ? ("ctx->xmm[" + std::to_string(c_i) + "]." + FT + "[0]") : c) << ";\n";
+        e.out << "    double c_=(double)" << (f213 ? c : ("ctx->xmm[" + std::to_string(dx) + "]." + FT + "[0]")) << ";\n"
+                 "    ctx->xmm[" << dx << "]." << FT << "[0] = " << (sd ? "" : "(float)")
+              << "std::fma(a_, b_, c_);\n"
+                 "    ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << b_i << "].u64[1]; }\n";
+        return true;
+    }
     if (mn == "shufps") {
         uint8_t imm = (uint8_t)ops[2].imm.value.u;
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
