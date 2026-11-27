@@ -215,6 +215,45 @@ except Exception as exc:  # noqa: BLE001
     print('import-thunk scan failed:', exc)
 print('import-thunk (test/je/jmp[rip]) candidates:', n_ithunk)
 
+# 第二批：**任意短前缀** + `jmp qword [rip+rel32]` + 终止符/填充铺满 16 字节。
+# 上面那条规则只认「槽首」或「槽 5 的 test/jcc 守卫」，于是同一类桩换个前缀就漏：
+#   0x140a9b490  48 8b ca              mov rcx,rdx        （被 .data 引用 4 次）
+#   0x14097a1e0  b9 11 0c 00 00        mov ecx,0xc11      （被 .rdata 引用 2 次）
+#   0x140a29cf0  33 d2 b9 40 8d 00 00  xor edx,edx; mov ecx,…
+#   0x140bf7f90  48 85 c9 74 0a f0 ff 01  test/lock inc（空指针路径不是裸 ret）
+#   0x140a91290  48 85 c9 74 07 … 33 c0 c3 守卫 + `xor eax,eax; ret`
+#   0x140a55370  4c 8b c2 ba 01 00 00 00  mov r8,rdx; mov edx,1（12 连排）
+# 全 .text 扫下来旧规则收 1206 个、新规则收 1236 个，多出的 30 个里 4 个是
+# 被数据段当函数指针引用的活桩 —— 漏一个就是运行期一次未映射目标。
+#
+# **必须再加一道 `prev ∈ {cc,00}` 过滤**（这是拿真镜像全量对过才定下来的）：
+# 不加过滤会多收 12 个「16 对齐、无 .pdata、尾跳正好铺满槽」的假阳性，
+# 它们的前一个字节是 8b/48/41/c5/e6/d2 这种指令中段字节，实测都是**函数体内**
+# 的 16 对齐落点（例如 0x140d51fa0 前一字是 VEX 前缀 c5、0x140d6ae20 前一字
+# 是 e6），一旦当成入口就会把真正的宿主函数切碎。真 thunk 一定坐在填充/对齐
+# 空隙里，所以前置字节必然是 cc 或 00。
+# 反过来，前置字节非填充但**确实**是活桩的那种（如 0x140a9b490 prev=e0），
+# 早已被上面 .reloc 那条规则当作函数指针值收进 seeds 了，这里跳过不会漏。
+# 打磨后：新规则净增 18 个种子（11 个 0x140a55380..0x140a55420 的连排桩 + 7 个分散桩）。
+# 形状判定在 tools/thunk_shapes.py::tail_jump_thunk_shape，单测见 test_thunk_shapes.py。
+n_tjthunk = 0
+try:
+    from thunk_shapes import tail_jump_thunk_shape as _tail_jump_thunk_shape  # noqa: E402
+
+    for k in range(0, len(text_bytes) - 16, 16):
+        if _tail_jump_thunk_shape(text_bytes, k) < 0:
+            continue
+        if k == 0 or text_bytes[k - 1] not in (0xCC, 0x00):
+            continue
+        va = text_start + k
+        if va in known or va in seeds or _inside_known(va):
+            continue
+        seeds.add(va)
+        n_tjthunk += 1
+except Exception as exc:  # noqa: BLE001
+    print('tail-jump-thunk scan failed:', exc)
+print('tail-jump-thunk (任意前缀 + jmp[rip], 前置填充) candidates:', n_tjthunk)
+
 print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))
 
