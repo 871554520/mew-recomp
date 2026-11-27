@@ -16,7 +16,14 @@ namespace {
 // 每 15 秒采样一次调用环顶部，用来判断"卡死"发生在哪个循环里
 void sample_handler(int) {
     static int tick = 0;
-    std::fprintf(stderr, "[SAMPLE %d] top frames:\n", ++tick);
+    // 关键：调用环只记「函数进入」，如果 guest 卡在**某个函数体内的循环**上
+    // （lift 出来的 L_xxx goto 循环不会产生新条目），环会完全冻结——
+    // run 45978138365 就是这样：idx 卡在 12027、29 分钟一次都没动过，
+    // 只剩最后一帧可看。所以采样必须同时打出**当前正在执行的函数**和最后一条内存指令。
+    std::fprintf(stderr, "[SAMPLE %d] cur_fn=0x%llx last_pc=0x%llx cur_rcx=0x%llx cur_rsp=0x%llx\n",
+                 ++tick, (unsigned long long)cur_fn_va(), (unsigned long long)last_mem_pc(),
+                 cur_ctx_ptr() ? (unsigned long long)cur_ctx_ptr()->rcx : 0ULL,
+                 cur_ctx_ptr() ? (unsigned long long)cur_ctx_ptr()->rsp : 0ULL);
     call_trace().dump_tail(6);
     std::fflush(stderr);
 }
