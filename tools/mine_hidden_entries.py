@@ -196,16 +196,18 @@ print('jmp-thunk (e9+ccc) candidates:', n_jmp)
 #   而 manifest 里 0x140bf4fe0=32 —— 长度按「下一个 seed（0x140bf5000）」算，
 #   把兄弟桩 0x140bf4ff0 一起吞了，于是调用 0x140bf4ff0 就 miss。
 n_ithunk = 0
+
+
+from thunk_shapes import import_thunk_shape as _import_thunk_shape  # noqa: E402
+
+
 try:
-    for k in range(0, len(text_bytes) - 16):
-        if text_bytes[k] != 0x48 or text_bytes[k + 1] != 0x85:
-            continue
-        if text_bytes[k + 3] != 0x74:
-            continue
-        if text_bytes[k + 5:k + 8] != b'\x48\xff\x25':
+    # 槽按 16 对齐整段扫（比逐字节快，且入口本来就要求 16 对齐）
+    for k in range(0, len(text_bytes) - 16, 16):
+        if not _import_thunk_shape(text_bytes, k):
             continue
         va = text_start + k
-        if va % 16 or va in known or va in seeds or _inside_known(va):
+        if va in known or va in seeds or _inside_known(va):
             continue
         seeds.add(va)
         n_ithunk += 1
