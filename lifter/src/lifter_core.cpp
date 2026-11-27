@@ -3006,6 +3006,82 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
     return res;
 }
 
+// ── chaininfo 家族自动补长（默认关，`MEW_SPLIT_CHAIN=1` 打开）───────────────
+// MSVC 把一个真实函数拆成几条 .pdata 时，后续条目的 UNWIND_INFO.flags 会带
+// UNW_FLAG_CHAININFO(0x4)，其链式 RUNTIME_FUNCTION(BeginAddress/EndAddress/
+// UnwindData) 指回首段。这是**编译器自己给的元数据**，不是启发式：
+//   - 只认 chaininfo：不像 158d946 那条「jcc + 紧邻入口」规则那样，会把碰巧
+//     相邻、但其实无关的函数也并进来（那条规则已在 45971389104 实测退化）；
+//   - 只认「各段在 VA 上连续」：段间有空隙（冷块被放到别的函数之间）的家族
+//     一律不动 —— 按区间合并会把中间那个函数的字节一起圈进来；
+//   - liftReachableEx 只沿可达流走，所以多给的字节里不可达的部分不会被翻。
+// 逐条白名单 lookup_size_override 优先，本函数只补它没覆盖的那批。
+// 规模：全镜像 4,591 个家族，其中 3,574 个段连续（3,360 个首段 fall-through
+// 会坏，见 tools/scan_split_functions.py 与复盘文档 P0-12）。
+static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const PeImage& pe) {
+    static std::unordered_map<uint64_t, uint32_t> spans;
+    static bool built = false;
+    if (built) return spans;
+    built = true;
+
+    struct Ent { uint32_t b, e, u; };
+    std::vector<Ent> ents;
+    for (const auto& s : pe.sections) {
+        if (s.name != ".pdata") continue;
+        if ((size_t)s.raw + s.rawsize > pe.data.size()) continue;
+        const uint8_t* raw = pe.data.data() + s.raw;
+        for (uint32_t off = 0; off + 12 <= s.rawsize; off += 12) {
+            Ent en{};
+            std::memcpy(&en.b, raw + off + 0, 4);
+            std::memcpy(&en.e, raw + off + 4, 4);
+            std::memcpy(&en.u, raw + off + 8, 4);
+            if (en.b && en.e > en.b) ents.push_back(en);
+        }
+    }
+    if (ents.empty()) return spans;
+    std::sort(ents.begin(), ents.end(), [](const Ent& x, const Ent& y) { return x.b < y.b; });
+
+    std::unordered_map<uint32_t, uint32_t> own_end;   // .pdata 入口 -> 自己的 EndAddress
+    for (const auto& en : ents) own_end[en.b] = en.e;
+
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> pieces;
+    for (const auto& en : ents) {
+        const Section* us = pe.byRva(en.u);
+        if (!us || en.u < us->va) continue;
+        const size_t uoff = (size_t)us->raw + (size_t)(en.u - us->va);
+        if (uoff + 4 > pe.data.size()) continue;
+        const uint8_t* up = pe.data.data() + uoff;
+        const uint32_t flags = (up[0] >> 3) & 0x1f;
+        if (!(flags & 0x4)) continue;                       // UNW_FLAG_CHAININFO
+        const uint32_t cnt = up[2];
+        const uint32_t qrva = en.u + ((4 + 2 * cnt + 3) & ~3u);
+        const Section* qs = pe.byRva(qrva);
+        if (!qs || qrva < qs->va) continue;
+        const size_t qoff = (size_t)qs->raw + (size_t)(qrva - qs->va);
+        if (qoff + 12 > pe.data.size()) continue;
+        uint32_t cb = 0;
+        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress = 首段
+        pieces[cb].push_back({en.b, en.e});
+    }
+
+    for (auto& kv : pieces) {
+        const uint32_t prim = kv.first;
+        auto oe = own_end.find(prim);
+        if (oe == own_end.end()) continue;
+        std::vector<std::pair<uint32_t, uint32_t>> all;
+        all.push_back({prim, oe->second});
+        for (const auto& p : kv.second) all.push_back(p);
+        std::sort(all.begin(), all.end());
+        bool contiguous = true;
+        for (size_t i = 1; i < all.size(); ++i)
+            if (all[i - 1].second != all[i].first) { contiguous = false; break; }
+        if (!contiguous) continue;
+        const uint32_t span = all.back().second - prim;
+        if (span > 0 && span <= 0x20000) spans[pe.image_base + prim] = span;
+    }
+    return spans;
+}
+
 LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     // 白名单与「共享序言/尾声合并」必须在**两条 lift 路径之前**生效：
     // 主分片构建带 LIFT_FRAGMENT，走的是 liftReachableEx，
@@ -3015,6 +3091,22 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
         std::fprintf(stderr, "[extend] 0x%llx %u -> %u bytes（白名单补长）\n",
                      (unsigned long long)va, size, ov);
         size = ov;
+    }
+    // 实验开关：chaininfo 家族合并（**默认关**，`MEW_SPLIT_CHAIN=1` 打开）。
+    // 关着时行为与之前逐字节一致；打开后由编译器元数据决定范围，一次覆盖
+    // 3,574 个段连续的拆段家族（含那 3,360 个首段 fall-through 的）。
+    static const bool split_chain_on = [] {
+        const char* e = std::getenv("MEW_SPLIT_CHAIN");
+        return e && e[0] == '1';
+    }();
+    if (split_chain_on && ov == 0) {
+        const auto& spans = chain_family_spans(pe);
+        auto it = spans.find(va);
+        if (it != spans.end() && it->second > size) {
+            std::fprintf(stderr, "[chain] 0x%llx %u -> %u bytes（chaininfo 家族合并）\n",
+                         (unsigned long long)va, size, it->second);
+            size = it->second;
+        }
     }
     // 自动合并默认**关**：run 45971389104 里它对 1092 个函数生效后整体行为退化了——
     // 哈希容器一次都没跑到（[fn] 0x140385f80 = 0）、新增两处 dispatch miss
