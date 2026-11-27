@@ -735,6 +735,62 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         }
         return true;
     }
+    // ---- pextrw r32, xmm, imm8：取一个 word 零扩展进通用寄存器（6 个函数）----
+    if (mn == "pextrw" && is_gpr_reg(ops[0])) {
+        const unsigned sel = (unsigned)ops[2].imm.value.u & 7u;
+        const int sx = xmmId(ops[1].reg.value);
+        e.out << "  write_reg(ctx," << gprId(ops[0].reg.value) << ",ctx->xmm[" << sx
+              << "].u16[" << sel << "],4);\n";
+        return true;
+    }
+    // ---- pmovzxwd：4 个 word 零扩展成 4 个 dword（6 个函数）----
+    if (mn == "pmovzxwd") {
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i] = (uint32_t)s_.u16[i]; }\n";
+        return true;
+    }
+    // ---- vpshufd：与 pshufd 相同，只是 VEX 编码（6 个函数）----
+    if (mn == "vpshufd") {
+        const unsigned imm = (unsigned)ops[2].imm.value.u;
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << "; uint32_t t[4];\n";
+        for (int i = 0; i < 4; ++i)
+            e.out << "    t[" << i << "] = s_.u32[" << ((imm >> (i * 2)) & 3) << "];\n";
+        e.out << "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i]=t[i]; }\n";
+        return true;
+    }
+    // ---- vcvtdq2pd：低 2 个 dword 有符号转 double（8 个函数）----
+    if (mn == "vcvtdq2pd") {
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<2;++i) ctx->xmm[" << dx << "].f64[i] = (double)(int32_t)s_.u32[i]; }\n";
+        return true;
+    }
+    // ---- cvttpd2dq：2 个 double 截断成 dword（7 个函数）----
+    if (mn == "cvttpd2dq" || mn == "vcvttpd2dq") {
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<2;++i) ctx->xmm[" << dx << "].u32[i] = (uint32_t)(int32_t)s_.f64[i];\n"
+                 "    for (int i=2;i<4;++i) ctx->xmm[" << dx << "].u32[i] = 0; }\n";
+        return true;
+    }
+    // ---- vfnmadd231sd/ss：dest = -(op1*op2) + dest（10 个函数）----
+    if (mn == "vfnmadd231sd" || mn == "vfnmadd231ss") {
+        const bool sd = (mn.back() == 'd');
+        const char* FT = sd ? "f64" : "f32";
+        const int a_i = xmmId(ops[1].reg.value);
+        const int b_i = is_xmm_reg(ops[2]) ? xmmId(ops[2].reg.value) : -1;
+        std::string b = (b_i >= 0) ? ("ctx->xmm[" + std::to_string(b_i) + "]." + FT + "[0]")
+                                   : (sd ? ("g_f64(" + addrExpr(pe, ops[2], next_rip, e) + ")")
+                                         : ("g_f32(" + addrExpr(pe, ops[2], next_rip, e) + ")"));
+        e.out << "  { double a_=ctx->xmm[" << a_i << "]." << FT << "[0], b_=" << b << ";\n"
+                 "    double c_=ctx->xmm[" << dx << "]." << FT << "[0];\n"
+                 "    ctx->xmm[" << dx << "]." << FT << "[0] = " << (sd ? "" : "(float)")
+              << "std::fma(-a_, b_, c_);\n"
+                 "    ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << a_i << "].u64[1]; }\n";
+        return true;
+    }
     // ---- movhpd / movlpd：只动一个 64 位半区（stub_list: movhpd 10 个函数）----
     if (mn == "movhpd" || mn == "movlpd") {
         const bool high = (mn == "movhpd");
@@ -868,13 +924,14 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
               << " ctx->xmm[" << dx << "].u64[0]=a_; ctx->xmm[" << dx << "].u64[1]=b_; }\n";
         return true;
     }
-    if (mn == "xorps" || mn == "xorpd" || mn == "pxor" || mn == "andps" || mn == "orps") {
+    if (mn == "xorps" || mn == "xorpd" || mn == "pxor" || mn == "andps" || mn == "orps" ||
+        mn == "andpd" || mn == "orpd") {
         auto srcExpr = [&](int lane) -> std::string {
             if (is_xmm_reg(ops[1])) return "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].u64[" + std::to_string(lane) + "]";
             std::string addr = addrExpr(pe, ops[1], next_rip, e);
             return "g_u64(" + addr + (lane ? " + 8ULL)" : ")");
         };
-        char opch = (mn == "andps") ? '&' : (mn == "orps") ? '|' : '^';
+        char opch = (mn == "andps" || mn == "andpd") ? '&' : (mn == "orps" || mn == "orpd") ? '|' : '^';
         for (int lane = 0; lane < 2; ++lane)
             e.out << "  " << dst() << ".u64[" << lane << "] = " << dst() << ".u64[" << lane << "] "
                   << opch << " " << srcExpr(lane) << ";\n";
