@@ -1057,56 +1057,38 @@ static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
 
 LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags);
 
-// 找到「第一条收尾指令（ret/jmp）之后」的偏移；找不到或没超过声明长度就返回 size。
-// 用途：MSVC 会把一个函数的冷块单独列一条 .pdata，于是主块那条 .pdata 的 size
-// 会**短于真实函数体**。实测 0x1403862d0：.pdata 说 43 字节，真实到 0x14038647d（ret），
-// 中间缺的正是 std::_Hash 的 rehash 主体（_Vec.assign + mask/_Maxidx 写回 + 重链循环）。
-// 按 43 字节收尾的后果不只是「rehash 变成空操作」，更糟的是
-// `push rdi / sub rsp,0x20` 配不到对应的 `add rsp,0x20 / pop rdi`，
-// **guest 的 rsp 会永远低 0x20**，返回后所有 [rsp+off] 局部变量全部错位。
-static uint32_t extendToTerminator(const PeImage& pe, uint64_t va, uint32_t size) {
-    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
-    if (!sec) return size;
-    const uint32_t secOff = (uint32_t)(va - pe.image_base - sec->va);
-    if (secOff >= sec->rawsize) return size;
-    const uint8_t* code = pe.data.data() + sec->raw + secOff;
-    uint32_t avail = sec->rawsize - secOff;
-    uint32_t limit = size + 0x400;
-    if (limit > avail) limit = avail;
-    if (limit <= size) return size;
-    ZydisDecoder dec;
-    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-    uint32_t p = 0, term = 0;
-    while (p < limit) {
-        ZydisDecodedInstruction ins;
-        ZydisDecodedOperand o[ZYDIS_MAX_OPERAND_COUNT];
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, limit - p, &ins, o))) break;
-        const char* m = ZydisMnemonicGetString(ins.mnemonic);
-        const std::string lm = m ? m : "?";
-        p += ins.length;
-        if (lm == "ret" || lm == "jmp") { term = p; break; }
-    }
-    return (term > size) ? term : size;
+// .pdata 的 size 偶尔比真实函数体短（MSVC 热/冷拆分：冷块单独一条 .pdata），
+// 这些地址必须手工补长。
+//
+// 曾经试过「末尾不是 ret/jmp 就自动向后找第一条 ret/jmp 补长」，ARM64 语义门禁
+// （run 45962180561）**直接红**：stage4 nested golden 每个候选都 segfault。
+// 原因是自动补长会把「后面那个函数」的指令并进来，改掉的不止是长度——jump-table
+// 的 labelSet 和 effSize<0x10000 的启发式都跟着变，等于重翻了一遍别人的函数。
+// 所以改成白名单：只补已经逐字节核过的那几个。
+//
+// 0x1403862d0：声明 43 字节（0x2b），真实到 0x14038647d 的 ret。
+//   缺的 0x1403862fb.. 那段是 std::_Hash 的 rehash 主体
+//   （_Vec.assign(0x14004ba20) → [_Mask]/[_Maxidx] 写回 → 重链循环 → ret），
+//   末尾还带着 0x14038647e 的 "invalid hash bucket count" 冷桩。
+//   补长后 effSize = 0x14038648b-0x1403862d0 = 0x1bb（尾部 int3 填充会被剥掉）。
+//   不补的后果：`push rdi / sub rsp,0x20` 配不到 `add rsp,0x20 / pop rdi`，
+//   guest rsp 永久低 0x20，返回后所有 [rsp+off] 局部变量整体错位。
+static uint32_t lookup_size_override(uint64_t va) {
+    static const std::unordered_map<uint64_t, uint32_t> m = {
+        {0x1403862d0ULL, 0x1bb},
+    };
+    auto it = m.find(va);
+    return it == m.end() ? 0u : it->second;
 }
 
 LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
-    LiftResult r1 = liftLinearExCore(pe, va, size, flags);
-    if (r1.ok && !r1.fallsOffEnd) return r1;
-    const uint32_t ext = extendToTerminator(pe, va, size);
-    if (ext > size) {
-        LiftResult r2 = liftLinearExCore(pe, va, ext, flags);
-        if (r2.ok) {
-            std::fprintf(stderr, "[extend] 0x%llx %u -> %u bytes（%s）\n",
-                         (unsigned long long)va, size, ext,
-                         r1.ok ? "原本 fallsOffEnd" : "原本 lift 失败");
-            return r2;
-        }
+    const uint32_t ov = lookup_size_override(va);
+    if (ov > size) {
+        std::fprintf(stderr, "[extend] 0x%llx %u -> %u bytes（白名单补长）\n",
+                     (unsigned long long)va, size, ov);
+        return liftLinearExCore(pe, va, ov, flags);
     }
-    return r1;
-}
-
-LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
-    return liftLinearEx(pe, va, size, 0);
+    return liftLinearExCore(pe, va, size, flags);
 }
 
 LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
