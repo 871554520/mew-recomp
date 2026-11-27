@@ -99,7 +99,7 @@ struct GuestHeapPool {
             if (refused++ < 20)
                 std::fprintf(stderr,
                              "[heap] alloc(%zu) refused (cursor=%zu pool=%zuMB) -> NULL\n",
-                             sz, cursor, (size_t)(POOL_SIZE >> 20));
+                             sz, cursor, (size_t)(pool_size >> 20));
             return 0;
         }
         uint8_t* ptr = base + cursor;
