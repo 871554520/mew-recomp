@@ -28,3 +28,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T22:0xZ  MEW_SPLIT_CHAIN=1（chaininfo 家族自动补长）+ 0x140c11370 白名单
 2026-11-27T22:1xZ 删除截断 chaininfo 家族的 0x140c11370 白名单
 2026-11-27T22:2xZ  32 位 RVA 跳转表 + stub_list.tsv + ff25 thunk 形状扩充
+2026-11-27T22:5xZ  栅栏/FPU 当 nop + chaininfo 追根 + RVA 表 default 动态派发
