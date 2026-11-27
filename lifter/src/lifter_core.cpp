@@ -320,7 +320,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     // 的 `[UNIMPL FUNC] 0x140d1a1b0 missing=pcmpestrm,ptest` + std::out_of_range）。
     // 实测站点：`66 0f 3a 60 36 0c` = pcmpestrm xmm6,[rsi],0x0c（无符号字节 / equal-ordered /
     // 正极性 / **mask 输出**），即「在 16 字节块里找 needle」。
-    if (mn == "ptest" || mn == "pcmpestrm") {
+    if (mn == "ptest" || mn == "pcmpestrm" || mn == "pcmpestri") {
         // 每个实例都包在**自己的花括号**里：同一个函数里可能有 4 条 ptest，
         // 平铺声明临时变量会「重复定义」直接编不过（生成代码里这是硬错误）。
         const std::string t = (mn == "ptest") ? "t_pt_" : "t_pce_";
@@ -336,8 +336,9 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             e.out << " sse::ptest(ctx, ctx->xmm[" << dx << "], " << t << "); }\n";
         } else {
             const int imm8 = (int)ops[2].imm.value.u;
-            e.out << " sse::pcmpestrm(ctx, ctx->xmm[" << dx << "], " << t << ", " << imm8
-                  << ", ctx->xmm[0]); }\n";
+            // pcmpestrm 写 XMM0、pcmpestri 写 ECX，都由助手内部完成，这里不再传 dst
+            // （旧版传了 ctx->xmm[0]，而助手签名里没有这个参数 —— 那版从没编过）。
+            e.out << " sse::" << mn << "(ctx, ctx->xmm[" << dx << "], " << t << ", " << imm8 << "); }\n";
         }
         return true;
     }

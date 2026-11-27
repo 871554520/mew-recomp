@@ -244,95 +244,158 @@ inline void extractf128(X64Ctx* c, int d, int s, int imm) {
 }
 inline void zeroupper(X64Ctx* c) { zero_all_hi(c); }
 
-// ---------------- SSE4.1 PTEST / SSE4.2 PCMPESTRM ----------------
+}  // namespace avx
+
+// ---------------- SSE4.1 PTEST / SSE4.2 PCMPESTR* ----------------
 // 为什么需要：run 45999239672 里 `[UNIMPL FUNC] va=0x140d1a1b0 missing=pcmpestrm,ptest`
 // 出现 4 次，紧接着调用方就抛 `std::out_of_range`（_Xran）——ucrt 的 SSE4.2 字符串例程
-// 整个被占位成「返回 0」，调用方按它给的 0 去取子串就越界。补齐这两条才能整函数翻出来。
+// 整个被占位成「返回 0」，调用方按它给的 0 去取子串就越界。补齐才能整函数翻出来。
 //
-// PTEST：ZF = ((src1 & src2) == 0)，CF = ((src1 & ~src2) == 0)，SF/OF/AF/PF = 0
+// PTEST：ZF = ((SRC1 & SRC2) == 0)，CF = ((SRC1 & ~SRC2) == 0)，SF/OF/AF/PF = 0
 inline void ptest(X64Ctx* c, const XmmReg& a, const XmmReg& b) {
     bool and_zero = true, andn_zero = true;
     for (int i = 0; i < 2; ++i) {
         if (a.u64[i] & b.u64[i]) and_zero = false;
-        if (a.u64[i] & ~b.u64[i]) andn_zero = false;
+        if (b.u64[i] & ~a.u64[i]) andn_zero = false;   // SDM：CF = (SRC2 & ~SRC1) == 0
     }
     c->zf = and_zero;
     c->cf = andn_zero;
     c->sf = false;
     c->of = false;
-    c->af = false;
     c->pf = false;
 }
 
-// PCMPESTRM xmm_A, xmm_B/m128, imm8：显式长度（EAX = A 的元素数，EDX = B 的元素数）
-// 的字符串比较，结果写 **XMM0** 低 16 位（imm8[6]=0 写 mask，=1 写 index）。
-// 实测站点（0x140d1a430）：`66 0f 3a 60 36 0c` = pcmpestrm xmm6, [rsi], 0x0c
-//   → 无符号字节 + equal-ordered + 正极性 + **mask 输出**，正是「在 16 字节块里找 needle」。
-// 这里实现：字节元素（imm[1:0]==00 或 10 都按字节位宽处理）+ equal-any(00) / equal-ordered(11)
-// + 四种极性；字元素（01/11）与 ranges(01) 未实现，按「无匹配」处理（并置 SF 让调用方走慢路径）。
-inline void pcmpestrm(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm, XmmReg& dst) {
-    const int elem_bits = ((imm & 3) == 1 || (imm & 3) == 3) ? 16 : 8;
-    const int max_elem = (elem_bits == 8) ? 16 : 8;
-    int nA = (int)(uint32_t)c->rax;   // 有符号来源：负数按 0 处理
-    int nB = (int)(uint32_t)c->rdx;
+// PCMPxSTRx 公共核心。**操作数角色按 SDM/intrinsic 定义**（_mm_cmpestri(needle, la, haystack, lb, mode)）：
+//   a = needle（第一操作数，长度取 EAX），b = haystack（第二操作数，长度取 EDX）。
+//   IntRes2 的第 i 位 = **haystack 第 i 个元素**命中，所以 index 直接就是 haystack 下标。
+// 聚合函数：0 equal any（b[i] ∈ {a[*]}）、1 ranges（b[i] ∈ 某个 [a[2k], a[2k+1]]）、
+//           2 equal each（a[i] == b[i]）、3 equal ordered（b[i..i+nA-1] == a[0..nA-1]）。
+// imm8：[1:0] 元素位宽/符号，[3:2] 聚合函数，[4] 极性，[6] 索引/掩码选择。
+struct PcmpStr {
+    uint32_t bits = 0;   // IntRes2：haystack 元素命中位图
+    int n_elem = 16;     // 元素个数上限（字节 16，字 8）
+};
+
+// 长度寄存器按 SDM 解释：取绝对值，饱和到元素上限
+inline int pcmp_len(uint64_t v, int max_elem) {
+    const int64_t s = (int64_t)(int32_t)(uint32_t)v;
+    const int64_t a = (s < 0) ? -s : s;
+    return (int)(a > max_elem ? max_elem : a);
+}
+
+inline int32_t pcmp_elem(const uint8_t* p, int i, int unit, bool sgn) {
+    if (unit == 1) {
+        const uint8_t u = p[i];
+        return sgn ? (int32_t)(int8_t)u : (int32_t)u;
+    }
+    uint16_t u = 0;
+    std::memcpy(&u, p + i * 2, 2);
+    return sgn ? (int32_t)(int16_t)u : (int32_t)u;
+}
+
+inline PcmpStr pcmp_core(const XmmReg& a, const XmmReg& b, int nA, int nB, uint8_t imm) {
+    const int fmt = imm & 3;
+    const int unit = (fmt == 1 || fmt == 3) ? 2 : 1;
+    const bool sgn = (fmt >= 2);
+    const int agg = (imm >> 2) & 3;
+    const int n_elem = 16 / unit;
+    const uint32_t full = (1u << n_elem) - 1u;
+    PcmpStr r;
+    r.n_elem = n_elem;
+    if (nA > n_elem) nA = n_elem;
+    if (nB > n_elem) nB = n_elem;
     if (nA < 0) nA = 0;
     if (nB < 0) nB = 0;
-    if (nA > max_elem) nA = max_elem;
-    if (nB > max_elem) nB = max_elem;
 
-    uint32_t intres1 = 0;
-    const int agg = (imm >> 2) & 3;
-    if (elem_bits == 8) {
-        uint8_t A[16], B[16];
-        std::memcpy(A, &a, 16);
-        std::memcpy(B, &b, 16);
-        for (int i = 0; i < nA; ++i) {
-            if (agg == 0) {                       // equal any：A[i] 出现在 B 里
-                for (int j = 0; j < nB; ++j)
-                    if (A[i] == B[j]) { intres1 |= 1u << i; break; }
-            } else if (agg == 3) {                // equal ordered：A 整段出现在 B 的 i 处
-                if (i + nA > nB) continue;
-                bool ok = true;
+    const uint8_t* pa = (const uint8_t*)&a;
+    const uint8_t* pb = (const uint8_t*)&b;
+    uint32_t bits = 0;
+    for (int i = 0; i < nB; ++i) {            // 位图下标 = haystack 位置
+        const int32_t h = pcmp_elem(pb, i, unit, sgn);
+        bool hit = false;
+        if (agg == 0) {                        // equal any
+            for (int j = 0; j < nA; ++j)
+                if (h == pcmp_elem(pa, j, unit, sgn)) { hit = true; break; }
+        } else if (agg == 1) {                 // ranges：needle 两两成区间
+            for (int j = 0; j + 1 < nA; j += 2) {
+                const int32_t lo = pcmp_elem(pa, j, unit, sgn);
+                const int32_t hi = pcmp_elem(pa, j + 1, unit, sgn);
+                if (lo <= h && h <= hi) { hit = true; break; }
+            }
+        } else if (agg == 2) {                 // equal each：同下标逐元素
+            if (i < nA && h == pcmp_elem(pa, i, unit, sgn)) hit = true;
+        } else {                               // equal ordered：needle 整段出现在 i 处
+            if (i + nA <= nB) {
+                hit = true;
                 for (int k = 0; k < nA; ++k)
-                    if (A[k] != B[i + k]) { ok = false; break; }
-                if (ok) intres1 |= 1u << i;
+                    if (pcmp_elem(pb, i + k, unit, sgn) != pcmp_elem(pa, k, unit, sgn)) { hit = false; break; }
             }
         }
+        if (hit) bits |= (1u << i);
     }
-
-    const uint32_t valid_mask = (nB >= max_elem) ? 0xFFFFu : ((nB <= 0) ? 0u : ((1u << nB) - 1u));
-    uint32_t intres2 = intres1;
-    switch ((imm >> 4) & 3) {
-        case 0: intres2 = intres1; break;                    // 正极性
-        case 1: intres2 = (~intres1) & 0xFFFFu; break;        // 负极性
-        case 2: intres2 = intres1 & valid_mask; break;        // masked positive
-        default: intres2 = (~intres1) & valid_mask; break;    // masked negative
+    // 极性（imm8[4]）：负极性在**有效 haystack 元素**范围内取反
+    if (imm & 0x10) {
+        const uint32_t valid = (nB >= n_elem) ? full : ((1u << nB) - 1u);
+        bits = (bits ^ full) & valid;
     }
-    intres2 &= 0xFFFFu;
-
-    c->cf = nA < max_elem;
-    c->zf = nB < max_elem;
-    c->sf = intres2 == 0;
-    c->of = intres1 != 0;
-    c->af = false;
-    c->pf = false;
-
-    uint32_t out = 0;
-    if (imm & 0x40) {                    // index 输出：最低置位下标，无匹配给 max_elem
-        int idx = max_elem;
-        for (int i = 0; i < max_elem; ++i)
-            if (intres2 & (1u << i)) { idx = i; break; }
-        out = (uint32_t)idx;
-    } else {
-        out = intres2;
-    }
-    dst.u32[0] = out;
-    dst.u32[1] = 0;
-    dst.u32[2] = 0;
-    dst.u32[3] = 0;
+    r.bits = bits & full;
+    return r;
 }
 
-}  // namespace avx
+// 算术标志按 SDM 的非标准写法：
+//   CF = IntRes2 != 0；ZF = |EDX| < 上限（haystack 短于整段）；SF = |EAX| < 上限；
+//   OF = IntRes2[0]；AF = PF = 0。
+inline void pcmp_flags(X64Ctx* c, const PcmpStr& r, int nA, int nB) {
+    c->cf = (r.bits != 0);
+    c->zf = (nB < r.n_elem);
+    c->sf = (nA < r.n_elem);
+    c->of = (r.bits & 1u) != 0;
+    c->pf = false;
+}
+
+// PCMPESTRM：结果写 XMM0。imm8[6]=0 写位掩码（低 16/8 位），=1 写元素掩码（命中元素整段置 1）。
+inline void pcmpestrm(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm) {
+    const int fmt = imm & 3;
+    const int unit = (fmt == 1 || fmt == 3) ? 2 : 1;
+    const int n_elem = 16 / unit;
+    const int nA = pcmp_len(c->rax, n_elem);
+    const int nB = pcmp_len(c->rdx, n_elem);
+    const PcmpStr r = pcmp_core(a, b, nA, nB, imm);
+    pcmp_flags(c, r, nA, nB);
+    XmmReg out{};
+    if (imm & 0x40) {                          // 元素掩码
+        for (int i = 0; i < n_elem; ++i) {
+            if (!(r.bits & (1u << i))) continue;
+            if (unit == 1) out.u8[i] = 0xFF;
+            else out.u16[i] = 0xFFFF;
+        }
+    } else {                                   // 位掩码，其余位清零
+        out.u32[0] = r.bits;
+    }
+    c->xmm[0] = out;
+}
+
+// PCMPESTRI：结果 index 写 ECX（无匹配给 16/8）；imm8[6]=0 取最低置位，=1 取最高置位。
+inline void pcmpestri(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm) {
+    const int fmt = imm & 3;
+    const int unit = (fmt == 1 || fmt == 3) ? 2 : 1;
+    const int n_elem = 16 / unit;
+    const int nA = pcmp_len(c->rax, n_elem);
+    const int nB = pcmp_len(c->rdx, n_elem);
+    const PcmpStr r = pcmp_core(a, b, nA, nB, imm);
+    pcmp_flags(c, r, nA, nB);
+    int idx = n_elem;
+    if (r.bits) {
+        if (imm & 0x40) {
+            for (int i = 0; i < n_elem; ++i) if (r.bits & (1u << i)) idx = i;
+        } else {
+            for (int i = 0; i < n_elem; ++i) if (r.bits & (1u << i)) { idx = i; break; }
+        }
+    }
+    c->rcx = (uint64_t)(uint32_t)idx;
+}
+
+
 
 }  // namespace sse
 
