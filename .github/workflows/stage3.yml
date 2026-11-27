@@ -300,7 +300,7 @@ jobs:
         run: |
           set +e
           # 观测那个「cookie 解码链表」函数：看它的 rcx / [rcx] 以及两条哨兵全局、cookie 的真实值
-          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4 MEW_TRACE_MEM=0x1413bb4e8,0x1413bb500,0x1412f2880 \
+          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400 MEW_TRACE_MEM=0x1413bb4e8,0x1413bb500,0x1412f2880,0x1413c60dc,0x1413c60e4 \
           MEW_SAMPLE_SEC=15 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 timeout 240 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
