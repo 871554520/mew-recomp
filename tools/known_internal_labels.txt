@@ -59,3 +59,14 @@
 # 是 0x140be07a0 函数体内部的标签，但被当成函数指针存进了 vtable（外部间接调用），
 # 所以必须登记成 fragment；只按 .pdata 入口是找不到它的。
 0x140be07e4
+# run 46021919377（arm64-verify 的 Stage 4 nested golden）里冒出来的新 FATAL：
+#   [FATAL] Unmapped indirect target: 0x140bb067b (nearest_lo=0x0) in_fn=0x140bb0660 hits=1
+# 0x140bb067b 是 0x140bb0660 函数体内部 +0x1b 的**指令边界**，逐字节核过：
+#   0x140bb0660: 48 89 6c 24 18   mov [rsp+0x18],rbp
+#                ...
+#               0f 84 96 00 00 00 je 0x140bb0705
+#   0x140bb0679: b1 01            mov cl,1
+#   0x140bb067b: 48 89 5c 24 30   mov [rsp+0x30],rbx   ← 被当成调用目标的那条
+# 即「一条 1 字节指令之后的标签」。nested PoC 是单函数 lift，不会跑 reflow 那一步，
+# 所以 g_needed_entries 收不到它 → dispatch miss。显式登记成 fragment 入口即可命中。
+0x140bb067b
