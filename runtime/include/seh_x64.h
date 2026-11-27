@@ -352,6 +352,10 @@ inline void win_to_ctx(const Ctx64* w, X64Ctx* c) {
 // ---------------- 恢复执行：longjmp 回宿主派发点 ----------------
 inline std::jmp_buf& resume_buf() { static std::jmp_buf b; return b; }
 inline bool& resume_armed() { static bool v = false; return v; }
+// 最近一次 raise 构造的 EXCEPTION_RECORD 位置。RtlUnwind 的第三个参数常常是 NULL，
+// 那时必须复用这一份，否则 phase 2 没有 record 可用。
+inline uint64_t& last_record_va() { static uint64_t v = 0; return v; }
+
 inline Ctx64& resume_ctx() { static Ctx64 w; return w; }
 
 inline void resume_at(uint64_t rip, const Ctx64& w) {
@@ -389,6 +393,66 @@ inline int call_personality(X64Ctx* c, uint64_t handler, uint64_t record_va, uin
 }
 
 // 派发异常；返回 false = 没人处理（调用方决定后续）
+// 第二阶段（unwind）派发：把 EXCEPTION_UNWINDING(2) 置上再问一遍 handler。
+// 这是 __finally 真正执行的地方 —— MSVC 的 __C_specific_handler 在**第一阶段**
+// 对 finally scope 永远返回 EXCEPTION_CONTINUE_SEARCH(1)，实体只在 unwind 阶段跑。
+// 我们原来只做了第一阶段，于是日志里 handler 一路返回 1、__finally 全被跳过，
+// 那些全局/容器的构造清理也就永远不会发生（run 45951868177 里
+// std::map 全局 0x1413c59e0 的 _Myhead 一直是 0，就是这个后果）。
+inline bool unwind_phase2(X64Ctx* c, uint64_t target_frame, uint64_t target_ip,
+                          uint64_t record_va) {
+    if (!c || !record_va) return false;
+    const uint64_t rsp_at_call = c->rsp;
+    uint64_t scratch = (rsp_at_call - 0x1200) & ~(uint64_t)15;
+    if (!guest_mapped(scratch, 0x800)) {
+        std::fprintf(stderr, "[seh2] scratch unmapped 0x%llx\n", (unsigned long long)scratch);
+        return false;
+    }
+    const uint64_t context_va = scratch + 0x100;
+    const uint64_t disp_va = scratch + 0x600;
+
+    uint32_t rec_flags = 0;
+    std::memcpy(&rec_flags, (const void*)(uintptr_t)(record_va + 4), 4);
+    rec_flags |= 2u;                       // EXCEPTION_UNWINDING
+    std::memcpy((void*)(uintptr_t)(record_va + 4), &rec_flags, 4);
+
+    Ctx64 cur;
+    ctx_to_win(c, &cur);
+    int called = 0;
+    for (int depth = 0; depth < 512; ++depth) {
+        if (!cur.Rip) break;
+        FuncEntry fe;
+        UnwindInfo u;
+        const bool have_fe = lookup_function_entry(cur.Rip - 1, &fe);
+        if (have_fe) read_unwind_info(fe.unwind, &u);
+        if (have_fe && u.has_handler) {
+            std::memcpy((void*)(uintptr_t)context_va, &cur, sizeof(cur));
+            DispatcherContext dc;
+            std::memset(&dc, 0, sizeof(dc));
+            dc.ControlPc = cur.Rip;
+            dc.ImageBase = image().base;
+            dc.FunctionEntry = fe.entry_va;
+            dc.EstablisherFrame = cur.Rsp;
+            dc.ContextRecord = context_va;
+            dc.LanguageHandler = u.handler;
+            dc.HandlerData = u.handler_data;
+            std::memcpy((void*)(uintptr_t)disp_va, &dc, sizeof(dc));
+            int disp = call_personality(c, u.handler, record_va, cur.Rsp, context_va, disp_va);
+            ++called;
+            std::fprintf(stderr, "[seh2] unwind depth=%d pc=0x%llx handler=0x%llx -> %d\n",
+                         depth, (unsigned long long)cur.Rip,
+                         (unsigned long long)u.handler, disp);
+        }
+        virtual_unwind(cur.Rip, &cur, nullptr, nullptr, false);
+        if (target_frame && cur.Rsp >= target_frame) break;
+    }
+    rec_flags &= ~2u;
+    std::memcpy((void*)(uintptr_t)(record_va + 4), &rec_flags, 4);
+    std::fprintf(stderr, "[seh2] unwound %d handler(s) down to frame=0x%llx\n", called,
+                 (unsigned long long)target_frame);
+    return true;
+}
+
 inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
                                      uint32_t nparams, const uint64_t* params) {
     ensure_ready();
@@ -423,6 +487,7 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
     rec.NumberParameters = nparams > 15 ? 15 : nparams;
     for (uint32_t i = 0; i < rec.NumberParameters; ++i) rec.Information[i] = params ? params[i] : 0;
     std::memcpy((void*)(uintptr_t)record_va, &rec, sizeof(rec));
+    last_record_va() = record_va;
 
     Ctx64 cur;
     ctx_to_win(c, &cur);

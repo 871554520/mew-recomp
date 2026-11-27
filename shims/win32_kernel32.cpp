@@ -1833,6 +1833,10 @@ void shim_KERNEL32_RtlUnwind(X64Ctx* c) {
     std::fprintf(stderr, "[shim] RtlUnwind(frame=0x%llx ip=0x%llx)\n",
                  (unsigned long long)target_frame, (unsigned long long)target_ip);
     if (target_ip && seh::seh_dispatch_enabled()) {
+        // 第二阶段：从当前帧一路 unwind 到 target_frame，沿途把 __finally 跑掉。
+        // arg2 是 EXCEPTION_RECORD，MSVC 常传 NULL —— 那就用最近一次 raise 的那份。
+        const uint64_t rec = arg2(c) ? arg2(c) : seh::last_record_va();
+        seh::unwind_phase2(c, target_frame, target_ip, rec);
         seh::Ctx64 w;
         seh::ctx_to_win(c, &w);
         w.Rsp = target_frame;
