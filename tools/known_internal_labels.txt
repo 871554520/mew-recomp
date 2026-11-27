@@ -23,3 +23,9 @@
 #                                      打包进同一条 .pdata，前 8 字节是 xor eax,eax; ret）
 0x140d6adc8
 0x140d1ba18
+
+# SEH 恢复点专用的 fragment 入口：runner 的 resume 走 dispatch_indirect，
+# 而它只认函数入口，函数中间地址会 FATAL。SKIP_INIT 要把异常后的执行
+# 接回 _initterm(0x140d6aec8) 循环里的 0x140d6aef5（call rax 的返回地址，
+# 异常帧链 depth=6 实测就是这个值），所以必须让它成为可派发的 fragment。
+0x140d6aef5
