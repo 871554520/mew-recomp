@@ -527,6 +527,12 @@ inline void mew_ind_dump() {
     std::fflush(stderr);
 }
 
+// 前置声明（这一版又被覆盖丢过一次，别删）：dispatch_indirect 的「未绑定 IAT 槽」
+// 分支要用 guest_mapped / mem_read，它们的定义在本文件更后面。
+inline bool guest_mapped(uint64_t addr, size_t n);
+template <typename T>
+inline T mem_read(X64Ctx* ctx, uint64_t guest_addr);
+
 inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = false) {
     const bool trace_this = mew_trace_caller() && cur_fn_va() == mew_trace_caller();
     const uint64_t t_rsp0 = ctx ? ctx->rsp : 0;
