@@ -880,9 +880,13 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
     // （run 46047307348 的 [cxx-eh] #1）。单线程模拟下没人会 signal，正确做法是
     // 「假装已被唤醒」——返回 TRUE，让等待方继续走，而不是抛异常把 main 打死。
     const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
-    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> %s(%llu)\n",
-                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
-                 ret ? "signaled" : "timeout", (unsigned long long)ret);
+    // 带上 caller：run 46055985114 里 485 次 wake 都是同一个 cv(0x509355c0)，
+    // 只有 caller 能区分「SDL 事件队列在转」还是「引擎自己的 job 池在等不存在的线程」。
+    static int wait_logged = 0;
+    if (wait_logged++ < 20)
+        std::fprintf(stderr, "[cond] wait cv=0x%llx ms=%u -> %s(%llu) caller=0x%llx\n",
+                     (unsigned long long)arg1(c), ms, ret ? "signaled" : "timeout",
+                     (unsigned long long)ret, (unsigned long long)cur_fn_va());
     (void)cv_for; (void)srw_for;
     ret0(c, ret);
 }
@@ -893,11 +897,19 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_signal(&cv->cv);
+    static int logged = 0;
+    if (logged++ < 20)
+        std::fprintf(stderr, "[cond] wake cv=0x%llx caller=0x%llx\n",
+                     (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
     ret0(c, 1);
 }
 void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_broadcast(&cv->cv);
+    static int logged = 0;
+    if (logged++ < 20)
+        std::fprintf(stderr, "[cond] wakeall cv=0x%llx caller=0x%llx\n",
+                     (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
     ret0(c, 1);   // BOOL：非 0 = 成功（见上）
 }
 
