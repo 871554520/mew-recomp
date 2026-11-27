@@ -886,15 +886,19 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
     (void)cv_for; (void)srw_for;
     ret0(c, ret);
 }
+// 语义修正（run 46055985114 的实测）：x64 下 WakeConditionVariable /
+// WakeAllConditionVariable 返回 **BOOL**（非 0 = 成功）。以前这里 ret0(c, 0)，
+// 等于每次都告诉调用方「唤醒失败」——建窗到弹窗那 1365 条调用里有 485 条
+// WakeAllConditionVariable（35%），就是被这个 0 引着反复重试。
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_signal(&cv->cv);
-    ret0(c, 0);
+    ret0(c, 1);
 }
 void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_broadcast(&cv->cv);
-    ret0(c, 0);
+    ret0(c, 1);   // BOOL：非 0 = 成功（见上）
 }
 
 // InitOnce：0=未完成 1=已完成；INIT_ONCE_INIT_FAILED(0x4) 允许后续重试
