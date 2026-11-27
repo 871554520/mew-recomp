@@ -96,6 +96,28 @@ inline uint64_t mew_trace_fn() {
     return v;
 }
 
+// MEW_TRACE_MEM=0x<va>[,0x<va>...]：配合 MEW_TRACE_FN，进入被观测函数时
+// 依次打印这些固定地址的 qword 内容。用来一次性看清「哨兵全局 / cookie / 链表头」
+// 到底是什么值（例子：0x1413bb4e8,0x1413bb500,0x1412f2880）。
+inline const std::vector<uint64_t>& mew_trace_mem() {
+    static const std::vector<uint64_t> v = [] {
+        std::vector<uint64_t> out;
+        const char* e = std::getenv("MEW_TRACE_MEM");
+        if (!e) return out;
+        const char* p = e;
+        while (*p) {
+            char* end = nullptr;
+            unsigned long long x = std::strtoull(p, &end, 0);
+            if (end == p) break;
+            out.push_back((uint64_t)x);
+            p = end;
+            while (*p == ',' || *p == ' ') ++p;
+        }
+        return out;
+    }();
+    return v;
+}
+
 #define MEW_SET_CUR_FN(CTX, VA)                                                   \
     do {                                                                          \
         cur_ctx_ptr() = (CTX);                                                    \
@@ -119,6 +141,7 @@ inline uint64_t mew_trace_fn() {
                     (unsigned long long)(CTX)->rax);                              \
                 mew_probe_qword("[fn:rcx+0x88]", (CTX)->rcx + 0x88);              \
                 mew_probe_qword("[fn:rdx]", (CTX)->rdx);                          \
+                for (uint64_t _a : mew_trace_mem()) mew_probe_qword("[mem]", _a); \
             }                                                                     \
         }                                                                         \
     } while (0)
