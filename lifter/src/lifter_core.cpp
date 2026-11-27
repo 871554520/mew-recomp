@@ -1091,6 +1091,10 @@ LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t 
     return liftLinearExCore(pe, va, size, flags);
 }
 
+LiftResult liftFunction(const PeImage& pe, uint64_t va, uint32_t size) {
+    return liftLinearEx(pe, va, size, 0);
+}
+
 LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     LiftResult res;
     const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
