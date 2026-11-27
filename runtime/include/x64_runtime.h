@@ -494,6 +494,24 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     (void)t_hit;
     auto& tbl = g_dispatch_table();
     auto it = tbl.find(target_va);
+    // 诊断（MEW_TRACE_IND=1）：把每个间接跳转/调用的**运行时解析目标**打出来。
+    // run 46023439342 卡死在 0x140d1f7e4 的 `call qword [rip+0x11fe17]` 上：29 条
+    // [SAMPLE] 的 rsp 一模一样，说明卡在那次调用里没返回。槽位 0x140e3f620 在文件里
+    // 是字面量 0x12e651a（.reloc 里没有 DIR64），若运行时还是它，目标根本不在镜像里；
+    // 若变成了别的地址，那就是我们 loader 的重定位/初始化把它改写了 —— 两种结论要
+    // shim 的对象完全不同，所以先把实际值打出来。最多 300 行，避免刷爆日志。
+    if (const char* ti = std::getenv("MEW_TRACE_IND")) {
+        if (ti[0] == '1') {
+            static int ind_logged = 0;
+            if (ind_logged < 300) {
+                ++ind_logged;
+                std::fprintf(stderr, "[ind] #%d target=0x%llx caller=0x%llx is_call=%d in_tbl=%d\n",
+                             ind_logged, (unsigned long long)target_va,
+                             (unsigned long long)cur_fn_va(), (int)is_call,
+                             (int)(it != tbl.end() ? 1 : 0));
+            }
+        }
+    }
     if (it != tbl.end()) {
         const bool guard = mew_abi_guard_on();
         const uint64_t caller = cur_fn_va();
