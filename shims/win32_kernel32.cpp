@@ -271,8 +271,15 @@ void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x8u) != 0);  // HEAP_ZERO_MEMORY=0x8
     // 返回 0 时把 caller 也打出来：这类请求通常是「路径解析器拿到坏指针后算出的天文数字」，
     // 栈上那一层的 caller 才是要查的对象。
-    std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx caller=0x%llx%s\n", n, flags,
-                 (unsigned long long)g, (unsigned long long)cur_fn_va(), g ? "" : " (NULL: refused)");
+    // 节流：HeapAlloc 是热路径，以前**每次调用都打**，run 46055985114 里
+    // 0x140d1f7e4 的循环分配了几百万次 → runner.err 涨到 1.88 GB，artifact 没法读。
+    // 前 2000 次全打（初始化现场够用），之后每 10 万次补一行计数，NULL 一律要打。
+    static uint64_t logged = 0;
+    ++logged;
+    if (!g || logged <= 2000 || (logged % 100000) == 0)
+        std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx caller=0x%llx%s [n=%llu]\n",
+                     n, flags, (unsigned long long)g, (unsigned long long)cur_fn_va(),
+                     g ? "" : " (NULL: refused)", (unsigned long long)logged);
     ret0(c, g);
 }
 
