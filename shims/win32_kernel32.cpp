@@ -1288,8 +1288,86 @@ void shim_KERNEL32_MulDiv(X64Ctx* c) {
     ret0(c, (uint64_t)(int64_t)v);
 }
 void shim_KERNEL32_AreFileApisANSI(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_KERNEL32_FormatMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
-void shim_KERNEL32_FormatMessageA(X64Ctx* c) { (void)c; ret0(c, 0); }
+// FormatMessageW/A：以前一律返回 0（"如实失败"），结果 SDL 的错误消息全是空串。
+// 链路是：SDL 的 SetError(0x140c15800) 先 GetLastError() 拿码，再 FormatMessageW 取文本；
+// 我们返回 0 -> 文本为空 -> SDL_GetError() 返回空串 ->
+//   TaskDialog 的内容只剩前缀 `content="Could not create window: "`，
+// 后半截（真正的失败原因）永久丢失。这条空串挡住了好几轮诊断，必须先打通。
+//
+// 注意 GetLastError 本身仍恒返回 0（ERROR_SUCCESS），所以这里能给出的是
+// "no error" 一类文本 —— 那本身就是结论：**失败的 API 没有设过错误码**，
+// 说明失败发生在我们自己的垫片里（它们不设 LastError），不是 Windows 语义的失败。
+static const char* mew_format_windows_error(uint32_t id) {
+    switch (id) {
+        case 0:    return "no error (GetLastError()=0)";
+        case 2:    return "The system cannot find the file specified.";
+        case 3:    return "The system cannot find the path specified.";
+        case 5:    return "Access is denied.";
+        case 6:    return "The handle is invalid.";
+        case 8:    return "Not enough memory resources are available.";
+        case 14:   return "The system cannot find the drive specified.";
+        case 87:   return "The parameter is incorrect.";
+        case 126:  return "The specified module could not be found.";
+        case 127:  return "The specified procedure could not be found.";
+        case 1400: return "Invalid window handle.";
+        case 1407: return "Cannot find window class.";
+        case 1418: return "This hook procedure can only be set globally.";
+        default:   break;
+    }
+    return nullptr;
+}
+
+void shim_KERNEL32_FormatMessageW(X64Ctx* c) {
+    // FormatMessageW(dwFlags, lpSource, dwMessageId, dwLanguageId, lpBuffer, nSize, Arguments)
+    const uint32_t flags = (uint32_t)arg0(c);
+    const uint32_t msgid = (uint32_t)arg2(c);
+    const uint64_t out   = arg4(c);   // 第 5 参：lpBuffer（栈上）
+    const uint32_t cap   = (uint32_t)arg5(c);
+    const bool allocate  = (flags & 0x100u) != 0;   // FORMAT_MESSAGE_ALLOCATE_BUFFER
+    static int traced = 0;
+    if (traced++ < 24)
+        std::fprintf(stderr,
+                     "[shim] FormatMessageW(flags=0x%x id=%u cap=%u alloc=%d) caller=0x%llx\n",
+                     flags, msgid, cap, (int)allocate, (unsigned long long)cur_fn_va());
+
+    // 组一条文本：已知码用系统原文，未知码给 "Unknown error (N)"，
+    // 这样 SDL_GetError() 至少能带出错误码，不再是空串。
+    char text[128];
+    const char* known = mew_format_windows_error(msgid);
+    if (known) std::snprintf(text, sizeof(text), "%s", known);
+    else       std::snprintf(text, sizeof(text), "Unknown error (%u)", msgid);
+    const size_t units = std::strlen(text) + 1;
+
+    if (allocate) {
+        // lpBuffer 是 `WCHAR**`：分配一块 guest 内存，把指针写回 *lpBuffer
+        const uint64_t buf = guest_alloc(c, units * 2);
+        if (!buf) { ret0(c, 0); return; }
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, buf);
+        for (size_t i = 0; i < units; ++i) p[i] = (uint16_t)(unsigned char)text[i];
+        if (out) mem_write<uint64_t>(c, out, buf);
+        ret0(c, (uint64_t)(units - 1));
+        return;
+    }
+    if (!out || cap < units) { ret0(c, 0); return; }
+    uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, out);
+    for (size_t i = 0; i < units; ++i) p[i] = (uint16_t)(unsigned char)text[i];
+    ret0(c, (uint64_t)(units - 1));   // 返回写入的字符数，不含 NUL
+}
+
+void shim_KERNEL32_FormatMessageA(X64Ctx* c) {
+    // ANSI 版：语义同上，只是按 char 写。
+    const uint32_t msgid = (uint32_t)arg2(c);
+    const uint64_t out   = arg4(c);
+    const uint32_t cap   = (uint32_t)arg5(c);
+    char text[128];
+    const char* known = mew_format_windows_error(msgid);
+    if (known) std::snprintf(text, sizeof(text), "%s", known);
+    else       std::snprintf(text, sizeof(text), "Unknown error (%u)", msgid);
+    const size_t n = std::strlen(text) + 1;
+    if (!out || cap < n) { ret0(c, 0); return; }
+    std::memcpy(guest_ptr_from_ctx(c, out), text, n);
+    ret0(c, (uint64_t)(n - 1));
+}
 void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
