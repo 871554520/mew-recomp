@@ -868,10 +868,17 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
     // 现在按「超时」立刻返回 0，并打一行日志让下一轮 artifact 能证实这条路径。
     const uint32_t ms = (uint32_t)arg2(c);
-    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> timeout(0)\n",
-                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms);
+    // 关键：参数是 INFINITE(0xFFFFFFFF) 时**不可能超时**。上面那版一律返回 FALSE(0)，
+    // 于是 CRT 的 _Cnd_wait 把它解释成「死锁」并抛
+    //   std::system_error("resource deadlock would occur")
+    // （run 46047307348 的 [cxx-eh] #1）。单线程模拟下没人会 signal，正确做法是
+    // 「假装已被唤醒」——返回 TRUE，让等待方继续走，而不是抛异常把 main 打死。
+    const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
+    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> %s(%llu)\n",
+                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
+                 ret ? "signaled" : "timeout", (unsigned long long)ret);
     (void)cv_for; (void)srw_for;
-    ret0(c, 0);
+    ret0(c, ret);
 }
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
@@ -1371,70 +1378,6 @@ void shim_USER32_MessageBoxA(X64Ctx* c) {
     ret0(c, 1);
 }
 
-// ---------------- COMCTL32：任务对话框（诊断用） ----------------
-// SDL3 的 SDL_ShowSimpleMessageBox 在 Windows 上**优先**用 TaskDialogIndirect
-// （comctl32 v6，动态 GetProcAddress 取），取不到才回落到自绘的旧消息框
-// （WIN_ShowOldMessageBox：CreateCompatibleDC + 512KB 位图 + 模态循环）。
-// 这个名字以前不在 lookup_api 里，于是 GetProcAddress 返回 0，SDL 走旧路径——
-// run 46047307348 里连续三次 `LoadLibraryW(comctl32) -> GetProcAddress=0
-// -> CreateCompatibleDC -> HeapAlloc(524319) -> SleepConditionVariableSRW(INFINITE)
-// -> ExitProcess(3)`，就是三次「想弹错误框但弹不出来」，正文一条都没进日志。
-//
-// 这里给它一个真垫片：把 TASKDIALOGCONFIG 的标题/正文打出来，然后按「点了第一个按钮」
-// 立刻返回 S_OK。SDL 因此走 SUCCEEDED 分支，不再进旧消息框、也不再阻塞。
-//
-// 布局注意（这条是硬事实，别按自然对齐写）：Windows SDK 的 commctrl.h 里
-// TASKDIALOGCONFIG 被 `#include <pshpack1.h>` 包着（mingw-w64 的 commctrl.h
-// 5168 行 pshpack1 -> 5262 行结构体 -> 5298 行 poppack），SDL3 自己也写了
-// `#pragma pack(push, 1)`。所以 x64 下 cbSize = 0xA0（不是自然对齐的 0xB0），
-// 字段偏移是：+0x1C pszWindowTitle / +0x2C pszMainInstruction / +0x34 pszContent
-// / +0x3C cButtons / +0x64 pszExpandedInformation / +0x84 pszFooter。
-// 0x20/0x30/0x38 是自然对齐的偏移，读出来是指针的高半截 + 图标资源 ID，全是垃圾。
-// 这里按 cbSize 选布局，并对每个指针做 guest_mapped 校验、取不到就换另一种布局再试。
-void shim_COMCTL32_TaskDialogIndirect(X64Ctx* c) {
-    const uint64_t cfg = arg0(c);
-    uint32_t cb = 0;
-    bool packed = true;
-    if (cfg && guest_mapped(cfg, 4)) {
-        cb = mem_read<uint32_t>(c, cfg);
-        if (cb == 0xB0) packed = false;   // 自然对齐变体（理论上不会出现）
-    }
-    auto rd = [&](uint64_t off) -> uint64_t {
-        if (!cfg || !guest_mapped(cfg + off, 8)) return 0;
-        return mem_read<uint64_t>(c, cfg + off);
-    };
-    auto pick = [&](uint64_t poff, uint64_t noff) -> uint64_t {
-        uint64_t v = packed ? rd(poff) : rd(noff);
-        if (v && guest_mapped(v, 2)) return v;
-        uint64_t w = packed ? rd(noff) : rd(poff);
-        if (w && guest_mapped(w, 2)) return w;
-        return 0;
-    };
-    const uint64_t title = pick(0x1C, 0x20);
-    const uint64_t instr = pick(0x2C, 0x30);
-    const uint64_t content = pick(0x34, 0x38);
-    const uint64_t expanded = pick(0x64, 0x70);
-    const uint64_t footer = pick(0x84, 0x90);
-    uint32_t cbuttons = 0;
-    if (cfg && guest_mapped(cfg + (packed ? 0x3C : 0x40), 4))
-        cbuttons = mem_read<uint32_t>(c, cfg + (packed ? 0x3C : 0x40));
-    std::fprintf(stderr,
-                 "[shim] TaskDialogIndirect cbSize=0x%x packed=%d buttons=%u title=\"%s\""
-                 " content=\"%s\" main=\"%s\" expanded=\"%s\" footer=\"%s\"\n",
-                 cb, (int)packed, cbuttons,
-                 title ? guest_wstr(c, title).c_str() : "",
-                 content ? guest_wstr(c, content).c_str() : "",
-                 instr ? guest_wstr(c, instr).c_str() : "",
-                 expanded ? guest_wstr(c, expanded).c_str() : "",
-                 footer ? guest_wstr(c, footer).c_str() : "");
-    // IDBUTTONINDEX0(=100)：SDL3 用 nButton-100 反查是第几个按钮，这样能正确映射回
-    // 调用方自己的 buttonID；返回 IDOK(1) 会被 SDL 当成「未知按钮」→ buttonID=-1。
-    if (arg1(c)) mem_write<int32_t>(c, arg1(c), 100);
-    if (arg2(c)) mem_write<int32_t>(c, arg2(c), 0);
-    if (arg3(c)) mem_write<int32_t>(c, arg3(c), 0);
-    ret0(c, 0);   // S_OK
-}
-
 // ---- 输入：一律「没有按键」 ----
 void shim_USER32_GetAsyncKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
@@ -1668,12 +1611,6 @@ RecompFn lookup_api(const char* name) {
         {"IsValidLocale", shim_KERNEL32_IsValidLocale},
         {"WideCharToMultiByte", shim_KERNEL32_WideCharToMultiByte},
         {"MultiByteToWideChar", shim_KERNEL32_MultiByteToWideChar},
-        // 错误弹窗一族：SDL3 的 SDL_ShowSimpleMessageBox 优先走 TaskDialogIndirect，
-        // 取不到才回落 MessageBoxW/A。三个名字以前一个都没登记，所以游戏的三次
-        // 报错框不但弹不出来，连正文都没进日志（run 46047307348）。
-        {"TaskDialogIndirect", shim_COMCTL32_TaskDialogIndirect},
-        {"MessageBoxA", shim_USER32_MessageBoxA},
-        {"MessageBoxW", shim_USER32_MessageBoxW},
     };
     for (const auto& e : kApis)
         if (std::strcmp(e.name, name) == 0) return e.fn;
