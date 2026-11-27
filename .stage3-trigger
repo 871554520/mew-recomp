@@ -16,3 +16,4 @@ t=1795726400 round-P: guest 堆基址挪到 4GB 以下（0x10000000）
 t=1795726400 round-Q: 修复 cur_fn_va 未恢复（[ret]/in_fn 指错人）
 t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T18:5xZ  split-family hot batch: 0x14004ba20(_Vec.assign) + 11 CRT helpers (push_back/string assign/fill)
+2026-11-27T19:2xZ  thunk seeds: 背靠背 16 字节对齐的 C++ 调整器 thunk（无 .pdata、无 cc 填充）纳入 seed 挖掘

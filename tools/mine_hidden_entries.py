@@ -82,6 +82,7 @@ def _inside_known(va):
             break
     return False
 
+
 try:
     text_bytes = bytes(binary.get_content_from_virtual_address(text_start, len_range := text_end - text_start))
     i = 0
@@ -102,6 +103,56 @@ try:
         i = j
 except Exception as exc:  # noqa: BLE001
     print('padding scan failed:', exc)
+
+# 背靠背对齐 thunk：MSVC 的 C++ 调整器 thunk
+# （`lea rcx,[rdx+off]` / `mov rcx,[rdx+off]` / `lea rcx,[rip+off]` + `add rcx,imm` + `jmp rel32`）
+# 会按 16 字节对齐**紧挨着排成一串**，段与段之间没有 `cc` 填充——上面那条「≥3 个 cc」的
+# 规则正好漏掉它们，只有每串最后一个才会被挖到。
+#
+# 运行期证据（stage3 run 45985646254，head e412712）：init 链推进到 index=2339 时
+#   [FATAL] Unmapped indirect target: 0x140e39c20 (nearest_lo=0x140e39b90 delta=144)
+#           in_fn=0x140d4c580
+#   同族还有 0x140e39c10 / 0x140e39c00 —— 三个都是这种 thunk（`.text` 内、无 .pdata、
+#   16 对齐），而 vtable 里存的就是它们的地址，所以换一个就是一次 FATAL。
+# 本地按下面这个形状扫全镜像：7,507 个候选，其中 599 个是现有 seed 没覆盖的。
+n_thunk = 0
+
+
+def _thunk_shape(buf, p):
+    """从 p 起按 thunk 形状走，走到 `jmp rel32` 返回其结束偏移，否则 None。"""
+    for _ in range(5):
+        if p + 1 >= len(buf):
+            return None
+        b0, b1 = buf[p], buf[p + 1]
+        if b0 == 0xE9 and p + 5 <= len(buf):
+            return p + 5
+        if b0 == 0x48 and b1 in (0x8D, 0x8B) and p + 7 <= len(buf):
+            modrm = buf[p + 2]
+            if (modrm & 0xC0) == 0x80 or (modrm & 0xC7) == 0x05:
+                p += 7
+                continue
+            return None
+        if b0 == 0x48 and b1 == 0x83 and buf[p + 2] in (0xC1, 0xC0) and p + 4 <= len(buf):
+            p += 4
+            continue
+        if b0 == 0x48 and b1 == 0x81 and buf[p + 2] in (0xC1, 0xC0) and p + 7 <= len(buf):
+            p += 7
+            continue
+        return None
+    return None
+
+
+try:
+    for k in range(0, len(text_bytes) - 21, 16):
+        va = text_start + k
+        if va % 16 or va in known or va in seeds or _inside_known(va):
+            continue
+        if _thunk_shape(text_bytes, k) is not None:
+            seeds.add(va)
+            n_thunk += 1
+except Exception as exc:  # noqa: BLE001
+    print('thunk scan failed:', exc)
+print('back-to-back thunk-entry candidates:', n_thunk)
 
 print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))
