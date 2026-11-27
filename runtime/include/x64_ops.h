@@ -43,6 +43,21 @@ static inline uint64_t sbb_flags(X64Ctx* c, uint64_t a, uint64_t b, int width) {
     return r;
 }
 
+// ADC：a + b + CF。以前 lifter 里没有 adc 分支，直接整函数占位
+// （artifact stub_list：19 个函数只缺 adc）。CF 用「加 carry-in 后的和是否越界」判，
+// 与 sbb_flags 用 (b+borrow) 的口径一致，保证 CF 链在 add/adc 之间可传递。
+static inline uint64_t adc_flags(X64Ctx* c, uint64_t a, uint64_t b, int width) {
+    uint64_t mask = width >= 8 ? ~0ULL : ((1ULL << (width * 8)) - 1);
+    uint64_t carry = c->cf ? 1ULL : 0ULL;
+    uint64_t r0 = (a & mask) + (b & mask);
+    uint64_t r = (r0 + carry) & mask;
+    set_zsp(c, r, width);
+    c->cf = (r0 > mask) || (r0 + carry > mask);
+    uint64_t signbit = 1ULL << (width * 8 - 1);
+    c->of = (((a ^ r) & (b ^ r)) & signbit) != 0;
+    return r;
+}
+
 static inline uint64_t logic_flags(X64Ctx* c, uint64_t r, int width) {
     c->cf = false;
     c->of = false;

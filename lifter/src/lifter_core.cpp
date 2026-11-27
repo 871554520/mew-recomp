@@ -391,11 +391,13 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         }
         return true;
     }
-    if (mn == "sbb") {
+    if (mn == "adc" || mn == "sbb") {
         int w = ops[0].size / 8;
         std::string a = valExpr(pe, insn, ops[0], next_rip, e);
         std::string b = valExpr(pe, insn, ops[1], next_rip, e);
-        storeExpr(pe, insn, ops[0], "sbb_flags(ctx," + a + "," + b + "," + std::to_string(w) + ")",
+        storeExpr(pe, insn, ops[0],
+                  (mn == "adc" ? "adc_flags(ctx," : "sbb_flags(ctx,") + a + "," + b + "," +
+                      std::to_string(w) + ")",
                   next_rip, w, e);
         return true;
     }
@@ -867,6 +869,69 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             e.out << "  ctx->xmm[" << dx << "].u64[" << lane << "] = (~ctx->xmm[" << dx
                   << "].u64[" << lane << "]) & " << b << ";\n";
         }
+        return true;
+    }
+    // ---- movhlps / movlhps：只搬一个 64 位半区（stub_list: 30 / 26 个函数）----
+    if (mn == "movhlps" || mn == "movlhps") {
+        const int src_lane = (mn == "movhlps") ? 1 : 0;
+        const int dst_lane = (mn == "movhlps") ? 0 : 1;
+        std::string src = is_xmm_reg(ops[1])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]")
+            : ("g_u128(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+        e.out << "  { XmmReg s_ = " << src << "; ctx->xmm[" << dx << "].u64[" << dst_lane
+              << "] = s_.u64[" << src_lane << "]; }\n";
+        return true;
+    }
+    // ---- shufpd xmm1, xmm2/m128, imm8：两个 double lane 各按 1 位选择（stub_list: 60 个函数）----
+    if (mn == "shufpd") {
+        const unsigned imm = (unsigned)ops[2].imm.value.u;
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    ctx->xmm[" << dx << "].f64[0] = d_.f64[" << (imm & 1) << "];\n"
+                 "    ctx->xmm[" << dx << "].f64[1] = s_.f64[" << ((imm >> 1) & 1) << "]; }\n";
+        return true;
+    }
+    // ---- packssdw：两组 4 个 dword 饱和到 int16（stub_list: 86 个函数）----
+    if (mn == "packssdw") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<4;++i) {\n"
+                 "      int32_t v0=(int32_t)d_.u32[i], v1=(int32_t)s_.u32[i];\n"
+                 "      ctx->xmm[" << dx << "].u16[i]   = (uint16_t)(v0>32767?32767:(v0<-32768?-32768:v0));\n"
+                 "      ctx->xmm[" << dx << "].u16[i+4] = (uint16_t)(v1>32767?32767:(v1<-32768?-32768:v1));\n"
+                 "    } }\n";
+        return true;
+    }
+    // ---- pabsd：4 个 dword 取绝对值（stub_list: 17 个函数）----
+    if (mn == "pabsd") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<4;++i) { int32_t v=(int32_t)s_.u32[i];\n"
+                 "      ctx->xmm[" << dx << "].u32[i] = (uint32_t)(v<0?-v:v); } }\n";
+        return true;
+    }
+    // ---- pmaddwd：16 位成对相乘再相加成 dword（stub_list: 25 个函数）----
+    if (mn == "pmaddwd") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<4;++i) {\n"
+                 "      int32_t lo=(int32_t)(int16_t)d_.u16[2*i]  *(int32_t)(int16_t)s_.u16[2*i];\n"
+                 "      int32_t hi=(int32_t)(int16_t)d_.u16[2*i+1]*(int32_t)(int16_t)s_.u16[2*i+1];\n"
+                 "      ctx->xmm[" << dx << "].u32[i] = (uint32_t)(lo+hi); } }\n";
+        return true;
+    }
+    // ---- pshuflw / pshufhw：只打乱低/高 64 位里的 4 个 word（22 / 18 个函数）----
+    if (mn == "pshuflw" || mn == "pshufhw") {
+        const unsigned imm = (unsigned)ops[2].imm.value.u;
+        const bool low = (mn == "pshuflw");
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg s_ = " << src << ";\n";
+        for (int i = 0; i < 4; ++i) {
+            const int sel = (int)((imm >> (2 * i)) & 3);
+            e.out << "    ctx->xmm[" << dx << "].u16[" << (low ? i : i + 4) << "] = s_.u16["
+                  << (low ? sel : sel + 4) << "];\n";
+        }
+        e.out << "  }\n";
         return true;
     }
     if (mn == "shufps") {
