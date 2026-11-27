@@ -463,11 +463,46 @@ void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) {
 // 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
     const std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
-    FILE* f = std::fopen(path.c_str(), "rb");
-    const bool ok = f != nullptr;
-    if (f) std::fclose(f);
-    std::fprintf(stderr, "[shim] GetFileAttributesExW(\"%s\")=%s caller=0x%llx\n",
-                 path.c_str(), ok ? "TRUE" : "FALSE", (unsigned long long)cur_fn_va());
+    const uint64_t out = arg2(c);   // lpFileInformation（第 3 个参数 = r8）
+    // 以前这里只 fopen 判"能不能打开"，**一个字节都没往 lpFileInformation 写**。
+    // MSVC 的 std::filesystem::create_directories 建完目录后正是用
+    // GetFileAttributesExW（不是 GetFileAttributesW）复核：它读 dwFileAttributes，
+    // 拿到 0 就认为「既不是目录也不是文件」，直接抛
+    //   filesystem_error("create_directories: unknown error")
+    // run 上实测就是 `[shim] GetFileAttributesExW("./")=TRUE` 却仍然抛异常 ——
+    // 返回 TRUE 但结构是空的，等于什么都没说。
+    struct stat st;
+    const bool ok = !path.empty() && ::stat(path.c_str(), &st) == 0;
+    const uint32_t attr = ok ? (S_ISDIR(st.st_mode) ? 0x10u : 0x80u) : 0u;
+    if (ok && out) {
+        // WIN32_FILE_ATTRIBUTE_DATA（36 字节，x64）
+        //   +0  dwFileAttributes      DWORD
+        //   +4  ftCreationTime        FILETIME (2 x DWORD)
+        //   +12 ftLastAccessTime      FILETIME
+        //   +20 ftLastWriteTime       FILETIME
+        //   +28 nFileSizeHigh         DWORD
+        //   +32 nFileSizeLow          DWORD
+        // FILETIME 是「1601-01-01 起的 100ns 数」，和 unix time 差 11644473600 秒。
+        const uint64_t ft = ((uint64_t)st.st_mtime + 11644473600ULL) * 10000000ULL;
+        const uint64_t at = ((uint64_t)st.st_atime + 11644473600ULL) * 10000000ULL;
+        const uint64_t sz = (uint64_t)st.st_size;
+        mem_write<uint32_t>(c, out + 0,  attr);
+        mem_write<uint32_t>(c, out + 4,  (uint32_t)(ft & 0xFFFFFFFFu));
+        mem_write<uint32_t>(c, out + 8,  (uint32_t)(ft >> 32));
+        mem_write<uint32_t>(c, out + 12, (uint32_t)(at & 0xFFFFFFFFu));
+        mem_write<uint32_t>(c, out + 16, (uint32_t)(at >> 32));
+        mem_write<uint32_t>(c, out + 20, (uint32_t)(ft & 0xFFFFFFFFu));
+        mem_write<uint32_t>(c, out + 24, (uint32_t)(ft >> 32));
+        mem_write<uint32_t>(c, out + 28, (uint32_t)(sz >> 32));
+        mem_write<uint32_t>(c, out + 32, (uint32_t)(sz & 0xFFFFFFFFu));
+    }
+    static int traced = 0;
+    if (traced++ < 24)
+        std::fprintf(stderr,
+                     "[shim] GetFileAttributesExW(\"%s\")=%s attr=0x%x size=%lld caller=0x%llx\n",
+                     path.c_str(), ok ? "TRUE" : "FALSE", attr,
+                     ok ? (long long)st.st_size : -1LL,
+                     (unsigned long long)cur_fn_va());
     ret0(c, ok ? 1u : 0u);
 }
 
