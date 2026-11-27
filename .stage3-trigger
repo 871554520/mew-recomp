@@ -19,3 +19,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T19:2xZ  thunk seeds: 背靠背 16 字节对齐的 C++ 调整器 thunk（无 .pdata、无 cc 填充）纳入 seed 挖掘
 2026-11-27T19:3xZ  SKIP_INIT 在链结束后收工（修 main 被 resume 抢栈）+ thunk seeds
 2026-11-27T19:3xZ  miner: inside_known 改二分（修 thunk 扫描 930k 次线性扫 .pdata 挂住）+ NULL 间接调用当返回 0
+2026-11-27T19:5xZ  skip-init 游标推进 + 4 个 KERNEL32 注册 + seed 长度按下一个 seed 截断
