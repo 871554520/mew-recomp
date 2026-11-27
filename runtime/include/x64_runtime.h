@@ -88,12 +88,34 @@ inline uint64_t& cur_fn_va() {
 }
 
 // 入口观测：MEW_TRACE_FN=0x<va> 时，每次进入该函数打印一次寄存器快照（前 40 次）。
-inline uint64_t mew_trace_fn() {
-    static uint64_t v = [] {
+inline const std::vector<uint64_t>& mew_trace_fns() {
+    static const std::vector<uint64_t> v = [] {
+        std::vector<uint64_t> out;
         const char* e = std::getenv("MEW_TRACE_FN");
-        return e ? (uint64_t)std::strtoull(e, nullptr, 0) : 0ULL;
+        if (!e) return out;
+        const char* p = e;
+        while (*p) {
+            char* end = nullptr;
+            unsigned long long x = std::strtoull(p, &end, 0);
+            if (end == p) break;
+            out.push_back((uint64_t)x);
+            p = end;
+            while (*p == ',' || *p == ' ') ++p;
+        }
+        return out;
     }();
     return v;
+}
+
+// 支持 `MEW_TRACE_FN=0xaaa,0xbbb`：多个函数一起观测（入口 + 返回点都会打印）。
+inline bool mew_trace_match(uint64_t va) {
+    for (uint64_t x : mew_trace_fns()) if (x == va) return true;
+    return false;
+}
+
+inline uint64_t mew_trace_fn() {
+    const auto& v = mew_trace_fns();
+    return v.empty() ? 0ULL : v.front();
 }
 
 // MEW_TRACE_MEM=0x<va>[,0x<va>...]：配合 MEW_TRACE_FN，进入被观测函数时
@@ -130,7 +152,7 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
             _f.r13 = (CTX)->r13; _f.r14 = (CTX)->r14; _f.r15 = (CTX)->r15;        \
             _f.valid = true;                                                      \
         }                                                                         \
-        if (mew_trace_fn() == (uint64_t)(VA)) {                                   \
+        if (mew_trace_match((uint64_t)(VA))) {                                   \
             static int _mew_tn = 0;                                               \
             if (_mew_tn++ < 40) {                                                 \
                 std::fprintf(stderr,                                               \
@@ -333,7 +355,7 @@ inline uint64_t mew_trace_caller() {
 // 返回点观测：MEW_TRACE_FN 指定的函数在 ret 前打印 rbx/rsi/rdi/rsp
 inline void mew_ret_trace(X64Ctx* c) {
     if (!c) return;
-    if (!mew_trace_fn() || cur_fn_va() != mew_trace_fn()) return;
+    if (!mew_trace_match(cur_fn_va())) return;
     static int n = 0;
     if (n++ > 60) return;
     std::fprintf(stderr, "[ret] fn=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rsp=0x%llx rax=0x%llx\n",
