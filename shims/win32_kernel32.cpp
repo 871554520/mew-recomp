@@ -419,7 +419,7 @@ void shim_KERNEL32_FreeEnvironmentStringsW(X64Ctx* c) {
 }
 
 // ---------------- 文件 ----------------
-void shim_KERNEL32_CreateFileW(X64Ctx* c) {
+void shim_KERNEL32_CreateFileW(X64Ctx* c) { mew_api_hit("CreateFileW");
     std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
     uint32_t access = (uint32_t)arg1(c);
     const char* mode = (access & 0x40000000u) ? "wb+" : ((access & 0x80000000u) ? "rb" : "rb");
@@ -469,7 +469,7 @@ void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
     ret0(c, ok ? 1u : 0u);
 }
 
-void shim_KERNEL32_ReadFile(X64Ctx* c) {
+void shim_KERNEL32_ReadFile(X64Ctx* c) { mew_api_hit("ReadFile");
     FILE* f = file_from_handle(arg0(c));
     uint64_t buf = arg1(c);
     uint32_t want = (uint32_t)arg2(c);
@@ -822,7 +822,7 @@ GuestEvent* find_event(uint64_t h) {
 }
 }  // namespace
 
-void shim_KERNEL32_CreateEventW(X64Ctx* c) {
+void shim_KERNEL32_CreateEventW(X64Ctx* c) { mew_api_hit("CreateEventW");
     if (!real_threads()) { ret0(c, 0x1001); return; }
     GuestEvent* e = new GuestEvent();
     e->manual = arg1(c) != 0;              // bManualReset
@@ -857,7 +857,7 @@ void shim_KERNEL32_ResetEvent(X64Ctx* c) {
     ret0(c, 1);
 }
 
-void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) {
+void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) { mew_api_hit("WaitForSingleObject");
     if (!real_threads()) { ret0(c, 0); return; }
     const uint64_t h = arg0(c);
     const uint32_t ms = (uint32_t)arg1(c);
@@ -883,7 +883,7 @@ void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) {
 }
 void shim_KERNEL32_WaitForMultipleObjects(X64Ctx* c) { ret0(c, 0); }
 
-void shim_KERNEL32_CreateThread(X64Ctx* c) {
+void shim_KERNEL32_CreateThread(X64Ctx* c) { mew_api_hit("CreateThread");
     if (!real_threads()) { ret0(c, 0x1002); return; }
     const uint64_t entry = arg2(c);                  // lpStartAddress
     const uint64_t param = arg3(c);                  // lpParameter
@@ -1059,7 +1059,7 @@ void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
 // SleepConditionVariableSRW：释放 srw → 等条件 → 重新加锁。
 // pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
 // 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
-void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
+void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepConditionVariableSRW");
     // **单线程模拟：没有别的线程会来 Wake，真等就是死锁。**
     // run 46023439342 的卡死（0x140d1f7e4，rsp 30 分钟不动）就是这条：
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
@@ -1094,7 +1094,7 @@ void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
                      (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
     ret0(c, 1);
 }
-void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
+void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) { mew_api_hit("WakeAllConditionVariable");
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_broadcast(&cv->cv);
     static int logged = 0;
@@ -1482,7 +1482,7 @@ void fill_rect(X64Ctx* c, uint64_t dst, int l, int t, int r, int b) {
 }
 }  // namespace
 
-void shim_USER32_CreateWindowExW(X64Ctx* c) {
+void shim_USER32_CreateWindowExW(X64Ctx* c) { mew_api_hit("CreateWindowExW");
     const int w = (int)arg6(c), h = (int)arg7(c);
     if (w > 0) win().w = w;
     if (h > 0) win().h = h;
@@ -1496,7 +1496,7 @@ void shim_USER32_CreateWindowExW(X64Ctx* c) {
 }
 void shim_USER32_CreateWindowExA(X64Ctx* c) { shim_USER32_CreateWindowExW(c); }
 void shim_USER32_RegisterClassW(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_RegisterClassExW(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_RegisterClassExW(X64Ctx* c) { mew_api_hit("RegisterClassExW"); (void)c; ret0(c, 1); }
 void shim_USER32_RegisterClassA(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_DestroyWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_IsWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
@@ -1544,7 +1544,7 @@ void shim_USER32_ClientToScreen(X64Ctx* c) { (void)c; ret0(c, 1); }
 
 // ---- 消息循环：有界 ----
 // PeekMessageW/GetMessageW 每调用一次推进一「帧」，跑满 MEW_MAX_FRAMES 后投 WM_QUIT
-void shim_USER32_PeekMessageW(X64Ctx* c) {
+void shim_USER32_PeekMessageW(X64Ctx* c) { mew_api_hit("PeekMessageW");
     if (win().frames < max_frames()) {
         win().frames++;
         fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
@@ -1561,7 +1561,7 @@ void shim_USER32_PeekMessageW(X64Ctx* c) {
     }
     ret0(c, 0);
 }
-void shim_USER32_GetMessageW(X64Ctx* c) {
+void shim_USER32_GetMessageW(X64Ctx* c) { mew_api_hit("GetMessageW");
     if (win().frames < max_frames()) {
         win().frames++;
         fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
@@ -1578,7 +1578,7 @@ void shim_USER32_GetMessageW(X64Ctx* c) {
     }
     ret0(c, 0);   // GetMessageW 返回 0 = 收到 WM_QUIT，引擎退出主循环
 }
-void shim_USER32_DispatchMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_DispatchMessageW(X64Ctx* c) { mew_api_hit("DispatchMessageW"); (void)c; ret0(c, 0); }
 void shim_USER32_TranslateMessage(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_DefWindowProcW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_DefWindowProcA(X64Ctx* c) { (void)c; ret0(c, 0); }
@@ -1909,7 +1909,7 @@ void shim_USER32_RemovePropW(X64Ctx* c) { ret0(c, 1); }
 // 这里按 Win32 语义给最小可用映射：
 //   0=MAPVK_VK_TO_VSC  1=MAPVK_VSC_TO_VK  2=MAPVK_VK_TO_CHAR
 //   3=MAPVK_VSC_TO_VK_EX  4=MAPVK_VK_TO_VSC_EX
-void shim_USER32_MapVirtualKeyW(X64Ctx* c) {
+void shim_USER32_MapVirtualKeyW(X64Ctx* c) { mew_api_hit("MapVirtualKeyW");
     const uint32_t code = (uint32_t)arg0(c);
     const uint32_t type = (uint32_t)arg1(c);
     uint32_t out = 0;

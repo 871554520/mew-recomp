@@ -920,6 +920,23 @@ inline void mew_unimpl_note_func(unsigned long long va) {
     mew_unimpl_func_counts()[va]++;
 }
 
+// ---- API 调用计数（判据用）----
+// 为什么需要它：垫片**不一定**自己打日志，而 `[api] ->` / `[api] <-` 只在
+// dispatch_indirect 走合成地址（0x50000xxxx）时才打；lift 出来的**直接 IAT 调用**
+// （`call [__imp_X]` 编译成 `shim_X(ctx)`）一条 `[api]` 行都不会产生。
+// 于是历史上用 `grep -c "CreateThread"` 数出来的 0 次，很可能只是「垫片没打日志」，
+// 而不是「引擎没调用」——消息循环四 API、CreateThread 的判据都踩在这个坑上。
+// 这里对这些「调没调过比返回什么更重要」的 API 做独立计数，退出/收信号时和
+// UNIMPL 表一起打出来。
+inline std::map<std::string, unsigned long long>& mew_api_call_counts() {
+    static std::map<std::string, unsigned long long> m;
+    return m;
+}
+inline void mew_api_hit(const char* name) {
+    std::lock_guard<std::mutex> lk(mew_unimpl_mu());
+    mew_api_call_counts()[name]++;
+}
+
 // 打一张表：distinct 数 + 总次数 + 前若干项。
 // 这个函数会在 SIGTERM 处理器里被调用（timeout 杀掉长跑进程前抢救统计），
 // 所以刻意做到「不分配内存」：不加 vector、不排序，直接按 map 顺序打，条目数封顶。
@@ -951,6 +968,12 @@ inline void mew_unimpl_dump(const char* why) {
         if (shown++ >= 10) { std::fprintf(stderr, "  ... 其余 %zu 项略\n", f.size() - 10); break; }
         std::fprintf(stderr, "  0x%-16llx %llu\n", kv.first, kv.second);
     }
+    // API 调用计数：这张表回答的是「到底调过没有」，不回答「返回了什么」。
+    auto& cc = mew_api_call_counts();
+    std::fprintf(stderr, "===== API CALL TABLE (%s) distinct=%zu =====\n",
+                 why ? why : "?", cc.size());
+    for (const auto& kv : cc)
+        std::fprintf(stderr, "  %-40s %llu\n", kv.first.c_str(), kv.second);
     std::fflush(stderr);
 }
 

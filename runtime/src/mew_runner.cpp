@@ -50,6 +50,10 @@ void crash_handler(int sig, siginfo_t* si, void*) {
     // 崩溃时把最近 64 层调用环打出来：哪个 guest 函数、rcx 是什么、谁调的
     mew_ind_dump();
     call_trace().dump("crash");
+    // API 调用计数表也落在崩溃尾巴上：abort（SIGABRT，livelock 那条路）也走这里，
+    // 而「CreateThread / 消息循环四 API 到底调过没有」只能靠这张表回答。
+    // 内部 try_lock，崩在计数锁里就跳过，不会把崩溃变成死锁。
+    mew_unimpl_dump("crash");
     std::fflush(stderr);
     _exit(139);
 }
