@@ -140,10 +140,42 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
     return v;
 }
 
+// 活锁刹车：run 45951868177 出现过「同一个 compare 被调用 2.67 亿次」的活锁，
+// 表现为 SAFE 趟 timeout（不是慢，是死循环），整轮只拿到一条 SAMPLE，诊断价值极低。
+// 这里在函数入口统计「连续相同 (VA, rcx, rdx)」的次数，超过阈值就 dump 调用环并 abort，
+// 把超时变成一次带现场的崩溃。MEW_LIVELOCK_N 可调，0 表示关闭。
+inline uint64_t& mew_livelock_n() {
+    static uint64_t v = [] {
+        const char* e = std::getenv("MEW_LIVELOCK_N");
+        if (e) return (uint64_t)std::strtoull(e, nullptr, 0);
+        return (uint64_t)20000000ULL;   // 默认 2000 万次，正常循环远远到不了
+    }();
+    return v;
+}
+inline void mew_livelock_note(uint64_t va, uint64_t rcx, uint64_t rdx) {
+    const uint64_t limit = mew_livelock_n();
+    if (!limit) return;
+    static uint64_t last_va = 0, last_rcx = 0, last_rdx = 0, run = 0;
+    if (va == last_va && rcx == last_rcx && rdx == last_rdx) {
+        if (++run >= limit) {
+            std::fprintf(stderr,
+                "[LIVELOCK] va=0x%llx rcx=0x%llx rdx=0x%llx 连续 %llu 次（阈值 %llu）\n",
+                (unsigned long long)va, (unsigned long long)rcx,
+                (unsigned long long)rdx, (unsigned long long)run,
+                (unsigned long long)limit);
+            call_trace().dump("livelock");
+            std::abort();
+        }
+    } else {
+        last_va = va; last_rcx = rcx; last_rdx = rdx; run = 1;
+    }
+}
+
 #define MEW_SET_CUR_FN(CTX, VA)                                                   \
     do {                                                                          \
         cur_ctx_ptr() = (CTX);                                                    \
         cur_fn_va() = (uint64_t)(VA);                                             \
+        mew_livelock_note((uint64_t)(VA), (CTX)->rcx, (CTX)->rdx);                \
         call_trace().push((uint64_t)(VA), nullptr, (CTX)->rcx, mew_guest_ret(CTX)); \
         {                                                                         \
             FnEntryFrame& _f = fn_entry_frame();                                  \
