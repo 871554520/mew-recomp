@@ -39,3 +39,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-28T02:5xZ  TaskDialogIndirect 按 pshpack1 布局修正（cbSize=0xA0，标题在 0x1C）
 2026-11-28T03:1xZ  TaskDialogIndirect 四候选 hexdump + FATAL 目标解字符串 + 140c88b20 进 dump
 2026-11-27T19:0xZ  EDEADLK 修复 + INFINITE 返回 TRUE + IAT 兜底收紧
+2026-11-27T19:1xZ  前置声明恢复 + SRW try-lock + INFINITE TRUE
