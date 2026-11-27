@@ -1639,6 +1639,72 @@ uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
 
 uint64_t synth_va_for(const char* name);
 
+// ---------------- 动态表剩余高频：绘制 / 输入 / 图标 / 注册表 / COM ----------------
+// 这 30 个在引擎动态表里出现、我们此前**完全没有实现**（走 UNIMPL 弱占位，
+// 一律 ret0 = 0）。对 Reg* 这类「0 = ERROR_SUCCESS」的 API 而言，返回 0 且不回填
+// 出参比直接失败更糟（调用方会拿着未初始化的 hKey/value 继续跑），所以这里给真语义。
+void shim_USER32_BeginPaint(X64Ctx* c) {                 // HDC BeginPaint(HWND, LPPAINTSTRUCT)
+    const uint64_t ps = arg1(c);
+    if (ps && guest_mapped(ps, 64)) {
+        std::memset(guest_ptr_from_ctx(c, ps), 0, 64);
+        mem_write<uint64_t>(c, ps + 0, kFakeHdc);        // hdc
+        mem_write<uint32_t>(c, ps + 32, 1);              // fErase
+    }
+    ret0(c, kFakeHdc);
+}
+void shim_USER32_EndPaint(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetUpdateRect(X64Ctx* c) {              // BOOL(HWND, LPRECT, BOOL)
+    if (arg1(c)) fill_rect(c, arg1(c), 0, 0, 0, 0);
+    ret0(c, 0);
+}
+void shim_USER32_InvalidateRect(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_ValidateRect(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_FillRect(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetFocus(X64Ctx* c) { ret0(c, kFakeHwnd); }
+void shim_USER32_SetFocus(X64Ctx* c) { ret0(c, kFakeHwnd); }
+void shim_USER32_GetCursorPos(X64Ctx* c) {
+    const uint64_t p = arg0(c);
+    if (p && guest_mapped(p, 8)) { mem_write<int32_t>(c, p, 0); mem_write<int32_t>(c, p + 4, 0); }
+    ret0(c, 1);
+}
+void shim_USER32_SetTimer(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_KillTimer(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetQueueStatus(X64Ctx* c) { ret0(c, 0); }
+void shim_USER32_RegisterRawInputDevices(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetRawInputData(X64Ctx* c) { ret0(c, 0); }
+void shim_USER32_GetRawInputBuffer(X64Ctx* c) { ret0(c, 0); }
+void shim_USER32_LoadIconW(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_CreateIconIndirect(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_DestroyIcon(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_DestroyCursor(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_TrackMouseEvent(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetClassInfoExW(X64Ctx* c) { ret0(c, 0); }   // 0 = 类未注册（SDL 会去注册）
+void shim_USER32_UnregisterClassW(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_UnregisterClassA(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_RegisterClassExA(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetPropW(X64Ctx* c) { ret0(c, 0); }
+void shim_USER32_SetPropW(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_RemovePropW(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetDoubleClickTime(X64Ctx* c) { ret0(c, 500); }
+void shim_USER32_MonitorFromPoint(X64Ctx* c) { ret0(c, 0x30001); }
+void shim_USER32_SetRectEmpty(X64Ctx* c) {
+    const uint64_t p = arg0(c);
+    if (p) fill_rect(c, p, 0, 0, 0, 0);
+    ret0(c, 1);
+}
+// 注册表：0 是 ERROR_SUCCESS，所以必须回真错误码，别让调用方拿着未初始化的 hKey 继续跑
+void shim_ADVAPI32_RegOpenKeyExW(X64Ctx* c) {
+    if (arg4(c)) mem_write<uint64_t>(c, arg4(c), 0);
+    ret0(c, 2);   // ERROR_FILE_NOT_FOUND
+}
+void shim_ADVAPI32_RegQueryValueExW(X64Ctx* c) { ret0(c, 2); }
+void shim_ADVAPI32_RegCloseKey(X64Ctx* c) { ret0(c, 0); }
+// COM：S_OK；单线程模拟下不需要真初始化
+void shim_OLE32_CoInitializeEx(X64Ctx* c) { ret0(c, 0); }
+void shim_OLE32_OleInitialize(X64Ctx* c) { ret0(c, 0); }
+void shim_OLE32_CoUninitialize(X64Ctx* c) { ret0(c, 0); }
+void shim_OLE32_OleUninitialize(X64Ctx* c) { ret0(c, 0); }
+
 uint64_t shim_KERNEL32_LookupSynthetic(const char* name);   // 定义在文件后段，wglGetProcAddress 要用
 
 // ---------------- GDI32 像素格式 + OPENGL32 / wgl：假 GL 3.3 上下文 ----------------
@@ -2123,6 +2189,44 @@ RecompFn lookup_api(const char* name) {
         {"glTexImage2D", shim_OPENGL32_glTexImage2D},
         {"glTexParameteri", shim_OPENGL32_glTexParameteri},
         {"glViewport", shim_OPENGL32_glViewport},
+        // ---- 动态表剩余高频：绘制 / 输入 / 图标 / 注册表 / COM ----
+        {"BeginPaint", shim_USER32_BeginPaint},
+        {"EndPaint", shim_USER32_EndPaint},
+        {"GetUpdateRect", shim_USER32_GetUpdateRect},
+        {"InvalidateRect", shim_USER32_InvalidateRect},
+        {"ValidateRect", shim_USER32_ValidateRect},
+        {"FillRect", shim_USER32_FillRect},
+        {"GetFocus", shim_USER32_GetFocus},
+        {"SetFocus", shim_USER32_SetFocus},
+        {"GetCursorPos", shim_USER32_GetCursorPos},
+        {"SetTimer", shim_USER32_SetTimer},
+        {"KillTimer", shim_USER32_KillTimer},
+        {"GetQueueStatus", shim_USER32_GetQueueStatus},
+        {"RegisterRawInputDevices", shim_USER32_RegisterRawInputDevices},
+        {"GetRawInputData", shim_USER32_GetRawInputData},
+        {"GetRawInputBuffer", shim_USER32_GetRawInputBuffer},
+        {"LoadIconW", shim_USER32_LoadIconW},
+        {"CreateIconIndirect", shim_USER32_CreateIconIndirect},
+        {"DestroyIcon", shim_USER32_DestroyIcon},
+        {"DestroyCursor", shim_USER32_DestroyCursor},
+        {"TrackMouseEvent", shim_USER32_TrackMouseEvent},
+        {"GetClassInfoExW", shim_USER32_GetClassInfoExW},
+        {"UnregisterClassW", shim_USER32_UnregisterClassW},
+        {"UnregisterClassA", shim_USER32_UnregisterClassA},
+        {"RegisterClassExA", shim_USER32_RegisterClassExA},
+        {"GetPropW", shim_USER32_GetPropW},
+        {"SetPropW", shim_USER32_SetPropW},
+        {"RemovePropW", shim_USER32_RemovePropW},
+        {"GetDoubleClickTime", shim_USER32_GetDoubleClickTime},
+        {"MonitorFromPoint", shim_USER32_MonitorFromPoint},
+        {"SetRectEmpty", shim_USER32_SetRectEmpty},
+        {"RegOpenKeyExW", shim_ADVAPI32_RegOpenKeyExW},
+        {"RegQueryValueExW", shim_ADVAPI32_RegQueryValueExW},
+        {"RegCloseKey", shim_ADVAPI32_RegCloseKey},
+        {"CoInitializeEx", shim_OLE32_CoInitializeEx},
+        {"OleInitialize", shim_OLE32_OleInitialize},
+        {"CoUninitialize", shim_OLE32_CoUninitialize},
+        {"OleUninitialize", shim_OLE32_OleUninitialize},
         // ---- 引擎自带动态 API 表（455 个名字）里「有强垫片但没登记」的 159 个 ----
         // 引擎不只用导入表，它还走自己的函数指针表：`jmp [.data 槽]` → 槽里是
         // 「{u16 id}{name}」描述符（0x140e3f000 起 910 项），解析失败就把 0 当函数调。
