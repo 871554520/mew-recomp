@@ -1076,6 +1076,94 @@ static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out) {
 }
 std::string shimSym(const ImportSlot& im) { return "shim_" + im.dll + "_" + im.name; }
 
+// ---------------- MSVC 的 32 位 RVA 跳转表 ----------------
+// 形状（三段紧挨着，实测见 P0-16 / 0x140c116d9）：
+//     mov  r32, [base + idx*4 + disp32]    ; disp32 是 **RVA**，不是 VA
+//     add  r64, base                        ; 加回镜像基址
+//     jmp  r64
+// 表里是 4 字节 RVA，目标 = image_base + 表项。
+// 识别不出来时的老行为是让 `jmp reg` 走 dispatch_indirect —— case 标签因此被当成
+// 独立 fragment，case 体 fall-through 到父函数尾声后每层多吃 80 字节栈，
+// run 46010953943 就是这样 152 层后 SIGSEGV 的。
+//
+// 返回 true 时 *out_targets 是所有落在 .text 内的表项目标；是否全在本函数范围内
+// 由调用方判定（两处调用方各有自己的 va/effSize）。
+static bool matchRvaJumpTable(const PeImage& pe, uint64_t jmp_rip, uint8_t jmp_len, int jmp_reg,
+                              std::vector<uint64_t>* out_targets, int* out_idx_reg) {
+    const int kBack = 32;                     // 往回最多看 32 字节（够 `mov`+`add`）
+    if (jmp_rip < pe.image_base + 8) return false;
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    const auto decode_exact = [&](uint64_t addr, uint32_t len, ZydisDecodedInstruction* out_i,
+                                  ZydisDecodedOperand* out_o) -> bool {
+        const Section* s = pe.byRva((uint32_t)(addr - pe.image_base));
+        if (!s) return false;
+        uint32_t off = s->raw + (uint32_t)(addr - pe.image_base - s->va);
+        if (off >= s->raw + s->rawsize) return false;
+        size_t avail = (size_t)(s->raw + s->rawsize - off);
+        if (avail < len) return false;
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, pe.data.data() + off, avail, out_i, out_o)))
+            return false;
+        return out_i->length == len;
+    };
+    // 两条前驱指令的**总长是可变的**（实测 `mov edx,[rsi+rcx*4+RVA]` 7 字节 +
+    // `add rdx,rsi` 3 字节 = 10），所以先枚举总长、再枚举切分点，
+    // 不能把起点写死在 `jmp_rip - 32`。
+    for (uint32_t total = 3; total <= (uint32_t)kBack; ++total) {
+        const uint64_t a1 = jmp_rip - (uint64_t)total;
+        if (a1 < pe.image_base) continue;
+        if (!pe.byRva((uint32_t)(a1 - pe.image_base))) continue;
+        for (uint32_t first_len = 1; first_len <= 15; ++first_len) {
+            if (first_len + 2 > total) break;
+            const uint32_t second_len = total - first_len;
+            if (second_len < 2 || second_len > 15) continue;
+            ZydisDecodedInstruction i1, i2;
+            ZydisDecodedOperand o1[ZYDIS_MAX_OPERAND_COUNT], o2[ZYDIS_MAX_OPERAND_COUNT];
+            const uint64_t a2 = a1 + first_len;
+            if (!decode_exact(a1, first_len, &i1, o1)) continue;
+            if (!decode_exact(a2, second_len, &i2, o2)) continue;
+            // 第二段必须是 `add <jmp_reg64>, <base>`
+            const char* m2 = ZydisMnemonicGetString(i2.mnemonic);
+            if (!m2 || std::strcmp(m2, "add") != 0) continue;
+            if (o2[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+                o2[1].type != ZYDIS_OPERAND_TYPE_REGISTER) continue;
+            if (gprId(o2[0].reg.value) != jmp_reg) continue;
+            if (o2[0].size != 64 || o2[1].size != 64) continue;
+            const int base_reg = gprId(o2[1].reg.value);
+            if (base_reg < 0) continue;
+            // 第一段必须是 `mov r32, [base + idx*4 + disp32]`
+            const char* m1 = ZydisMnemonicGetString(i1.mnemonic);
+            if (!m1 || std::strcmp(m1, "mov") != 0) continue;
+            if (o1[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+                o1[1].type != ZYDIS_OPERAND_TYPE_MEMORY) continue;
+            if (o1[1].mem.base == ZYDIS_REGISTER_NONE || o1[1].mem.index == ZYDIS_REGISTER_NONE)
+                continue;
+            if (gprId(o1[1].mem.base) != base_reg) continue;
+            if (o1[1].mem.scale != 4) continue;
+            if (!o1[1].mem.disp.has_displacement) continue;
+            const int64_t disp = (int64_t)o1[1].mem.disp.value;
+            if (disp <= 0 || disp > 0x0FFFFFFFLL) continue;          // 必须像个 RVA
+            if (!pe.byRva((uint32_t)disp)) continue;
+            const uint64_t tbl = pe.image_base + (uint64_t)disp;
+            std::vector<uint64_t> targets;
+            for (int k = 0; k < 256; ++k) {
+                uint64_t q = 0;
+                if (!readGuestQword(pe, tbl + (uint64_t)k * 4, &q)) break;
+                const uint32_t rva = (uint32_t)q;
+                if (!rva) break;
+                const Section* ts = pe.byRva(rva);
+                if (!ts || !ts->exec) break;
+                targets.push_back(pe.image_base + (uint64_t)rva);
+            }
+            if (targets.size() < 2) continue;
+            if (out_targets) *out_targets = targets;
+            if (out_idx_reg) *out_idx_reg = gprId(o1[1].mem.index);
+            return true;
+        }
+    }
+    return false;
+}
+
 // 目标若是 `jmp qword ptr [rip+disp]` 形式的 IAT thunk，返回对应导入槽
 static const ImportSlot* resolveIatThunk(const PeImage& pe, uint64_t target) {
     const Section* sec = pe.byRva((uint32_t)(target - pe.image_base));
@@ -1651,6 +1739,42 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                     }
                 }
                 if (!expanded) {
+                    if (flags & LIFT_TAIL_JUMP) {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                    } else {
+                        e.unsupported.push_back("jmp-indirect");
+                    }
+                }
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                // 32 位 RVA 跳转表（见 matchRvaJumpTable 注释）：`mov r32,[base+idx*4+RVA]`
+                // / `add r64,base` / `jmp r64`。case 标签必须变成本函数内的 goto，绝不能
+                // 走 dispatch —— 走 dispatch 时 case 体被当成独立 fragment，fall-through
+                // 到父函数尾声后每层多吃 80 字节栈（run 46010953943 实测 152 层
+                // ret=0x3ff 之后 SIGSEGV）。
+                bool jt_done = false;
+                const int jr = gprId(ops[0].reg.value);
+                std::vector<uint64_t> jt;
+                int jt_idx = -1;
+                if (jr >= 0 &&
+                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx) && jt_idx >= 0) {
+                    bool jt_ok = true;
+                    for (auto t : jt) {
+                        if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
+                    }
+                    if (jt_ok) {
+                        e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
+                                 "    switch (ix) {\n";
+                        for (size_t k = 0; k < jt.size(); ++k)
+                            e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
+                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-oor\");\n"
+                                 "    }\n"
+                                 "  }\n";
+                        jt_done = true;
+                    }
+                }
+                if (!jt_done) {
                     if (flags & LIFT_TAIL_JUMP) {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
@@ -2555,6 +2679,19 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         }
                     }
                 }
+                // 32 位 RVA 跳转表（`mov r32,[base+idx*4+RVA] / add r64,base / jmp r64`）：
+                // 表项是 RVA，必须加镜像基址才是目标；上面那条内存操作数分支看不见它。
+                if (ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                    const int jr = gprId(ops[0].reg.value);
+                    std::vector<uint64_t> jt;
+                    int jt_idx = -1;
+                    if (jr >= 0 && matchRvaJumpTable(pe, cur, insn.length, jr, &jt, &jt_idx)) {
+                        bool all_in = true;
+                        for (auto t : jt) if (t < va || t >= va + size) { all_in = false; break; }
+                        if (all_in)
+                            for (auto t : jt) work.push_back(t);
+                    }
+                }
                 break;
             }
             const bool isJcc = (mn.size() > 1 && mn[0] == 'j' && mn != "jmp");
@@ -2906,6 +3043,42 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                     }
                 }
                 if (!expanded) {
+                    if (flags & LIFT_TAIL_JUMP) {
+                        e.indirectCall = true;
+                        e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
+                    } else {
+                        e.unsupported.push_back("jmp-indirect");
+                    }
+                }
+            } else if (ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                // 32 位 RVA 跳转表（见 matchRvaJumpTable 注释）：`mov r32,[base+idx*4+RVA]`
+                // / `add r64,base` / `jmp r64`。case 标签必须变成本函数内的 goto，绝不能
+                // 走 dispatch —— 走 dispatch 时 case 体被当成独立 fragment，fall-through
+                // 到父函数尾声后每层多吃 80 字节栈（run 46010953943 实测 152 层
+                // ret=0x3ff 之后 SIGSEGV）。
+                bool jt_done = false;
+                const int jr = gprId(ops[0].reg.value);
+                std::vector<uint64_t> jt;
+                int jt_idx = -1;
+                if (jr >= 0 &&
+                    matchRvaJumpTable(pe, rip, insn.length, jr, &jt, &jt_idx) && jt_idx >= 0) {
+                    bool jt_ok = true;
+                    for (auto t : jt) {
+                        if (t < va || t >= va + effSize || !labelSet.count(t)) { jt_ok = false; break; }
+                    }
+                    if (jt_ok) {
+                        e.out << "  { uint64_t ix = read_reg(ctx," << jt_idx << ",4);\n"
+                                 "    switch (ix) {\n";
+                        for (size_t k = 0; k < jt.size(); ++k)
+                            e.out << "      case " << k << "ULL: goto L_" << hexStr(jt[k]) << ";\n";
+                        e.out << "      default: UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-oor\");\n"
+                                 "    }\n"
+                                 "  }\n";
+                        jt_done = true;
+                    }
+                }
+                if (!jt_done) {
                     if (flags & LIFT_TAIL_JUMP) {
                         e.indirectCall = true;
                         e.out << "  dispatch_indirect(" << valExpr(pe, insn, ops[0], next_rip, e) << ", ctx); return;\n";
