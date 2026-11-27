@@ -1639,6 +1639,146 @@ uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
 
 uint64_t synth_va_for(const char* name);
 
+uint64_t shim_KERNEL32_LookupSynthetic(const char* name);   // 定义在文件后段，wglGetProcAddress 要用
+
+// ---------------- GDI32 像素格式 + OPENGL32 / wgl：假 GL 3.3 上下文 ----------------
+// 依据（run 46055985114 之后）：
+//   * 引擎的动态表里有 ChoosePixelFormat/SetPixelFormat/DescribePixelFormat/
+//     GetPixelFormat/SwapBuffers 这 5 个名字，我们**一个都没实现**；
+//   * 同一张表里还有 27 个 gl*/wgl* 名字（glGetString/glGetIntegerv/glGenTextures/
+//     glTexImage2D/glViewport/wglGetProcAddress/wglGetCurrentDC…），也全没实现；
+//   * ApplicationBase::initGraphics 里写着 "This game requires OpenGL 3.2 or higher"，
+//     所以窗口建起来之后 GL 就是下一关。
+// 这一批按「最小可信」实现：上下文/像素格式一律成功，glGetString 报 3.3，
+// glGenTextures 给真句柄，其余绘制类一律 no-op（不崩、不阻塞，够跑初始化）。
+namespace {
+constexpr uint64_t kFakeHglrc = 0x30001;
+constexpr int32_t  kFakePixelFormat = 1;
+uint32_t g_gl_tex_id = 0;
+
+const char* gl_string_for(uint32_t name) {
+    switch (name) {
+        case 0x1F00: return "MewRecomp";                 // GL_VENDOR
+        case 0x1F01: return "MewRecomp FakeGL";          // GL_RENDERER
+        case 0x1F02: return "3.3.0 MewRecomp";           // GL_VERSION
+        case 0x1F03: return "";                          // GL_EXTENSIONS
+        case 0x8B8C: return "3.30";                      // GL_SHADING_LANGUAGE_VERSION
+        default: return "";
+    }
+}
+
+// 把 ASCII 写进一块新分配的 guest 内存并返回其地址（glGetString 用，调用次数很少）
+uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
+    const size_t n = std::strlen(s) + 1;
+    const uint64_t va = guest_alloc(c, n);
+    if (!va) return 0;
+    for (size_t i = 0; i < n; ++i) mem_write<uint8_t>(c, va + (uint64_t)i, (uint8_t)s[i]);
+    return va;
+}
+}  // namespace
+
+void shim_GDI32_ChoosePixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
+void shim_GDI32_SetPixelFormat(X64Ctx* c) { ret0(c, 1); }
+void shim_GDI32_GetPixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
+// BOOL DescribePixelFormat(HDC, int, UINT nBytes, LPPIXELFORMATDESCRIPTOR)
+void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
+    const uint64_t p = arg3(c);
+    if (p && guest_mapped(p, 40)) {
+        std::memset(guest_ptr_from_ctx(c, p), 0, 40);
+        mem_write<uint16_t>(c, p + 0, 40);          // nSize
+        mem_write<uint16_t>(c, p + 2, 1);           // nVersion
+        mem_write<uint32_t>(c, p + 4, 0x25);        // DRAW_TO_WINDOW|SUPPORT_OPENGL|DOUBLEBUFFER
+        mem_write<uint8_t>(c, p + 8, 0);            // PFD_TYPE_RGBA
+        mem_write<uint8_t>(c, p + 9, 32);           // cColorBits
+        mem_write<uint8_t>(c, p + 23, 24);          // cDepthBits
+        mem_write<uint8_t>(c, p + 24, 8);           // cStencilBits
+    }
+    ret0(c, 1);
+}
+void shim_GDI32_SwapBuffers(X64Ctx* c) { ret0(c, 1); }
+
+void shim_OPENGL32_wglCreateContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglCreateContextAttribsARB(X64Ctx* c) { ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglMakeCurrent(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglDeleteContext(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglGetCurrentContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglGetCurrentDC(X64Ctx* c) { ret0(c, kFakeHdc); }
+void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) {
+    const char* name = (const char*)guest_ptr_from_ctx(c, arg0(c));
+    ret0(c, (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0);
+}
+// BOOL wglChoosePixelFormatARB(HDC, const int*, const FLOAT*, UINT, int*, UINT*)
+void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
+    const uint64_t formats = arg4(c);
+    const uint64_t nout = arg5(c);
+    if (formats && guest_mapped(formats, 4)) mem_write<int32_t>(c, formats, kFakePixelFormat);
+    if (nout) mem_write<uint32_t>(c, nout, 1);
+    ret0(c, 1);
+}
+
+void shim_OPENGL32_glGetString(X64Ctx* c) {
+    ret0(c, gl_new_cstr(c, gl_string_for((uint32_t)arg0(c))));
+}
+void shim_OPENGL32_glGetIntegerv(X64Ctx* c) {
+    const uint32_t pname = (uint32_t)arg0(c);
+    const uint64_t out = arg1(c);
+    if (!out) { ret0(c, 0); return; }
+    int32_t v = 0;
+    switch (pname) {
+        case 0x0D33: v = 16384; break;   // GL_MAX_TEXTURE_SIZE
+        case 0x8872: v = 16; break;      // GL_MAX_TEXTURE_IMAGE_UNITS
+        case 0x8B4D: v = 32; break;      // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
+        case 0x8869: v = 16; break;      // GL_MAX_VERTEX_ATTRIBS
+        case 0x8DFB: v = 1024; break;    // GL_MAX_VERTEX_UNIFORM_VECTORS
+        case 0x8DFD: v = 1024; break;    // GL_MAX_FRAGMENT_UNIFORM_VECTORS
+        case 0x8DFC: v = 32; break;      // GL_MAX_VARYING_VECTORS
+        case 0x0BA2: {                   // GL_VIEWPORT -> 4 ints
+            mem_write<int32_t>(c, out + 0, 0);
+            mem_write<int32_t>(c, out + 4, 0);
+            mem_write<int32_t>(c, out + 8, win().w);
+            mem_write<int32_t>(c, out + 12, win().h);
+            ret0(c, 0);
+            return;
+        }
+        default: v = 0; break;
+    }
+    mem_write<int32_t>(c, out, v);
+    ret0(c, 0);
+}
+void shim_OPENGL32_glGenTextures(X64Ctx* c) {
+    const int32_t n = (int32_t)arg0(c);
+    const uint64_t out = arg1(c);
+    if (out) for (int32_t i = 0; i < n && i < 64; ++i)
+        mem_write<uint32_t>(c, out + (uint64_t)i * 4, ++g_gl_tex_id);
+    ret0(c, 0);
+}
+
+// 其余 GL 入口：绘制态一律 no-op（语义上是「设置成功」，不改任何宿主状态）
+void shim_OPENGL32_glBindTexture(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glBlendFunc(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glClear(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glClearColor(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glColorMask(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glCopyTexSubImage2D(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glDeleteTextures(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glDepthMask(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glDisable(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glDrawArrays(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glEnable(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glLineWidth(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glPixelStorei(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glPointSize(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glPolygonMode(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glScissor(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glStencilFunc(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glStencilMask(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glStencilOp(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glTexImage2D(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glTexParameteri(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glViewport(X64Ctx* c) { ret0(c, 0); }
+
 // ---- 动态表登记的 159 个符号：定义散落在本文件各处，这里统一前置声明 ----
 void shim_GDI32_CreateCompatibleDC(X64Ctx*);
 void shim_GDI32_CreateFontIndirectW(X64Ctx*);
@@ -1942,6 +2082,47 @@ RecompFn lookup_api(const char* name) {
         {"TaskDialogIndirect", shim_COMCTL32_TaskDialogIndirect},
         {"MessageBoxA", shim_USER32_MessageBoxA},
         {"MessageBoxW", shim_USER32_MessageBoxW},
+        // ---- 像素格式 + 假 GL（引擎动态表要的 5 个 GDI32 + 27 个 gl*/wgl*）----
+        {"ChoosePixelFormat", shim_GDI32_ChoosePixelFormat},
+        {"SetPixelFormat", shim_GDI32_SetPixelFormat},
+        {"GetPixelFormat", shim_GDI32_GetPixelFormat},
+        {"DescribePixelFormat", shim_GDI32_DescribePixelFormat},
+        {"SwapBuffers", shim_GDI32_SwapBuffers},
+        {"wglCreateContext", shim_OPENGL32_wglCreateContext},
+        {"wglCreateContextAttribsARB", shim_OPENGL32_wglCreateContextAttribsARB},
+        {"wglMakeCurrent", shim_OPENGL32_wglMakeCurrent},
+        {"wglDeleteContext", shim_OPENGL32_wglDeleteContext},
+        {"wglGetCurrentContext", shim_OPENGL32_wglGetCurrentContext},
+        {"wglGetCurrentDC", shim_OPENGL32_wglGetCurrentDC},
+        {"wglSwapBuffers", shim_OPENGL32_wglSwapBuffers},
+        {"wglSwapIntervalEXT", shim_OPENGL32_wglSwapIntervalEXT},
+        {"wglGetProcAddress", shim_OPENGL32_wglGetProcAddress},
+        {"wglChoosePixelFormatARB", shim_OPENGL32_wglChoosePixelFormatARB},
+        {"glGetString", shim_OPENGL32_glGetString},
+        {"glGetIntegerv", shim_OPENGL32_glGetIntegerv},
+        {"glGenTextures", shim_OPENGL32_glGenTextures},
+        {"glBindTexture", shim_OPENGL32_glBindTexture},
+        {"glBlendFunc", shim_OPENGL32_glBlendFunc},
+        {"glClear", shim_OPENGL32_glClear},
+        {"glClearColor", shim_OPENGL32_glClearColor},
+        {"glColorMask", shim_OPENGL32_glColorMask},
+        {"glCopyTexSubImage2D", shim_OPENGL32_glCopyTexSubImage2D},
+        {"glDeleteTextures", shim_OPENGL32_glDeleteTextures},
+        {"glDepthMask", shim_OPENGL32_glDepthMask},
+        {"glDisable", shim_OPENGL32_glDisable},
+        {"glDrawArrays", shim_OPENGL32_glDrawArrays},
+        {"glEnable", shim_OPENGL32_glEnable},
+        {"glLineWidth", shim_OPENGL32_glLineWidth},
+        {"glPixelStorei", shim_OPENGL32_glPixelStorei},
+        {"glPointSize", shim_OPENGL32_glPointSize},
+        {"glPolygonMode", shim_OPENGL32_glPolygonMode},
+        {"glScissor", shim_OPENGL32_glScissor},
+        {"glStencilFunc", shim_OPENGL32_glStencilFunc},
+        {"glStencilMask", shim_OPENGL32_glStencilMask},
+        {"glStencilOp", shim_OPENGL32_glStencilOp},
+        {"glTexImage2D", shim_OPENGL32_glTexImage2D},
+        {"glTexParameteri", shim_OPENGL32_glTexParameteri},
+        {"glViewport", shim_OPENGL32_glViewport},
         // ---- 引擎自带动态 API 表（455 个名字）里「有强垫片但没登记」的 159 个 ----
         // 引擎不只用导入表，它还走自己的函数指针表：`jmp [.data 槽]` → 槽里是
         // 「{u16 id}{name}」描述符（0x140e3f000 起 910 项），解析失败就把 0 当函数调。
