@@ -23,3 +23,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T20:2xZ  locale 数值型(LOCALE_RETURN_NUMBER) + GetLocaleInfoEx 参数修正 + thunk 表 8 对齐 + steam 强符号
 2026-11-27T20:5xZ  miner: import thunk (ff 25) 规则 + 0x140062450 白名单
 2026-11-27T21:1xZ  SSE4.2 重写（修 c->af 编不过 / CF 方向 / equal-ordered 下标）
+2026-11-27T21:2xZ  pcmpestrm equal-ordered 前缀匹配 + arm64 编译错误已修
