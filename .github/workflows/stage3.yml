@@ -106,6 +106,17 @@ jobs:
       - name: Mine hidden entries (.reloc + GFIDS)
         run: |
           python3 tools/mine_hidden_entries.py Mewgenics.exe generated/pe_meta.json generated/extra_seeds.txt 2>&1 | tee generated/seeds.log
+          # 已知的「函数中间标签」兜底：MSVC 会把 memcpy/memset 这类例程编成
+          # 「间接跳转到本函数内部的 case 标签」。这些地址不是函数，运行时才能发现，
+          # 而 runtime_seeds 只反馈上一轮 build 的结果，追不上同一轮里新走到的路径
+          # （实测二次构建仍在 0x140dab860 内部 0x140dab88e/0x140dab8c8 上空转 93 万次）。
+          # 静态表里放已经踩过的标签，两轮 build 都带上。
+          if [ -s tools/known_internal_labels.txt ]; then
+            grep -E '^0x[0-9a-fA-F]+$' tools/known_internal_labels.txt \
+              | tee -a generated/extra_seeds.txt >/dev/null
+            echo "known internal labels merged: $(grep -cE '^0x[0-9a-fA-F]+$' tools/known_internal_labels.txt)"
+          fi
+          sort -u generated/extra_seeds.txt -o generated/extra_seeds.txt
           wc -l generated/extra_seeds.txt || true
 
       - name: Generate 64 shards + dispatch table + shims

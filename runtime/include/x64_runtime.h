@@ -441,11 +441,19 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     auto it2 = std::lower_bound(v.begin(), v.end(), target_va);
     uint64_t near_lo = 0;
     if (it2 != v.begin()) near_lo = *(it2 - 1);
-    std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx (nearest_lo=0x%llx delta=%lld) in_fn=0x%llx\n",
-                 static_cast<unsigned long long>(target_va),
-                 (unsigned long long)near_lo,
-                 (long long)((int64_t)target_va - (int64_t)near_lo),
-                 (unsigned long long)cur_fn_va());
+    // 同一个 miss 目标可能出现几十万次（run 45937873457 的二次构建里 0x140dab8c8
+    // 重复了 937727 次，单份日志被撑到 112 MB）。只对每个目标打前 3 次完整现场，
+    // 之后每 10 万次补一行计数，既保住诊断信息又不让日志爆掉。
+    static std::unordered_map<uint64_t, uint64_t> miss_hits;
+    const uint64_t hits = ++miss_hits[target_va];
+    const bool full = hits <= 3;
+    if (full || hits % 100000 == 0)
+        std::fprintf(stderr, "[FATAL] Unmapped indirect target: 0x%llx (nearest_lo=0x%llx delta=%lld) in_fn=0x%llx hits=%llu\n",
+                     static_cast<unsigned long long>(target_va),
+                     (unsigned long long)near_lo,
+                     (long long)((int64_t)target_va - (int64_t)near_lo),
+                     (unsigned long long)cur_fn_va(),
+                     (unsigned long long)hits);
     // guard-dispatch 蹦床：槽里不是有效代码指针时，真正目标通常在 rax。
     // 但这个回退会自杀式递归（rax 常常就是调用者本身，实测 0x140d3e654 -> 0x140d6adc8
     // 无限循环到超时），因此默认关闭，只在显式要求时启用。

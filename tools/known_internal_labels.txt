@@ -1,0 +1,23 @@
+# 已知的「函数中间标签」（不是函数入口，是被间接跳转命中的 case 标签）
+#
+# 背景：MSVC 会把 memcpy/memset 这类例程编成
+#     cmp/jmp 一张表 → jmp [表+索引] 跳到**本函数内部**的偏移
+# 我们的 dispatcher 只认函数入口，命中不了就记录一条 miss 并当场 return，
+# 于是被调函数走不到自己的 ret，返回地址滞留在栈上（详见 d286ae3 的栈纪律修复）。
+#
+# runtime_seeds 只能反馈「上一轮 build 跑出来的 miss」，追不上同一轮里新走到的路径；
+# 这个静态表放已经踩过的标签，stage3 会把它并进 seeds，两轮 build 都带上。
+#
+# 来源：discovered_entries.txt（runtime 记录）
+#   0x140d6adc8  caller 0x140d3e654   （CFG guard 蹦床后真正的目标）
+#   0x140dac177  caller 0x140dabfe0   memset 内部 case
+#   0x140dac332  caller 0x140dabfe0   memset 内部 case（run 45937873457 实证）
+#   0x140dab88e  caller 0x140dab860   memcpy 内部 case（二次构建实证，delta 46）
+#   0x140dab8c8  caller 0x140dab860   memcpy 内部 case（二次构建实证，delta 104）
+#
+# 每行一个 0x 开头的 VA；注释和空行会被忽略。
+0x140d6adc8
+0x140dac177
+0x140dac332
+0x140dab88e
+0x140dab8c8
