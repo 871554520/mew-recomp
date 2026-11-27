@@ -457,6 +457,10 @@ inline bool unwind_phase2(X64Ctx* c, uint64_t target_frame, uint64_t target_ip,
 
     Ctx64 cur;
     ctx_to_win(c, &cur);
+    // 起点必须和第一阶段一致：用 [rsp] 里的返回地址（即 RaiseException 的调用点），
+    // 而不是 ctx_to_win() 带出来的 Rip —— X64Ctx 里没有可靠的 guest PC，
+    // 用后者会从垃圾起点开始翻帧，结果就是"[seh2] unwound 0 handler(s)"。
+    if (c->rsp) cur.Rip = rd64(c->rsp);
     int called = 0;
     for (int depth = 0; depth < 512; ++depth) {
         if (!cur.Rip) break;
