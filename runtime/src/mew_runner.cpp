@@ -419,7 +419,9 @@ int main(int argc, char** argv) {
     // 返回地址的层级，等价于 call main 之前的 rsp）**把 main 跑起来。
     if (const char* e = std::getenv("MEW_CALL_MAIN"); e && e[0] == '1') {
         uint64_t main_va = 0x1409b5230ULL;   // main(argc,argv) 包装器：sub rsp,0x28 / call 0x1409b9967
-        if (const char* m = std::getenv("MEW_MAIN_VA")) main_va = std::strtoull(m, nullptr, 0);
+        // 空字符串必须忽略：workflow 里这个变量常年是空的，若把 "" 交给 strtoull 会得到 0，
+        // 于是 main_va=0 -> "不在派发表里，跳过补调"，整轮就白跑了。
+        if (const char* m = std::getenv("MEW_MAIN_VA"); m && m[0]) main_va = std::strtoull(m, nullptr, 0);
         auto& tbl = g_dispatch_table();
         if (mew_saw_main()) {
             std::fprintf(stderr, "[main] 已经进过 main（0x%llx），不重复调用\n",

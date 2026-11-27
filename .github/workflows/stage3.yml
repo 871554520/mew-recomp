@@ -10,6 +10,10 @@ on:
         description: '1 = 打开 MEW_REAL_THREADS（真 pthread + 每线程 X64Ctx）；默认 0 = 基线'
         default: '0'
         required: false
+      main_va:
+        description: '可选：覆盖链尾补调的入口（默认空=0x1409b5230 直调 main；填 0x1409b5140 走 SDL_RunApp）'
+        default: ''
+        required: false
 
 # 推送触发：同一时间只留一轮（新提交顶掉旧轮，避免抢 runner）。
 # 手动 workflow_dispatch：每轮独立 group，不 cancel 正在跑的轮次（补跑被顶掉的 ref 时不再误杀）。
@@ -30,6 +34,11 @@ jobs:
       # 条件变量/事件类句柄换成真 condvar，WaitForSingleObject 对线程句柄 join。
       # 只有 workflow_dispatch 能打开：push 轮恒为 '0'，避免和别的变量混在一轮。
       MEW_REAL_THREADS: ${{ github.event.inputs.real_threads || '0' }}
+      # 链尾补调的入口地址。空 = 用 runner 内置的 0x1409b5230（直调 main）；
+      # 填 0x1409b5140 = 走 SDL_RunApp（那条会自己构造 argc/argv 并回调 app 入口）。
+      # run 46076441393 的 trace 证明 0x1409b5140 在我们的模拟里一次都没被进入，
+      # 而 PeekMessageW/GetMessageW 全是 0——所以要用这一项做对照。
+      MEW_MAIN_VA: ${{ github.event.inputs.main_va }}
 
     # 末尾要把诊断摘要 force-push 到 ci-diag-stage3 分支（公开可读，免 token 取日志）
     permissions:
