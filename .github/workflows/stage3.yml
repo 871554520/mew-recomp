@@ -310,6 +310,7 @@ jobs:
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3b/shard_*.cpp >> generated/stage3b_abort_chain.txt 2>/dev/null || true
           done
           wc -l generated/stage3b_abort_chain.txt
+          wc -l generated/stage3b_abort_chain.txt
 
       - name: Stage 5 - build launcher
         run: |

@@ -868,10 +868,17 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
     // 现在按「超时」立刻返回 0，并打一行日志让下一轮 artifact 能证实这条路径。
     const uint32_t ms = (uint32_t)arg2(c);
-    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> timeout(0)\n",
-                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms);
+    // 关键：参数是 INFINITE(0xFFFFFFFF) 时**不可能超时**。上面那版一律返回 FALSE(0)，
+    // 于是 CRT 的 _Cnd_wait 把它解释成「死锁」并抛
+    //   std::system_error("resource deadlock would occur")
+    // （run 46047307348 的 [cxx-eh] #1）。单线程模拟下没人会 signal，正确做法是
+    // 「假装已被唤醒」——返回 TRUE，让等待方继续走，而不是抛异常把 main 打死。
+    const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
+    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> %s(%llu)\n",
+                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
+                 ret ? "signaled" : "timeout", (unsigned long long)ret);
     (void)cv_for; (void)srw_for;
-    ret0(c, 0);
+    ret0(c, ret);
 }
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
@@ -1769,8 +1776,9 @@ RecompFn lookup_api(const char* name) {
         {"WideCharToMultiByte", shim_KERNEL32_WideCharToMultiByte},
         {"MultiByteToWideChar", shim_KERNEL32_MultiByteToWideChar},
         // 错误弹窗一族：SDL3 的 SDL_ShowSimpleMessageBox 优先走 TaskDialogIndirect，
-        // 取不到才回落 MessageBoxW/A。三个名字以前一个都没登记，所以游戏的三次
-        // 报错框不但弹不出来，连正文都没进日志（run 46047307348）。
+        // 取不到才回落 MessageBoxW/A。三个名字都要登记，否则 SDL 只走自绘旧框。
+        // 注意：9cde606 那次提交把这段定义连同登记一起删掉了（基于旧版文件打的补丁），
+        // 这里按原样恢复。
         {"TaskDialogIndirect", shim_COMCTL32_TaskDialogIndirect},
         {"MessageBoxA", shim_USER32_MessageBoxA},
         {"MessageBoxW", shim_USER32_MessageBoxW},
