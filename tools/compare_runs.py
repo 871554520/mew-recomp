@@ -13,7 +13,9 @@ import sys
 
 def load(d, *names):
     for n in names:
-        for cand in (os.path.join(d, n), os.path.join(d, 'generated', n)):
+        # 先看 generated/：artifact 里根目录也可能有同名文件（二次构建的产物），
+        # 主跑日志一定在 generated/ 下。之前顺序反了，导致拿错文件分析了一轮。
+        for cand in (os.path.join(d, 'generated', n), os.path.join(d, n)):
             if os.path.exists(cand):
                 with open(cand, 'r', errors='replace') as f:
                     return f.read()

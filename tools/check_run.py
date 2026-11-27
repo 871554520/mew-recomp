@@ -72,6 +72,18 @@ def main():
     if m:
         print(f'      code={m.group(1)}  第一个调用帧={m.group(3) or "?"}')
 
+    # 容器插入循环是否正确收敛：那个初始化器只有 13 个键，
+    # 所以 size 应停在小数字并继续跑下一个初始化器。
+    # 之前 158d946 涨到 65 是 caller 循环指针被毁后的无限插入（到超时为止），不是成功。
+    seq = [int(v, 16) for v in re.findall(r'\[watch\] W addr=0x1413c60c0 size=8 val=0x([0-9a-f]+)', err)]
+    if seq:
+        print(f'\n== 容器插入轨迹：共 {len(seq)} 次 ++，size {seq[0]} -> {seq[-1]}（最大 {max(seq)}）')
+        print('   判定：' + ('✅ 收敛（<=20，符合 13 个键的初始化器）' if max(seq) <= 20
+                          else '❌ 不收敛（>20，大概率又是循环指针被毁后无限插入）'))
+        rh = re.findall(r'\[watch\] W addr=0x1413c60(e0|e8) size=8 val=0x([0-9a-f]+)', err)
+        if rh:
+            print('   rehash 写回: ' + ', '.join(f'0x{a}{v}' for a, v in rh))
+
     print('\n== 3. manifest 尺寸抽查（lift 之后的权威长度）')
     if manifest:
         size = {}
