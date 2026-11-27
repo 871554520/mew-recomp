@@ -925,7 +925,12 @@ static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out);
 
 void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const ZydisDecodedOperand& dst,
                const std::string& val, uint64_t next_rip, int bytes, Emit& e) {
-    (void)in;
+    // 记下「这条写指令的 guest 地址」：SAFE 日志用它把定位从「哪个函数」精确到
+    // 「哪一条指令」。只在内存目标上发，寄存器写没必要（也不会崩）。
+    if (dst.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+        uint64_t rip_here = (in.length <= next_rip) ? (next_rip - in.length) : next_rip;
+        e.out << "  last_mem_pc() = 0x" << hexStr(rip_here) << "ULL;\n";
+    }
     if (dst.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int id = gprId(dst.reg.value);
         if (id >= 0) { e.out << "  write_reg(ctx," << id << "," << val << "," << bytes << ");\n"; return; }

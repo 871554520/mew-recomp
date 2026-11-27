@@ -148,6 +148,12 @@ inline const std::vector<uint64_t>& mew_trace_mem() {
 // 最近一次进入的垫片（Win32 API）名字。垫片不经过 MEW_SET_CUR_FN，所以
 // cur_fn_va() 会停在调用者的函数上，`[SAFE]` 日志就指错人；有了这个名字，
 // 能直接看出「是不是垫片里写崩的、是哪个垫片」。
+// 最近一条「做内存写」的 guest 指令地址。由 lifter 在每次 storeExpr 前写一次，
+// SAFE 日志带上它，就能把「在哪个函数里」精确到「哪一条指令」。
+inline uint64_t& last_mem_pc() {
+    static uint64_t v = 0;
+    return v;
+}
 inline const char*& cur_api_name() {
     static const char* v = "";
     return v;
@@ -509,7 +515,7 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
         if (logged < 20) {
             std::fprintf(stderr,
                          "[SAFE] unmapped read addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
-                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s\n",
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s pc=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
                          (unsigned long long)mew_guest_ret(ctx),
@@ -517,7 +523,8 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
                          (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
                          (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
                          (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp,
-                         cur_api_name()[0] ? cur_api_name() : "-");
+                         cur_api_name()[0] ? cur_api_name() : "-",
+                         (unsigned long long)last_mem_pc());
             if (logged < 3) call_trace().dump("safe-mem");
             ++logged;
         }
@@ -542,7 +549,7 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
         if (logged < 20) {
             std::fprintf(stderr,
                          "[SAFE] unmapped write addr=0x%llx size=%zu in_fn=0x%llx ret=0x%llx "
-                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s\n",
+                         "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx rsp=0x%llx api=%s pc=0x%llx\n",
                          (unsigned long long)guest_addr, sizeof(T),
                          (unsigned long long)cur_fn_va(),
                          (unsigned long long)mew_guest_ret(ctx),
@@ -550,7 +557,8 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
                          (unsigned long long)ctx->rdx, (unsigned long long)ctx->rbx,
                          (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdi,
                          (unsigned long long)ctx->rbp, (unsigned long long)ctx->rsp,
-                         cur_api_name()[0] ? cur_api_name() : "-");
+                         cur_api_name()[0] ? cur_api_name() : "-",
+                         (unsigned long long)last_mem_pc());
             if (logged < 3) call_trace().dump("safe-mem-w");
             ++logged;
         }
