@@ -30,3 +30,4 @@ t=1795726400 round-R: 探针打出 容器->节点头->三字段
 2026-11-27T22:2xZ  32 位 RVA 跳转表 + stub_list.tsv + ff25 thunk 形状扩充
 2026-11-27T22:5xZ  栅栏/FPU 当 nop + chaininfo 追根 + RVA 表 default 动态派发
 2026-11-27T23:1xZ  回退 chain 追根（Stage 4 红）+ 两族白名单 + 三批 SSE/adc/in-out
+2026-11-27T23:2xZ  修 uint64_t->XmmReg 编译错 + arm64 Stage4 开 chain 与 seeds-inside + pmulld/cmp
