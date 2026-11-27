@@ -845,18 +845,17 @@ void shim_KERNEL32_ReleaseSRWLockShared(X64Ctx* c) {
     ret0(c, 0);
 }
 void shim_KERNEL32_TryAcquireSRWLockExclusive(X64Ctx* c) {
-    SrwSlot* s = srw_for(arg0(c), true);
-    ret0(c, (s && pthread_rwlock_trywrlock(&s->rw) == 0) ? 1 : 0);
+    // 单线程模型：任何 try-lock 都「成功」。用真 pthread trywrlock 时，同一线程重入会返回
+    // EDEADLK，MSVC STL 把它翻成 std::system_error("resource deadlock would occur") ——
+    // run 46047307348 的 [cxx-eh] #1 就是这个（type=.?AVsystem_error@std@@）。
+    (void)srw_for(arg0(c), true);
+    ret0(c, 1);
 }
 void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
+    // 同上：单线程模型下 try-lock 一律成功
     SrwSlot* s = srw_for(arg0(c), true);
-    if (!s) { ret0(c, 0); return; }
-    if (pthread_rwlock_tryrdlock(&s->rw) == 0) {
-        __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
-        ret0(c, 1);
-    } else {
-        ret0(c, 0);
-    }
+    if (s) __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+    ret0(c, 1);
 }
 
 // SleepConditionVariableSRW：释放 srw → 等条件 → 重新加锁。
