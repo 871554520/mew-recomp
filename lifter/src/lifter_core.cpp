@@ -1102,6 +1102,54 @@ static uint32_t lookup_size_override(uint64_t va) {
     return it == m.end() ? 0u : it->second;
 }
 
+// 把「共享序言/尾声」的相邻 .pdata 段并进来（原逻辑从 liftLinearExCore 里抽出，
+// 因为 **主分片构建走的是 liftReachableEx**，不经过 liftLinearEx 那一侧，
+// 只在那儿加白名单等于没加 —— run 45965655068 实测：manifest 里 0x1403862d0 仍是 43 字节，
+// [extend]/[merge] 一条都没打，rehash 只能靠 dispatch 跨 fragment 执行，
+// 于是 0x140386180 返回时 rsi/rdi 被下游覆盖（ABI VIOLATION rsi:0x10013eb0->0x1413c60c8），
+// caller 的循环指针被毁 → 无限 alloc+splice 直到 timeout）。
+//
+// MSVC 会把一个真实函数拆成几条 .pdata：只有第一段有 `sub rsp,N`，后面几段
+// 直接往 [rsp+X] 存 callee-saved，再共用第一段的 `add rsp,N; ret`。
+// 本函数里若有 **jcc** 正好跳到紧邻的下一条 .pdata 入口，就把那段并进来当本地标签。
+static uint32_t merge_shared_frame_size(const PeImage& pe, uint64_t va, uint32_t size) {
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return size;
+    const uint32_t secOff = (uint32_t)(va - pe.image_base - sec->va);
+    if (secOff >= sec->rawsize) return size;
+    const uint8_t* code = pe.data.data() + sec->raw + secOff;
+    const uint32_t avail = sec->rawsize - secOff;
+    uint32_t effSize = size;
+    ZydisDecoder dec;
+    ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    for (int hop = 0; hop < 4; ++hop) {
+        const uint64_t nxt = va + effSize;
+        const uint32_t nsize = pe.functionSize(nxt);
+        if (!nsize) break;
+        if ((uint32_t)(nxt - va) + nsize > avail) break;
+        bool jumps_in = false;
+        size_t p = 0;
+        ZydisDecodedInstruction i3;
+        ZydisDecodedOperand o3[ZYDIS_MAX_OPERAND_COUNT];
+        while (p < effSize) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, effSize - p, &i3, o3))) break;
+            const char* m3 = ZydisMnemonicGetString(i3.mnemonic);
+            const std::string lm = m3 ? m3 : "?";
+            if (lm.size() > 1 && lm[0] == 'j' && lm != "jmp" && i3.operand_count > 0 &&
+                o3[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                const uint64_t t = va + p + i3.length + (int64_t)o3[0].imm.value.s;
+                if (t == nxt) { jumps_in = true; break; }
+            }
+            p += i3.length;
+        }
+        if (!jumps_in) break;
+        std::fprintf(stderr, "[merge] 0x%llx 并入相邻入口 0x%llx（+%u 字节，共享序言/尾声）\n",
+                     (unsigned long long)va, (unsigned long long)nxt, nsize);
+        effSize = (uint32_t)((nxt + nsize) - va);
+    }
+    return effSize;
+}
+
 LiftResult liftLinearEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
     const uint32_t ov = lookup_size_override(va);
     if (ov > size) {
@@ -1129,42 +1177,6 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-
-    // ---- 把「共享序言/尾声」的相邻 .pdata 段并进来 ----
-    // MSVC 会把一个真实函数拆成几条 .pdata：只有第一段有 `sub rsp,N`，后面几段
-    // 直接往 [rsp+X] 存 callee-saved，再共用第一段的 `add rsp,N; ret`。
-    // 如果本函数里有一条 **jcc** 正好跳到紧邻的下一条 .pdata 入口，那就是这种拆分，
-    // 必须把那段并进来当成函数内标签；否则会被 emit 成
-    //     if (cond) return sub_T(ctx);
-    // —— 目标没有自己的序言却执行共享尾声，rsp 永久偏移。
-    // 实测（run 45959819326）：0x140be0a60 的 `jne 0x140be0a83` 就走到这条路径，
-    // ABI guard 报 target=0x140be0a83 caller=0x140be0a60 rsp_delta=48（0x28+8）。
-    // 只对「jcc + 紧邻 + 是 .pdata 入口」三个条件同时成立时生效，所以不会像
-    // 之前那版自动补长那样把无关的相邻函数吃进来（那版把 ARM64 stage4 跑成 segfault）。
-    for (int hop = 0; hop < 4; ++hop) {
-        const uint64_t nxt = va + effSize;
-        const uint32_t nsize = pe.functionSize(nxt);
-        if (!nsize) break;
-        bool jumps_in = false;
-        size_t p = 0;
-        ZydisDecodedInstruction i3;
-        ZydisDecodedOperand o3[ZYDIS_MAX_OPERAND_COUNT];
-        while (p < effSize) {
-            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code + p, effSize - p, &i3, o3))) break;
-            const char* m3 = ZydisMnemonicGetString(i3.mnemonic);
-            const std::string lm = m3 ? m3 : "?";
-            if (lm.size() > 1 && lm[0] == 'j' && lm != "jmp" && i3.operand_count > 0 &&
-                o3[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                const uint64_t t = va + p + i3.length + (int64_t)o3[0].imm.value.s;
-                if (t == nxt) { jumps_in = true; break; }
-            }
-            p += i3.length;
-        }
-        if (!jumps_in) break;
-        std::fprintf(stderr, "[merge] 0x%llx 并入相邻入口 0x%llx（+%u 字节，共享序言/尾声）\n",
-                     (unsigned long long)va, (unsigned long long)nxt, nsize);
-        effSize = (uint32_t)((nxt + nsize) - va);
-    }
 
     // 预扫：线性解码能落到的指令起始地址（分支只能跳进这个集合，否则标签不存在）
     std::unordered_set<uint64_t> labelSet;
@@ -2906,6 +2918,16 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
 }
 
 LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_t flags) {
+    // 白名单与「共享序言/尾声合并」必须在**两条 lift 路径之前**生效：
+    // 主分片构建带 LIFT_FRAGMENT，走的是 liftReachableEx，
+    // 只在 liftLinearEx 里做等于没做（见 merge_shared_frame_size 的注释）。
+    const uint32_t ov = lookup_size_override(va);
+    if (ov > size) {
+        std::fprintf(stderr, "[extend] 0x%llx %u -> %u bytes（白名单补长）\n",
+                     (unsigned long long)va, size, ov);
+        size = ov;
+    }
+    size = merge_shared_frame_size(pe, va, size);
     if (flags & LIFT_FRAGMENT) return liftReachableEx(pe, va, size, flags);
     return liftLinearEx(pe, va, size, flags);
 }
