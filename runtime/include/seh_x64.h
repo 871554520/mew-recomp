@@ -413,9 +413,17 @@ inline bool unwind_phase2(X64Ctx* c, uint64_t target_frame, uint64_t target_ip,
                           uint64_t record_va) {
     if (!c || !record_va) return false;
     const uint64_t rsp_at_call = c->rsp;
-    uint64_t scratch = (rsp_at_call - 0x1200) & ~(uint64_t)15;
-    if (!guest_mapped(scratch, 0x800)) {
-        std::fprintf(stderr, "[seh2] scratch unmapped 0x%llx\n", (unsigned long long)scratch);
+    // scratch 缓冲要放在 guest 栈上，但 rsp 接近栈底时 rsp-0x1200 可能没映射。
+    // 逐级缩小偏移，都不可用才放弃（宁可少跑一次 __finally，也不要在这里再崩一次）。
+    uint64_t scratch = 0;
+    for (uint64_t back : {(uint64_t)0x1200, (uint64_t)0xA00, (uint64_t)0x800, (uint64_t)0x400}) {
+        if (rsp_at_call <= back) continue;
+        uint64_t cand = (rsp_at_call - back) & ~(uint64_t)15;
+        if (guest_mapped(cand, 0x800)) { scratch = cand; break; }
+    }
+    if (!scratch) {
+        std::fprintf(stderr, "[seh2] no scratch room below rsp=0x%llx, skip phase2\n",
+                     (unsigned long long)rsp_at_call);
         return false;
     }
     const uint64_t context_va = scratch + 0x100;
