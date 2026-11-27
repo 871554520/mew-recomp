@@ -146,7 +146,7 @@ jobs:
           # 2^59 上限校验），140385f80 是调用它们的 insert(range) 本体。这四个必须成组看：
           # 只看反汇编判断不了 lifter 有没有翻对（bsr 曾被映射成 clz），而 `--lift` 单函数
           # 模式遇到 call 就 ok=0、函数中间地址又不在 .pdata —— 唯一可靠来源就是这里。
-          for VA in 140d6ee24 140d6ee34 140d6ee3c 140d6ca68 140d6cb90 140d79870 140d79928 140d79600 140d6ceb4 140d6e8bc 140d6cd78 140d6d1f8 140d6bc64 140d70c00 140385f80 140386180 140386250 1403862d0; do
+          for VA in 140d6ee24 140d6ee34 140d6ee3c 140d6ca68 140d6cb90 140d79870 140d79928 140d79600 140d6ceb4 140d6e8bc 140d6cd78 140d6d1f8 140d6bc64 140d70c00 140385f80 140386180 140386250 1403862d0 140be0a60 14038634e; do
             echo "===== sub_$VA ====="
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp | head -900
           done | tee generated/hot_functions.txt
