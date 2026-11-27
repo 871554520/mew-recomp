@@ -596,9 +596,17 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
         if (c->rsp) w.Rip = rd64(c->rsp);
         for (int i = 0; i < 64 && w.Rip; ++i) {
             if (w.Rip >= 0x140d6aec8ULL && w.Rip < 0x140d6af09ULL) {
+                // rbx 就是 _initterm 的表游标（`mov rbx,rcx` 起、每轮 `add rbx,8`），
+                // 展开后它指向**当前这一项**——不打印它就只知道"跳过了一项"，
+                // 不知道跳的是第几项、是哪个函数，复盘时还得回头猜。
+                const unsigned long long cur = (unsigned long long)w.Rbx;
+                const unsigned long long base = 0x140e3fee0ULL;   // XC 表首（实测 2351 项）
+                long long idx = -1;
+                if (cur >= base) idx = (long long)((cur - base) / 8);
                 std::fprintf(stderr,
-                    "[seh] 跳过当前初始化器，回到 _initterm 循环 0x140d6aec8（rip=0x%llx rsp=0x%llx）\n",
-                    (unsigned long long)w.Rip, (unsigned long long)w.Rsp);
+                    "[seh] 跳过当前初始化器，回到 _initterm 循环 0x140d6aec8"
+                    "（rip=0x%llx rsp=0x%llx rbx=0x%llx index=%lld）\n",
+                    (unsigned long long)w.Rip, (unsigned long long)w.Rsp, cur, idx);
                 resume_at(w.Rip, w);   // longjmp，循环继续下一项
                 return true;
             }
