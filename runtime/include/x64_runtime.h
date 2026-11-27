@@ -1049,10 +1049,28 @@ inline void mew_probe_qword(const char* tag, uint64_t va) {
                  (unsigned long long)v);
 }
 
+// __fastfail 的 ecx 子码（附录 E / The Old New Thing）。0xC0000409 只是外壳，
+// 真正原因在子码里；垫片里同时打印名字，避免被 STATUS_STACK_BUFFER_OVERRUN 误导。
+inline const char* mew_fastfail_name(unsigned code) {
+    switch (code) {
+        case 0: return "LEGACY_GS_VIOLATION";
+        case 1: return "VTGUARD_CHECK_FAILURE";
+        case 2: return "STACK_COOKIE_CHECK_FAILURE";
+        case 3: return "CORRUPT_LIST_ENTRY";
+        case 4: return "INCORRECT_STACK";
+        case 5: return "INVALID_ARG";
+        case 6: return "GS_COOKIE_INIT";
+        case 7: return "FATAL_APP_EXIT";
+        case 8: return "RANGE_CHECK_FAILURE";
+        default: return "UNKNOWN";
+    }
+}
+
 #define MEW_FASTFAIL(CTX, RIP, CODE)                                             \
     do {                                                                         \
-        std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x in_fn=0x%llx\n",     \
+        std::fprintf(stderr, "[FASTFAIL] rip=0x%llx int=0x%x name=%s in_fn=0x%llx\n", \
                      (unsigned long long)(RIP), (unsigned)(CODE),                \
+                     mew_fastfail_name((unsigned)(CODE)),                        \
                      (unsigned long long)cur_fn_va());                           \
         std::fprintf(stderr, "    rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx\n", \
                      (unsigned long long)(CTX)->rcx, (unsigned long long)(CTX)->rdx,     \
