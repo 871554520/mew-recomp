@@ -78,6 +78,12 @@ jobs:
           test "$PASS" -eq 4
 
       - name: Stage 4 nested golden hash on ARM64 (qemu)
+        # 必须和 stage3 一致地开 chaininfo 家族合并，否则 Stage 4 的嵌套候选会用
+        # `.pdata` 原始长度去 lift：0x140bb0660 只有 0x1b 字节，fall-through 到
+        # 0x140bb067b（它的 chaininfo 续段）就变成 dispatch，而 nested PoC 不跑
+        # reflow，派发表里没有这条 → FATAL Unmapped indirect target（run 46021919377）。
+        env:
+          MEW_SPLIT_CHAIN: "1"
         run: |
           mkdir -p generated
           : > generated/arm64_stage4.txt
@@ -169,6 +175,12 @@ jobs:
           test "$PASS" -eq 4
 
       - name: Stage 4 nested golden hash on native ARM64
+        # 必须和 stage3 一致地开 chaininfo 家族合并，否则 Stage 4 的嵌套候选会用
+        # `.pdata` 原始长度去 lift：0x140bb0660 只有 0x1b 字节，fall-through 到
+        # 0x140bb067b（它的 chaininfo 续段）就变成 dispatch，而 nested PoC 不跑
+        # reflow，派发表里没有这条 → FATAL Unmapped indirect target（run 46021919377）。
+        env:
+          MEW_SPLIT_CHAIN: "1"
         run: |
           mkdir -p generated/stage4
           ./build/mew_lifter --pick-nested --exe Mewgenics.exe --out generated/nested.txt
