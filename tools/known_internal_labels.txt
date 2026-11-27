@@ -29,3 +29,20 @@
 # 接回 _initterm(0x140d6aec8) 循环里的 0x140d6aef5（call rax 的返回地址，
 # 异常帧链 depth=6 实测就是这个值），所以必须让它成为可派发的 fragment。
 0x140d6aef5
+
+# _initterm(0x140d6aec8) 的**循环头** 0x140d6aedd。
+# 反汇编（0x41 字节，全部解出来）：
+#   0x140d6aec8  cmp rcx,rdx / je 0x140d6af08
+#   0x140d6aecd  mov [rsp+8],rbx / push rdi / sub rsp,0x20 / mov rdi,rdx / mov rbx,rcx
+#   0x140d6aedd  mov rax,[rbx]        <-- 循环头
+#   0x140d6aee0  test rax,rax / je 0x140d6aef5  （NULL 项直接跳过）
+#   0x140d6aee5  movabs r10,0x85f13e9656da4870 / call qword [CFG槽]
+#   0x140d6aef5  add rbx,8 / cmp rbx,rdi / jne 0x140d6aedd    <-- 回跳循环头
+#   0x140d6aefe  mov rbx,[rsp+0x30] / add rsp,0x20 / pop rdi / ret
+# 上一轮（a64051b）实测：resume 进 0x140d6aef5 这个 fragment 以后，
+# `jne 0x140d6aedd` 落到了 fragment 外 → dispatch miss →
+#   [FATAL] Unmapped indirect target: 0x140d6aedd ... in_fn=0x140d6aef5 hits=2
+# 循环一次都转不起来。把循环头也变成 fragment 就能来回跑。
+# 收尾段（add rsp,0x20 / pop rdi / ret）在 0x140d6aedd 这个 fragment 体内，
+# 所以从循环头进来的那一趟能把 rsp 正常复原；不要给 0x140d6aefe 另开入口。
+0x140d6aedd
