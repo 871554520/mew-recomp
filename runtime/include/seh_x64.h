@@ -46,8 +46,15 @@ struct ExcRec {
 static_assert(sizeof(ExcRec) == 0x98, "EXCEPTION_RECORD size mismatch");
 
 // personality 的第四个参数
+// 真实 x64 DISPATCHER_CONTEXT 布局（切不可漏 ImageBase）：
+//   ControlPc, ImageBase, FunctionEntry, EstablisherFrame, TargetIp,
+//   ContextRecord, LanguageHandler, HandlerData, HistoryTable, ScopeIndex, Fill0
+// 之前漏了 ImageBase，导致 guest 的 __C_specific_handler 读到的每个字段都错位
+// 8 字节：EstablisherFrame 拿到的是 TargetIp(0)、HandlerData 拿到的是 HistoryTable(0)，
+// 于是它把 NULL 当 scope table 迭代 → mem_read<uint32_t>(0x0) → fault=0x0。
 struct DispatcherContext {
     uint64_t ControlPc;
+    uint64_t ImageBase;
     uint64_t FunctionEntry;
     uint64_t EstablisherFrame;
     uint64_t TargetIp;
@@ -58,6 +65,9 @@ struct DispatcherContext {
     uint32_t ScopeIndex;
     uint32_t Fill0;
 };
+// 这条断言就是为了防住刚修的那个 bug：漏一个字段会让 guest 读到错位的值，
+// 表现是「_handler 里 mem_read(0)」，极难从日志反推回结构体布局。
+static_assert(sizeof(DispatcherContext) == 0x50, "DISPATCHER_CONTEXT size mismatch");
 
 enum : int { kContinueExecution = 0, kContinueSearch = 1 };
 
@@ -202,6 +212,7 @@ struct UnwindInfo {
     uint8_t frame_reg = 0, frame_off = 0;
     uint64_t codes_va = 0;
     uint64_t handler = 0;
+    uint64_t handler_data = 0;   // handler RVA 之后的 4 字节对齐位置（scope table）
     bool has_handler = false;
 };
 
@@ -229,6 +240,10 @@ inline void read_unwind_info(uint64_t vi, UnwindInfo* u, int depth = 0) {
     if (u->flags & 3) {  // EHANDLER | UHANDLER
         u->has_handler = true;
         u->handler = image().base + rd32(tail);
+        // UNWIND_INFO 尾部：handler RVA(4 字节) 紧跟 handler 专用数据。
+        // __C_specific_handler 的 scope table 就在 rva+4 处，必须通过
+        // DispatcherContext.HandlerData 交给它，否则它会拿 NULL 当表迭代。
+        u->handler_data = tail + 4;
     }
 }
 
@@ -432,9 +447,15 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
             DispatcherContext dc;
             std::memset(&dc, 0, sizeof(dc));
             dc.ControlPc = cur.Rip;
+            dc.ImageBase = image().base;
             dc.FunctionEntry = fe.entry_va;
             dc.EstablisherFrame = cur.Rsp;
+            dc.TargetIp = 0;
             dc.ContextRecord = context_va;
+            dc.LanguageHandler = u.handler;
+            dc.HandlerData = u.handler_data;   // scope table，缺了就 fault=0x0
+            dc.HistoryTable = 0;
+            dc.ScopeIndex = 0;
             std::memcpy((void*)(uintptr_t)disp_va, &dc, sizeof(dc));
             int disp = call_personality(c, u.handler, record_va, cur.Rsp, context_va, disp_va);
             std::fprintf(stderr, "[seh]   handler 0x%llx -> %d\n",
