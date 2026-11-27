@@ -345,11 +345,12 @@ int main(int argc, char** argv) {
     if (const char* e = std::getenv("MEW_SEED_MLF"); e && e[0] == '1') {
         const uint64_t addr = 0x1413c60b0ULL;
         const uint32_t one = 0x3f800000u;   // 1.0f
-        std::memcpy(reinterpret_cast<void*>(uintptr_t)(addr + img.mem_bias)), &one, 4);
-        uint32_t before = 0;
-        std::fprintf(stderr, "[seed] 0x%llx (max_load_factor) <- 1.0f\n",
-                     (unsigned long long)addr);
-        (void)before;
+        uint32_t prev = 0;
+        auto* dst = reinterpret_cast<void*>((uintptr_t)(addr + (uint64_t)img.mem_bias));
+        std::memcpy(&prev, dst, 4);
+        std::memcpy(dst, &one, 4);
+        std::fprintf(stderr, "[seed] 0x%llx (max_load_factor) 0x%08x -> 0x3f800000\n",
+                     (unsigned long long)addr, prev);
     }
 
     std::printf("runner: calling entry...\n");
