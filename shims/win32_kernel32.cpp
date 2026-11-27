@@ -1290,9 +1290,11 @@ void shim_USER32_CreateWindowExW(X64Ctx* c) {
     if (w > 0) win().w = w;
     if (h > 0) win().h = h;
     win().title = (const char*)guest_ptr_from_ctx(c, arg2(c));
-    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx\n",
+    // 带 caller：建窗失败时能立刻区分「SDL 在 WIN_CreateWindow 里建的」还是
+    // 「引擎自己走动态表建的」（前者 caller 在 0x140c8xxxx 的 SDL 区，后者在 0x1409bxxxx）。
+    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx caller=0x%llx\n",
                  win().w, win().h, win().title ? win().title : "(n/a)",
-                 (unsigned long long)kFakeHwnd);
+                 (unsigned long long)kFakeHwnd, (unsigned long long)cur_fn_va());
     ret0(c, kFakeHwnd);
 }
 void shim_USER32_CreateWindowExA(X64Ctx* c) { shim_USER32_CreateWindowExW(c); }
