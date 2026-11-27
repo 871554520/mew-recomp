@@ -2363,7 +2363,12 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         uint64_t cur = addr;
         while (true) {
             if (seen.count(cur)) break;
-            if (cur != va && pe.hasFunction(cur)) break;
+            // 只有「走出本函数声明的范围」才在别人的入口处停下。
+            // 之前的写法是 `cur != va && pe.hasFunction(cur)` 一律 break ——
+            // 于是 merge_shared_frame_size 把 size 扩到覆盖下一条 .pdata 入口也没用：
+            // walk 走到那条入口就断了，jcc 目标照样落在体外、照样编译成 dispatch。
+            // 改成「cur >= va + size 才 break」，扩过的范围才会被真正并进来。
+            if (cur != va && cur >= va + size && pe.hasFunction(cur)) break;
             const Section* cur_sec = pe.byRva((uint32_t)(cur - pe.image_base));
             if (!cur_sec || !cur_sec->exec) break;
             ZydisDecodedInstruction insn;
