@@ -315,6 +315,33 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     // 目标寄存器 id 用于写入
     auto dst = [&]() { return dx >= 0 ? ("ctx->xmm[" + std::to_string(dx) + "]") : std::string(); };
 
+    // SSE4.1 PTEST / SSE4.2 PCMPESTRM：ucrt 的 SSE4.2 字符串例程（0x140d1a1b0）用到，
+    // 缺这两条会让整函数进占位表，调用方拿到 0 之后去取子串就越界（run 45999239672
+    // 的 `[UNIMPL FUNC] 0x140d1a1b0 missing=pcmpestrm,ptest` + std::out_of_range）。
+    // 实测站点：`66 0f 3a 60 36 0c` = pcmpestrm xmm6,[rsi],0x0c（无符号字节 / equal-ordered /
+    // 正极性 / **mask 输出**），即「在 16 字节块里找 needle」。
+    if (mn == "ptest" || mn == "pcmpestrm") {
+        // 每个实例都包在**自己的花括号**里：同一个函数里可能有 4 条 ptest，
+        // 平铺声明临时变量会「重复定义」直接编不过（生成代码里这是硬错误）。
+        const std::string t = (mn == "ptest") ? "t_pt_" : "t_pce_";
+        e.out << "  {";
+        if (is_xmm_reg(ops[1])) {
+            e.out << " XmmReg " << t << " = ctx->xmm[" << xmmId(ops[1].reg.value) << "];";
+        } else {
+            const std::string a1 = addrExpr(pe, ops[1], next_rip, e);
+            e.out << " XmmReg " << t << "{}; for (int i_=0;i_<16;++i_) ((uint8_t*)&" << t
+                  << ")[i_] = mem_read<uint8_t>(ctx, " << a1 << " + (uint64_t)i_);";
+        }
+        if (mn == "ptest") {
+            e.out << " sse::ptest(ctx, ctx->xmm[" << dx << "], " << t << "); }\n";
+        } else {
+            const int imm8 = (int)ops[2].imm.value.u;
+            e.out << " sse::pcmpestrm(ctx, ctx->xmm[" << dx << "], " << t << ", " << imm8
+                  << ", ctx->xmm[0]); }\n";
+        }
+        return true;
+    }
+
     // ---- 整数乘除/借位 ----
     if (mn == "mul" || mn == "div" || mn == "idiv") {
         int w = ops[0].size / 8;

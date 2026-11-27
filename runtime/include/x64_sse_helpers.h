@@ -244,6 +244,94 @@ inline void extractf128(X64Ctx* c, int d, int s, int imm) {
 }
 inline void zeroupper(X64Ctx* c) { zero_all_hi(c); }
 
+// ---------------- SSE4.1 PTEST / SSE4.2 PCMPESTRM ----------------
+// 为什么需要：run 45999239672 里 `[UNIMPL FUNC] va=0x140d1a1b0 missing=pcmpestrm,ptest`
+// 出现 4 次，紧接着调用方就抛 `std::out_of_range`（_Xran）——ucrt 的 SSE4.2 字符串例程
+// 整个被占位成「返回 0」，调用方按它给的 0 去取子串就越界。补齐这两条才能整函数翻出来。
+//
+// PTEST：ZF = ((src1 & src2) == 0)，CF = ((src1 & ~src2) == 0)，SF/OF/AF/PF = 0
+inline void ptest(X64Ctx* c, const XmmReg& a, const XmmReg& b) {
+    bool and_zero = true, andn_zero = true;
+    for (int i = 0; i < 2; ++i) {
+        if (a.u64[i] & b.u64[i]) and_zero = false;
+        if (a.u64[i] & ~b.u64[i]) andn_zero = false;
+    }
+    c->zf = and_zero;
+    c->cf = andn_zero;
+    c->sf = false;
+    c->of = false;
+    c->af = false;
+    c->pf = false;
+}
+
+// PCMPESTRM xmm_A, xmm_B/m128, imm8：显式长度（EAX = A 的元素数，EDX = B 的元素数）
+// 的字符串比较，结果写 **XMM0** 低 16 位（imm8[6]=0 写 mask，=1 写 index）。
+// 实测站点（0x140d1a430）：`66 0f 3a 60 36 0c` = pcmpestrm xmm6, [rsi], 0x0c
+//   → 无符号字节 + equal-ordered + 正极性 + **mask 输出**，正是「在 16 字节块里找 needle」。
+// 这里实现：字节元素（imm[1:0]==00 或 10 都按字节位宽处理）+ equal-any(00) / equal-ordered(11)
+// + 四种极性；字元素（01/11）与 ranges(01) 未实现，按「无匹配」处理（并置 SF 让调用方走慢路径）。
+inline void pcmpestrm(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm, XmmReg& dst) {
+    const int elem_bits = ((imm & 3) == 1 || (imm & 3) == 3) ? 16 : 8;
+    const int max_elem = (elem_bits == 8) ? 16 : 8;
+    int nA = (int)(uint32_t)c->rax;   // 有符号来源：负数按 0 处理
+    int nB = (int)(uint32_t)c->rdx;
+    if (nA < 0) nA = 0;
+    if (nB < 0) nB = 0;
+    if (nA > max_elem) nA = max_elem;
+    if (nB > max_elem) nB = max_elem;
+
+    uint32_t intres1 = 0;
+    const int agg = (imm >> 2) & 3;
+    if (elem_bits == 8) {
+        uint8_t A[16], B[16];
+        std::memcpy(A, &a, 16);
+        std::memcpy(B, &b, 16);
+        for (int i = 0; i < nA; ++i) {
+            if (agg == 0) {                       // equal any：A[i] 出现在 B 里
+                for (int j = 0; j < nB; ++j)
+                    if (A[i] == B[j]) { intres1 |= 1u << i; break; }
+            } else if (agg == 3) {                // equal ordered：A 整段出现在 B 的 i 处
+                if (i + nA > nB) continue;
+                bool ok = true;
+                for (int k = 0; k < nA; ++k)
+                    if (A[k] != B[i + k]) { ok = false; break; }
+                if (ok) intres1 |= 1u << i;
+            }
+        }
+    }
+
+    const uint32_t valid_mask = (nB >= max_elem) ? 0xFFFFu : ((nB <= 0) ? 0u : ((1u << nB) - 1u));
+    uint32_t intres2 = intres1;
+    switch ((imm >> 4) & 3) {
+        case 0: intres2 = intres1; break;                    // 正极性
+        case 1: intres2 = (~intres1) & 0xFFFFu; break;        // 负极性
+        case 2: intres2 = intres1 & valid_mask; break;        // masked positive
+        default: intres2 = (~intres1) & valid_mask; break;    // masked negative
+    }
+    intres2 &= 0xFFFFu;
+
+    c->cf = nA < max_elem;
+    c->zf = nB < max_elem;
+    c->sf = intres2 == 0;
+    c->of = intres1 != 0;
+    c->af = false;
+    c->pf = false;
+
+    uint32_t out = 0;
+    if (imm & 0x40) {                    // index 输出：最低置位下标，无匹配给 max_elem
+        int idx = max_elem;
+        for (int i = 0; i < max_elem; ++i)
+            if (intres2 & (1u << i)) { idx = i; break; }
+        out = (uint32_t)idx;
+    } else {
+        out = intres2;
+    }
+    dst.u32[0] = out;
+    dst.u32[1] = 0;
+    dst.u32[2] = 0;
+    dst.u32[3] = 0;
+}
+
 }  // namespace avx
 
 }  // namespace sse
