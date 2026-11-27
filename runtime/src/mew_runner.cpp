@@ -5,6 +5,7 @@
 #include <execinfo.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "x64_runtime.h"
@@ -173,6 +174,39 @@ static uint64_t setup_pe_tls(const char* exe, const GuestImage& img, X64Ctx* ctx
     return addrCb;
 }
 
+// ---- 受控实验：伪造一段 guest 地址区间 ----
+// MEW_MAP_FAKE=0x<va>:0x<size>[,0x<va>:0x<size>...]
+// 用来做「让那次写成功，看接下来走到哪」的实验：不掩盖根因，但能把问题从
+// 「崩在这一条写」变成「写进去之后谁读它」。默认不开启。
+static void map_fake_ranges(const GuestImage& img) {
+    const char* e = std::getenv("MEW_MAP_FAKE");
+    if (!e || !*e) return;
+    const char* p = e;
+    while (*p) {
+        char* end = nullptr;
+        unsigned long long va = std::strtoull(p, &end, 0);
+        if (end == p) break;
+        p = end;
+        while (*p == ' ' || *p == ':') ++p;
+        unsigned long long sz = std::strtoull(p, &end, 0);
+        if (end == p) break;
+        p = end;
+        while (*p == ',' || *p == ' ') ++p;
+        if (!va || !sz) continue;
+        void* want = reinterpret_cast<void*>(va + (uint64_t)img.mem_bias);
+        void* got = mmap(want, (size_t)sz, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (got == MAP_FAILED) {
+            std::fprintf(stderr, "[map] 伪造区间失败 va=0x%llx size=0x%llx\n",
+                         (unsigned long long)va, (unsigned long long)sz);
+            continue;
+        }
+        register_guest_range(va, sz);
+        std::fprintf(stderr, "[map] 伪造区间 va=0x%llx size=0x%llx host=%p\n",
+                     (unsigned long long)va, (unsigned long long)sz, got);
+    }
+}
+
 // ---- 最小伪 PEB ----
 // x64 的 TEB+0x60 是 PROCESS_ENVIRONMENT_BLOCK 指针。扫了整个 exe，只有两处
 // `mov rax,gs:[60h]`，都在 CRT 初始化里，用法固定：
@@ -278,6 +312,7 @@ int main(int argc, char** argv) {
     // 必须在 init_guest_thread_ctx 之后：要往伪 TEB 的 TlsSlots 里写模块 TLS 块指针
     uint64_t tls_callbacks = setup_pe_tls(exe, img, &ctx);
     probe_security_cookie(exe, img);
+    map_fake_ranges(img);
     setup_peb(img, &ctx);
     run_tls_callbacks(img, &ctx, tls_callbacks);
     if (!call_va) {
