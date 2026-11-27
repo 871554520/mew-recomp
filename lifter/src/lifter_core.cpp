@@ -167,6 +167,73 @@ bool loadPe(const char* path, PeImage& pe, std::string* err) {
         }
     }
 
+    // ---- 延迟导入表（IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, index 13）----
+    // 只解析**主**导入表会漏掉延迟导入的 IAT 槽：槽里保留的是
+    // 「RVA → IMAGE_IMPORT_BY_NAME」而不是函数指针，运行期直接 call 就是 P0-A
+    // （0x140d1f7e4 的 `call qword [0x140e3f620]`，槽里 0x12e651a）。
+    // 把延迟导入也登记进 pe.imports，调用点才会被改写成直接调垫片。
+    {
+        const uint32_t delRva = *(uint32_t*)(opt + 216);   // DataDirectory[13].VirtualAddress
+        const uint32_t delSize = *(uint32_t*)(opt + 220);
+        if (delRva && delSize) {
+            const Section* dsec = pe.byRva(delRva);
+            if (dsec) {
+                uint32_t off = dsec->raw + (delRva - dsec->va);
+                size_t added = 0;
+                for (int d = 0; d < 128 && off + 32 <= dsec->raw + dsec->rawsize; ++d, off += 32) {
+                    const uint8_t* desc = pe.data.data() + off;
+                    const uint32_t attrs = *(uint32_t*)(desc + 0);
+                    uint32_t nameRva = *(uint32_t*)(desc + 4);
+                    uint32_t iatRva = *(uint32_t*)(desc + 12);
+                    uint32_t intRva = *(uint32_t*)(desc + 16);
+                    if (!nameRva && !iatRva) break;
+                    if (!(attrs & 1)) {
+                        std::fprintf(stderr, "[import] 延迟导入描述符 #%d 是 VA 形态，跳过\n", d);
+                        continue;
+                    }
+                    const Section* nsec = pe.byRva(nameRva);
+                    if (!nsec || !iatRva) continue;
+                    std::string dll((const char*)pe.data.data() + nsec->raw + (nameRva - nsec->va));
+                    if (dll.size() > 4 && dll.substr(dll.size() - 4) == ".dll") dll.erase(dll.size() - 4);
+                    {
+                        std::string lower = dll;
+                        for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+                        if (lower.rfind("api-ms-win-", 0) == 0) {
+                            if (lower.find("-user") != std::string::npos) dll = "USER32";
+                            else if (lower.find("crt") != std::string::npos) dll = "UCRT";
+                            else if (lower.find("ole") != std::string::npos) dll = "OLE32";
+                            else dll = "KERNEL32";
+                        }
+                    }
+                    for (char& c : dll) c = (char)std::toupper((unsigned char)c);
+                    const uint32_t nameThunk = intRva ? intRva : iatRva;
+                    const Section* tsec = pe.byRva(nameThunk);
+                    if (!tsec) continue;
+                    const uint32_t toff = tsec->raw + (nameThunk - tsec->va);
+                    for (uint32_t i = 0;; ++i) {
+                        if (toff + (i + 1) * 8 > tsec->raw + tsec->rawsize) break;
+                        const uint64_t ent = *(uint64_t*)(pe.data.data() + toff + i * 8);
+                        if (!ent) break;
+                        ImportSlot im;
+                        im.slot_va = pe.image_base + iatRva + (uint64_t)i * 8;
+                        im.dll = dll;
+                        if (ent & (1ull << 63)) {
+                            im.name = "Ordinal" + std::to_string((unsigned long long)(ent & 0xFFFF));
+                        } else {
+                            const uint32_t hn = (uint32_t)ent;
+                            const Section* hsec = pe.byRva(hn);
+                            if (!hsec) continue;
+                            im.name = std::string((const char*)pe.data.data() + hsec->raw + (hn - hsec->va) + 2);
+                        }
+                        pe.imports.push_back(im);
+                        ++added;
+                    }
+                }
+                if (added) std::fprintf(stderr, "[import] 延迟导入登记槽位 %zu 个\n", added);
+            }
+        }
+    }
+
     for (const auto& s : pe.sections) {
         if (s.name != ".pdata") continue;
         const uint8_t* raw = pe.data.data() + s.raw;
