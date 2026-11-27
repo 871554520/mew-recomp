@@ -43,6 +43,13 @@ static inline uint64_t sbb_flags(X64Ctx* c, uint64_t a, uint64_t b, int width) {
     return r;
 }
 
+// 说明（arm64 nested golden 相关）：这套 helper 必须与 x86 侧**逐位**一致，
+// 因为 `arm64-verify` 的 Stage 4 是拿同一批候选在 qemu-aarch64 上跑、和 native 比
+// 语义哈希；Stage 2（单函数）过而 Stage 4（嵌套）不过时，第一嫌疑通常是
+// 「某个内部标签没登记成入口」而不是 helper 语义（run 46021919377 就是
+// `0x140bb067b` 未登记 → dispatch miss → FATAL），那种情况在
+// tools/known_internal_labels.txt 里补一条即可，不要先怀疑这里。
+//
 // ADC：a + b + CF。以前 lifter 里没有 adc 分支，直接整函数占位
 // （artifact stub_list：19 个函数只缺 adc）。CF 用「加 carry-in 后的和是否越界」判，
 // 与 sbb_flags 用 (b+borrow) 的口径一致，保证 CF 链在 add/adc 之间可传递。
