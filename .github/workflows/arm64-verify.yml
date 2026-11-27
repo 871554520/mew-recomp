@@ -89,7 +89,7 @@ jobs:
           : > generated/arm64_stage4.txt
           BEST=0
           for K in 0 1 2 3 4 5 6 7; do
-            if ! ./build/mew_lifter --pick-nested --skip $K --seeds-inside tools/known_internal_labels.txt \
+            if ! ./build/mew_lifter --pick-nested --skip $K \
               --exe Mewgenics.exe --out generated/nested.txt > /dev/null 2>&1; then
               echo "no candidate at skip=$K"; break
             fi
@@ -185,7 +185,7 @@ jobs:
           MEW_SPLIT_CHAIN: "1"
         run: |
           mkdir -p generated/stage4
-          ./build/mew_lifter --pick-nested --seeds-inside tools/known_internal_labels.txt \
+          ./build/mew_lifter --pick-nested \
             --exe Mewgenics.exe --out generated/nested.txt
           ./build/mew_lifter --shards 1 --only generated/nested.txt \
             --seeds-inside tools/known_internal_labels.txt \
