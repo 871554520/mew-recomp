@@ -937,7 +937,11 @@ void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
         // 目录必须报 FILE_ATTRIBUTE_DIRECTORY(0x10)：以前只用 fopen 判「能不能打开」，
         // 目录会被报成 MISSING，于是 create_directories 永远认为目录建不出来。
         const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
-        std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=0x%x\n", path.c_str(), attr);
+        // 封顶：create_directories 会反复查同一路径，逐条打会把 runner.err 冲爆
+        // （上一轮真线程轮才 635 KB，这里放开就没边了）。24 条足够看出第一段行为。
+        static int traced = 0;
+        if (traced++ < 24)
+            std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=0x%x\n", path.c_str(), attr);
         ret0(c, attr);
         return;
     }
@@ -945,6 +949,38 @@ void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
 }
 void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_SetCurrentDirectoryW(X64Ctx* c) { ret0(c, 1); }
+// 逐级 mkdir（含中间目录）。
+// 为什么不能只调一次 ::mkdir：MSVC 的 create_directories 确实自己会递归，但它拆
+// 路径用的是 **Windows 语义**，而我们 host_path_from_guest 把 "C:\Users\x\AppData
+// \Roaming\Mewgenics" 压成了相对路径 "Users/x/AppData/Roaming/Mewgenics"（去盘符
+// + 去前导斜杠 + 挂到 MEW_DATA_DIR 下，而 workflow 里 MEW_DATA_DIR 根本没设，默认
+// "."）。于是第一层 "Users" 在宿主上并不存在，单次 mkdir 直接 ENOENT —— 修好的
+// 垫片又会以同样的 filesystem_error 回到原点。这里自己把中间层补出来。
+// 返回 true 只代表「每一级都建成功或已存在」，最终仍由调用方 stat 复核是不是目录。
+static bool mew_mkpath(const std::string& path) {
+    const bool abs = !path.empty() && path[0] == '/';
+    std::string cur = abs ? "/" : "";
+    size_t i = abs ? 1 : 0;
+    for (;;) {
+        const size_t nxt = path.find('/', i);
+        const std::string seg =
+            path.substr(i, nxt == std::string::npos ? std::string::npos : nxt - i);
+        if (!seg.empty() && seg != ".") {
+            if (seg == "..") {
+                // 不建也不跳：host_path_from_guest 只剥前导点，正常情况下不会产生
+                // ".."；真出现时按字面拼进去交给 mkdir 判失败，比静默走偏安全。
+            } else {
+                if (!cur.empty() && cur.back() != '/') cur += '/';
+                cur += seg;
+                if (::mkdir(cur.c_str(), 0777) != 0 && errno != EEXIST) return false;
+            }
+        }
+        if (nxt == std::string::npos) break;
+        i = nxt + 1;
+    }
+    return !cur.empty();
+}
+
 void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
     mew_api_hit("CreateDirectoryW");
     const std::string path = host_path_from_guest(c, arg0(c));
@@ -954,7 +990,17 @@ void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
     //   filesystem_error("create_directories: unknown error")
     // 实测 run 46079343652 的 [cxx-eh] #2，throw_pc=0x14023e254，
     // handler=0x140d4014c —— 那就是引擎在建存档/配置目录时炸掉的。
-    if (::mkdir(path.c_str(), 0777) == 0 || errno == EEXIST) { ret0(c, 1); return; }
+    const bool built = mew_mkpath(path);
+    // 建完必须**再 stat 复核一次是不是目录**：mkdir 返回 EEXIST 也可能是同名文件，
+    // 那种情况下 create_directories 仍然会判失败，我们这里就得如实报 0。
+    struct stat st;
+    if (built && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+        static int traced = 0;
+        if (traced++ < 24)
+            std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") -> ok\n", path.c_str());
+        ret0(c, 1);
+        return;
+    }
     std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") 失败 errno=%d\n", path.c_str(), errno);
     ret0(c, 0);
 }
