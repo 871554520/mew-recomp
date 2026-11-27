@@ -1676,6 +1676,10 @@ void shim_KERNEL32_RtlUnwindEx(X64Ctx* c) {
     std::fprintf(stderr, "[shim] RtlUnwindEx(frame=0x%llx ip=0x%llx)\n",
                  (unsigned long long)target_frame, (unsigned long long)target_ip);
     if (target_ip && seh::seh_dispatch_enabled()) {
+        // 和 RtlUnwind 一样要跑第二阶段：MSVC 的 C++ EH（__CxxFrameHandler3）
+        // 多半走的是 RtlUnwindEx 而不是 RtlUnwind，这里不接就等于 __finally 依旧不跑。
+        const uint64_t rec = arg2(c) ? arg2(c) : seh::last_record_va();
+        seh::unwind_phase2(c, target_frame, target_ip, rec);
         seh::Ctx64 w;
         seh::ctx_to_win(c, &w);
         w.Rsp = target_frame;
