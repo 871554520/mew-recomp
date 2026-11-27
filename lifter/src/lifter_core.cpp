@@ -3310,6 +3310,8 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
     std::unordered_map<uint32_t, uint32_t> own_end;   // .pdata 入口 -> 自己的 EndAddress
     for (const auto& en : ents) own_end[en.b] = en.e;
 
+    // 续段 -> 它 chaininfo 直接回指的那一段
+    std::unordered_map<uint32_t, uint32_t> chain_of;
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> pieces;
     for (const auto& en : ents) {
         const Section* us = pe.byRva(en.u);
@@ -3326,8 +3328,39 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
         const size_t qoff = (size_t)qs->raw + (size_t)(qrva - qs->va);
         if (qoff + 12 > pe.data.size()) continue;
         uint32_t cb = 0;
-        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress = 首段
-        pieces[cb].push_back({en.b, en.e});
+        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress
+        chain_of[en.b] = cb;
+    }
+    // **嵌套回指**：MSVC 的拆段家族里，续段既可能直接回指真正的首段，也可能回指
+    // 另一个续段。实测 0x1409694f8 家族（run 46010953943 的两条残余 ABI 违规就是它）：
+    //   0x1409694f8 chain->0x1409694c0
+    //   0x14096950c chain->0x1409694f8   ← 指向中间段
+    //   0x140969600 chain->0x1409694f8
+    //   0x140969656 chain->0x1409694c0
+    // 按「直接回指」分组会切成两个子组，两个子组各自都不连续 → 真首段 0x1409694c0
+    // 拿不到 span（只有 .pdata 的 0x38），fall-through 到 0x1409694f8 就变成
+    // dispatch，续段按独立函数执行 → rsp_delta=48 的 ABI 违规；而中间段 0x1409694f8
+    // 反倒拿到 350 字节的 span，等于从函数中间 lift 了 350 字节。
+    // 所以必须顺着 chain 一路追到**根**（自身不带 chaininfo 的那一段）再分组。
+    const auto root_of = [&](uint32_t b) -> uint32_t {
+        std::unordered_set<uint32_t> seen;
+        for (int hop = 0; hop < 8; ++hop) {
+            auto it = chain_of.find(b);
+            if (it == chain_of.end()) return b;
+            if (!seen.insert(b).second) return 0;           // 环：放弃这一条
+            b = it->second;
+        }
+        return 0;                                           // 过深：放弃
+    };
+    for (const auto& kv : chain_of) {
+        if (kv.first == kv.second) continue;
+        const uint32_t root = root_of(kv.first);
+        if (!root) continue;
+        auto oe = own_end.find(root);
+        auto ce = own_end.find(kv.first);
+        if (oe == own_end.end() || ce == own_end.end()) continue;
+        if (kv.first == root) continue;
+        pieces[root].push_back({kv.first, ce->second});
     }
 
     for (auto& kv : pieces) {
