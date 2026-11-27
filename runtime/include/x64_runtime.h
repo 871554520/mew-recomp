@@ -82,12 +82,14 @@ inline CallRingTrace& call_trace() {
 }
 
 inline X64Ctx*& cur_ctx_ptr() {
-    static X64Ctx* p = nullptr;
+    // thread_local：真线程（MEW_REAL_THREADS=1）下每个 worker 有独立的 X64Ctx，
+    // 这个指针必须是每线程一份，否则日志/采样/cur_fn 会串到别的线程去。
+    static thread_local X64Ctx* p = nullptr;
     return p;
 }
 
 inline uint64_t& cur_fn_va() {
-    static uint64_t v = 0;
+    static thread_local uint64_t v = 0;   // 同上：每线程一份
     return v;
 }
 

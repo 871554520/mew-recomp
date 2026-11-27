@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
 #include <unordered_set>
 #include <unordered_map>
 #include <malloc.h>
@@ -724,14 +726,200 @@ void shim_KERNEL32_TryEnterCriticalSection(X64Ctx* c) {
     shim_KERNEL32_EnterCriticalSection(c);
     ret0(c, 1);
 }
-void shim_KERNEL32_CreateEventW(X64Ctx* c) { ret0(c, 0x1001); }
-void shim_KERNEL32_CreateEventA(X64Ctx* c) { ret0(c, 0x1001); }
-void shim_KERNEL32_SetEvent(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_ResetEvent(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) { ret0(c, 0); }
+// ---------------- 真线程 / 真事件（MEW_REAL_THREADS=1 开启） ----------------
+// 背景（run 46061908947 的实测）：主线程在 0x140d1f7e4 上对镜像内 cv(0x1412f80a0)
+// 反复 INFINITE 等待，而另一条路径在堆上的 cv(0x509355c0) 上反复唤醒 504 次——
+// 两个对象永远不会相遇。根因是 CreateThread 一直是假句柄（ret0 0x1002），
+// 没有任何 worker 线程能去满足那个等待。
+// 这里按「每线程一份 X64Ctx」实现：4 MB 独立栈 + 4 KB 伪 TEB（gs:[0x30]=Self），
+// 线程体 push 哨兵 0 后 dispatch_indirect(lpStartAddress)。
+// 默认关闭（MEW_REAL_THREADS 未设时行为与以前完全一致），便于灰度与回归对照。
+namespace {
+bool real_threads() {
+    static bool on = [] {
+        const char* e = std::getenv("MEW_REAL_THREADS");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+
+struct GuestThread {
+    X64Ctx   ctx{};
+    uint64_t entry = 0, param = 0;
+    pthread_t tid{};
+    bool     started = false, finished = false, joined = false;
+    uint32_t exit_code = 0;
+};
+
+std::mutex g_thread_mu;
+std::unordered_map<uint64_t, GuestThread*> g_threads;
+uint64_t g_next_thread_handle = 0x2001;
+
+// 等价的 init_guest_thread_ctx（垫片侧只有 mem_bias，没有 GuestImage）
+bool init_thread_ctx(X64Ctx* ctx, uint64_t mem_bias) {
+    constexpr size_t kStack = 4 * 1024 * 1024;
+    void* stack = mmap(nullptr, kStack, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (stack == MAP_FAILED) return false;
+    void* teb = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (teb == MAP_FAILED) return false;
+    std::memset(ctx, 0, sizeof(*ctx));
+    std::memset(teb, 0, 4096);
+    ctx->mem_bias = mem_bias;
+    const uint64_t host_top = ((uint64_t)(uintptr_t)stack + kStack - 0x100) & ~0xFULL;
+    ctx->rsp = (uint64_t)((int64_t)host_top - (int64_t)mem_bias);
+    ctx->gs_base = (uint64_t)((int64_t)(uintptr_t)teb - (int64_t)mem_bias);
+    ctx->fs_base = ctx->gs_base;
+    *reinterpret_cast<uint64_t*>(reinterpret_cast<char*>(teb) + 0x30) = ctx->gs_base;
+    register_guest_range(ctx->gs_base, 4096);
+    register_guest_range((uint64_t)((int64_t)(uintptr_t)stack - (int64_t)mem_bias), kStack);
+    return true;
+}
+
+void* guest_thread_main(void* arg) {
+    GuestThread* t = static_cast<GuestThread*>(arg);
+    cur_ctx_ptr() = &t->ctx;
+    cur_fn_va() = t->entry;
+    // 压哨兵：被调函数的 ret 会弹到 0，lifter 于是直接返回宿主
+    t->ctx.rsp -= 8;
+    mem_write<uint64_t>(&t->ctx, t->ctx.rsp, 0);
+    t->ctx.rcx = t->param;   // lpParameter
+    dispatch_indirect(t->entry, &t->ctx);
+    t->exit_code = (uint32_t)t->ctx.rax;
+    std::lock_guard<std::mutex> lk(g_thread_mu);
+    t->finished = true;
+    return nullptr;
+}
+
+GuestThread* find_thread(uint64_t h) {
+    std::lock_guard<std::mutex> lk(g_thread_mu);
+    auto it = g_threads.find(h);
+    return it == g_threads.end() ? nullptr : it->second;
+}
+
+bool is_guest_worker_thread() {
+    const pthread_t self = pthread_self();
+    std::lock_guard<std::mutex> lk(g_thread_mu);
+    for (const auto& kv : g_threads)
+        if (kv.second && kv.second->started && pthread_equal(kv.second->tid, self)) return true;
+    return false;
+}
+
+// ---- 事件：真 condvar，让跨线程信号真的能叫醒等待方 ----
+struct GuestEvent {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool manual = false;
+    bool signaled = false;
+};
+std::mutex g_event_mu;
+std::unordered_map<uint64_t, GuestEvent*> g_events;
+uint64_t g_next_event_handle = 0x1001;
+
+GuestEvent* find_event(uint64_t h) {
+    std::lock_guard<std::mutex> lk(g_event_mu);
+    auto it = g_events.find(h);
+    return it == g_events.end() ? nullptr : it->second;
+}
+}  // namespace
+
+void shim_KERNEL32_CreateEventW(X64Ctx* c) {
+    if (!real_threads()) { ret0(c, 0x1001); return; }
+    GuestEvent* e = new GuestEvent();
+    e->manual = arg1(c) != 0;              // bManualReset
+    e->signaled = arg2(c) != 0;            // bInitialState
+    uint64_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_event_mu);
+        h = g_next_event_handle++;
+        g_events[h] = e;
+    }
+    ret0(c, h);
+}
+void shim_KERNEL32_CreateEventA(X64Ctx* c) { shim_KERNEL32_CreateEventW(c); }
+
+void shim_KERNEL32_SetEvent(X64Ctx* c) {
+    if (real_threads()) {
+        if (GuestEvent* e = find_event(arg0(c))) {
+            std::lock_guard<std::mutex> lk(e->mu);
+            e->signaled = true;
+            e->cv.notify_all();
+        }
+    }
+    ret0(c, 1);
+}
+void shim_KERNEL32_ResetEvent(X64Ctx* c) {
+    if (real_threads()) {
+        if (GuestEvent* e = find_event(arg0(c))) {
+            std::lock_guard<std::mutex> lk(e->mu);
+            e->signaled = false;
+        }
+    }
+    ret0(c, 1);
+}
+
+void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) {
+    if (!real_threads()) { ret0(c, 0); return; }
+    const uint64_t h = arg0(c);
+    const uint32_t ms = (uint32_t)arg1(c);
+    if (GuestThread* t = find_thread(h)) {          // 线程句柄 -> join
+        if (t->started) {
+            pthread_join(t->tid, nullptr);
+            t->joined = true;
+            t->finished = true;
+        }
+        ret0(c, 0);                                  // WAIT_OBJECT_0
+        return;
+    }
+    if (GuestEvent* e = find_event(h)) {             // 事件句柄 -> 等信号
+        std::unique_lock<std::mutex> lk(e->mu);
+        if (ms == 0xFFFFFFFFu) e->cv.wait(lk, [&] { return e->signaled; });
+        else e->cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return e->signaled; });
+        const bool was = e->signaled;
+        if (was && !e->manual) e->signaled = false;  // auto-reset
+        ret0(c, was ? 0u : 258u);                    // WAIT_OBJECT_0 / WAIT_TIMEOUT
+        return;
+    }
+    ret0(c, 0);
+}
 void shim_KERNEL32_WaitForMultipleObjects(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_CreateThread(X64Ctx* c) { ret0(c, 0x1002); }
-void shim_KERNEL32_GetExitCodeThread(X64Ctx* c) { if (arg1(c)) mem_write<uint32_t>(c, arg1(c), 0); ret0(c, 1); }
+
+void shim_KERNEL32_CreateThread(X64Ctx* c) {
+    if (!real_threads()) { ret0(c, 0x1002); return; }
+    const uint64_t entry = arg2(c);                  // lpStartAddress
+    const uint64_t param = arg3(c);                  // lpParameter
+    const uint64_t tid_out = arg5(c);
+    if (!entry) { ret0(c, 0); return; }
+    GuestThread* t = new GuestThread();
+    if (!init_thread_ctx(&t->ctx, c->mem_bias)) { delete t; ret0(c, 0); return; }
+    t->entry = entry;
+    t->param = param;
+    uint64_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_thread_mu);
+        h = g_next_thread_handle++;
+        g_threads[h] = t;
+    }
+    if (pthread_create(&t->tid, nullptr, guest_thread_main, t) != 0) {
+        std::lock_guard<std::mutex> lk(g_thread_mu);
+        g_threads.erase(h);
+        delete t;
+        ret0(c, 0);
+        return;
+    }
+    t->started = true;
+    std::fprintf(stderr, "[thread] CreateThread entry=0x%llx param=0x%llx handle=0x%llx\n",
+                 (unsigned long long)entry, (unsigned long long)param, (unsigned long long)h);
+    if (tid_out) mem_write<uint32_t>(c, tid_out, (uint32_t)h);
+    ret0(c, h);
+}
+void shim_KERNEL32_GetExitCodeThread(X64Ctx* c) {
+    uint32_t code = 0;
+    if (real_threads()) {
+        if (GuestThread* t = find_thread(arg0(c))) code = t->exit_code;
+    }
+    if (arg1(c)) mem_write<uint32_t>(c, arg1(c), code);
+    ret0(c, 1);
+}
 void shim_KERNEL32_SetThreadPriority(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_SwitchToThread(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetCurrentThread(X64Ctx* c) { ret0(c, 1); }
@@ -1047,6 +1235,10 @@ void shim_KERNEL32_GetConsoleOutputCP(X64Ctx* c) { (void)c; ret0(c, 65001); }
 void shim_KERNEL32_InitializeCriticalSectionEx(X64Ctx* c) { shim_KERNEL32_InitializeCriticalSectionAndSpinCount(c); }
 void shim_KERNEL32_ExitThread(X64Ctx* c) {
     std::fprintf(stderr, "[shim] ExitThread(%u)\n", (unsigned)arg0(c));
+    // 真线程模式下只有「在 worker 线程里调用」才 pthread_exit；
+    // 主线程上仍是老行为（把整个进程带走），避免改变既有路径。
+    if (real_threads() && is_guest_worker_thread())
+        pthread_exit(reinterpret_cast<void*>((uintptr_t)(uint32_t)arg0(c)));
     std::exit((int)arg0(c));
 }
 void shim_KERNEL32_AddVectoredExceptionHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
