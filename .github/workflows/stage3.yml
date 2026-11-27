@@ -5,6 +5,11 @@ on:
     paths:
       - '.stage3-trigger'
   workflow_dispatch:
+    inputs:
+      real_threads:
+        description: '1 = 打开 MEW_REAL_THREADS（真 pthread + 每线程 X64Ctx）；默认 0 = 基线'
+        default: '0'
+        required: false
 
 # 推送触发：同一时间只留一轮（新提交顶掉旧轮，避免抢 runner）。
 # 手动 workflow_dispatch：每轮独立 group，不 cancel 正在跑的轮次（补跑被顶掉的 ref 时不再误杀）。
@@ -16,6 +21,16 @@ jobs:
   full:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      # 真线程开关（**默认关**，基线不变）。判据来自 run 46061908947：
+      # `SleepConditionVariableSRW(INFINITE)` 单线程语义下无条件返回 TRUE，MSVC 的
+      # _Cnd_wait（0x140d1f7e4，67 字节）以为被唤醒 -> 重新持锁 -> 谓词仍假 -> 再 wait，
+      # 单线程下没有任何线程能把它唤醒 -> [LIVELOCK] 20,000,000 次后 abort。
+      # 打开后 CreateThread 起真 pthread、每线程一份 X64Ctx（4 MB 栈 + 伪 TEB），
+      # 条件变量/事件类句柄换成真 condvar，WaitForSingleObject 对线程句柄 join。
+      # 只有 workflow_dispatch 能打开：push 轮恒为 '0'，避免和别的变量混在一轮。
+      MEW_REAL_THREADS: ${{ github.event.inputs.real_threads || '0' }}
+
     # 末尾要把诊断摘要 force-push 到 ci-diag-stage3 分支（公开可读，免 token 取日志）
     permissions:
       contents: write

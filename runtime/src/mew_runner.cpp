@@ -265,8 +265,12 @@ static void run_tls_callbacks(const GuestImage& img, X64Ctx* ctx, uint64_t callb
 }
 
 int main(int argc, char** argv) {
-    std::fprintf(stderr, "[runner] marker: seh headers linked, dispatch=%d\n",
-                 (int)seh::seh_dispatch_enabled());
+    // 每轮都把自己的模式打出来：MEW_REAL_THREADS 是灰度开关，判读时必须先看这一行，
+    // 否则分不清「基线的自旋」和「真线程下卡住」这两种完全不同的现象。
+    const char* rt_env = std::getenv("MEW_REAL_THREADS");
+    const int real_threads = (rt_env && rt_env[0] == '1') ? 1 : 0;
+    std::fprintf(stderr, "[runner] marker: seh headers linked, dispatch=%d real_threads=%d\n",
+                 (int)seh::seh_dispatch_enabled(), real_threads);
     install_crash_handler();
     const char* exe = argc > 1 ? argv[1] : "Mewgenics.exe";
     uint64_t call_va = 0;
