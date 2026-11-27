@@ -155,6 +155,29 @@ inline uint64_t& mew_livelock_n() {
 inline void mew_livelock_note(uint64_t va, uint64_t rcx, uint64_t rdx) {
     const uint64_t limit = mew_livelock_n();
     if (!limit) return;
+    // 指纹：把 (VA, rcx, rdx) 混成一个数，便于比较"两步前"的状态。
+    uint64_t fp = va * 0x9E3779B97F4A7C15ULL;
+    fp ^= (rcx + 0x165667B19E3779F9ULL) * 0xC2B2AE3D27D4EB4FULL;
+    fp ^= (rdx + 0x27D4EB2F165667C5ULL) * 0x9E3779B185EBCA87ULL;
+    // run 45953571612 的活锁是**二周期** A,B,A,B…（memcmp / string::compare 交替），
+    // 每一步的 (VA,rcx,rdx) 都在变，所以"连续相同"永远凑不满。
+    // 这里同时检测"与两步前相同"的跑长度，二周期才会被抓住。
+    static uint64_t prev1 = 0, prev2 = 0, run_same = 0, run_cycle = 0;
+    if (fp == prev2) {
+        if (++run_cycle >= limit) {
+            std::fprintf(stderr,
+                "[LIVELOCK] 二周期 fp=0x%llx va=0x%llx rcx=0x%llx 连续 %llu 次（阈值 %llu）\n",
+                (unsigned long long)fp, (unsigned long long)va,
+                (unsigned long long)rcx, (unsigned long long)run_cycle,
+                (unsigned long long)limit);
+            call_trace().dump("livelock");
+            std::abort();
+        }
+    } else {
+        run_cycle = 0;
+    }
+    prev2 = prev1;
+    prev1 = fp;
     static uint64_t last_va = 0, last_rcx = 0, last_rdx = 0, run = 0;
     if (va == last_va && rcx == last_rcx && rdx == last_rdx) {
         if (++run >= limit) {
