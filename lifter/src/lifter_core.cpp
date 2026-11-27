@@ -2,6 +2,7 @@
 
 #include <Zydis/Zydis.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <fstream>
@@ -2946,7 +2947,18 @@ LiftResult liftFunctionEx(const PeImage& pe, uint64_t va, uint32_t size, uint32_
                      (unsigned long long)va, size, ov);
         size = ov;
     }
-    size = merge_shared_frame_size(pe, va, size);
+    // 自动合并默认**关**：run 45971389104 里它对 1092 个函数生效后整体行为退化了——
+    // 哈希容器一次都没跑到（[fn] 0x140385f80 = 0）、新增两处 dispatch miss
+    // （0x140d6adc8 / 0x140dac332，都是 CFG 蹦床目标）、并且卡在一个逐字符
+    // 处理 "…genics" 的循环里直到 600 秒超时。
+    // 结论：这条规则虽然形状判对了，但影响面太大、无法确认每个合并都成立，
+    // 所以退回「逐条白名单」——那三条都是逐字节核过的。
+    // 需要时用 MEW_AUTO_MERGE=1 打开做实验。
+    static const bool auto_merge_on = [] {
+        const char* e = std::getenv("MEW_AUTO_MERGE");
+        return e && e[0] == '1';
+    }();
+    if (auto_merge_on) size = merge_shared_frame_size(pe, va, size);
     if (flags & LIFT_FRAGMENT) return liftReachableEx(pe, va, size, flags);
     return liftLinearEx(pe, va, size, flags);
 }
