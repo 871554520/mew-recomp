@@ -260,6 +260,15 @@ void storeExpr(const PeImage& pe, const ZydisDecodedInstruction& in, const Zydis
                const std::string& val, uint64_t next_rip, int bytes, Emit& e);
 
 
+// 预取指令是纯提示，语义上就是 nop。之前没列进白名单，于是
+// `[UNIMPL FUNC] va=0x140bba2f0 missing=prefetchw` —— 整个函数被占位，
+// 调用它的链直接断掉。这里统一按 nop 处理（zydis 的小写助记符）。
+static bool is_prefetch(const std::string& mn) {
+    return mn == "prefetchnta" || mn == "prefetcht0" || mn == "prefetcht1" ||
+           mn == "prefetcht2" || mn == "prefetchw" || mn == "prefetchwt1" ||
+           mn == "prefetch" || mn == "prefetchit0" || mn == "prefetchit1";
+}
+
 static bool is_xmm_reg(const ZydisDecodedOperand& o) {
     return o.type == ZYDIS_OPERAND_TYPE_REGISTER && xmmId(o.reg.value) >= 0;
 }
@@ -1178,7 +1187,7 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" || is_prefetch(mn)) {
             /* no-op */
         } else if (mn == "ret") {
             e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
@@ -2404,7 +2413,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause") {
+        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" || is_prefetch(mn)) {
             /* no-op */
         } else if (mn == "ret") {
             e.out << "  MEW_RET_TRACE(ctx);\n  ctx->rsp += 8; return;\n";
