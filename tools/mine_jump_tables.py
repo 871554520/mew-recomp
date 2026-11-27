@@ -79,24 +79,31 @@ def main():
     _, text_va, text_off, text_vsize, text_rsize = text
     body = data[text_off:text_off + text_rsize]
 
-    # 匹配 `mov r32, [r10 + r?*4 + disp32]`：
-    #   [REX 40..4f] 8b ModRM(10 rrr 100) SIB(10 iii 010) disp32
-    # 其中 SIB.base=010 配 REX.B 才是 r10，scale=10 是 *4；index/reg 位不固定，
-    # 因为不同例程把结果放进 r9d / eax / edx 都出现过。
+    # 匹配 `mov r32, [rBASE + rIDX*4 + disp32]`：
+    #   [REX 40..4f] 8b ModRM(10 rrr 100) SIB(10 iii BBB) disp32
+    # scale=10 是 *4；index/reg 位都不固定。基址寄存器也不固定——
+    # 实测 memset/memcpy 用 r10，而 0x140d5ae90 系列用 rsi
+    # （mov eax,[rsi+rax*4+0xd5b19c]），所以这里不限定 base 位。
+    # 前提是那个基址寄存器装的就是 __ImageBase（前面的 lea r10/rsi,[rip-...]），
+    # 因此表地址仍可直接算成 ImageBase + disp32，并用「16 条表项全部落在
+    # .text 且离加载点不远」来筛掉误配。
+    MAX_DELTA = 0x8000
     labels = {}
     n = len(body)
     for i in range(n - 8):
-        b0 = body[i]
-        if not (0x40 <= b0 <= 0x4F) or body[i + 1] != 0x8B:
+        i_op = i
+        if 0x40 <= body[i] <= 0x4F:
+            i_op = i + 1                      # 有 REX 前缀
+        if i_op + 6 > n or body[i_op] != 0x8B:
             continue
-        modrm = body[i + 2]
-        if (modrm & 0xC7) != 0x84:          # mod=10, rm=100(SIB)
+        modrm = body[i_op + 1]
+        if (modrm & 0xC7) != 0x84:            # mod=10, rm=100(SIB)
             continue
-        sib = body[i + 3]
-        if (sib & 0xC7) != 0x82:            # scale=*4, base=010(r10)
+        sib = body[i_op + 2]
+        if (sib >> 6) != 2:                   # scale=*4
             continue
         site_va = text_va + i
-        disp = struct.unpack_from('<i', body, i + 4)[0]
+        disp = struct.unpack_from('<i', body, i_op + 3)[0]
         table_va = (image_base + disp) & 0xFFFFFFFFFFFFFFFF
         if not (image_base <= table_va < image_end):
             continue
@@ -113,6 +120,8 @@ def main():
             rel = struct.unpack_from('<I', data, foff)[0]
             target = image_base + rel
             if not (text_va <= target < text_va + text_vsize):
+                break
+            if abs(target - site_va) > MAX_DELTA:
                 break
             labels.setdefault(target, site_va)
 

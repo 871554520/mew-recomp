@@ -413,24 +413,32 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
         if (guard) abi_check(ctx, snap, target_va, caller);
         // 栈纪律兜底（run 45937873457 定的案）：
         //   call 形态：调用方已经 push 了模拟返回地址，被调函数正常收尾会让 rsp 恰好 +8；
-        //   尾跳形态：没有 push，rsp 应当回到入口值。
+        //   尾跳形态：**不要动**。CFG 蹦床（call 0x140dab670 = jmp [slot]）和 TLS 回调
+        //   都会让 rsp 合法地偏离入口值——被调代码自己的 ret 会弹掉上一层压的返回地址，
+        //   强行拉回等于把那次 pop 抵消掉。实测这样会制造一串「修了又被修回来」的噪声
+        //   （[rsp-fix] 成对出现 target=0x140dab670 is_call=1 与 is_call=0）。
         // 被调函数只要中途因为「未实现间接跳转」在收集模式下提前 return，就走不到自己的
-        // ret，这 8 字节永久留在栈上。上层函数收尾时 mov rbx,[rsp+0x30] / pop rdi 全部
-        // 错位一格：实测 rbx 被读成返回地址 0x140d6a947、rdi 从 0x20 变 0，随后
-        // lea r9,[r14+rbx*8] 算出 0xa16b57c28，崩在 mov [r9],rdx。
-        // 这里按调用形态把 rsp 校正回唯一正确值，并留一行日志（不静默吞掉）。
-        if (ctx) {
-            const uint64_t want = rsp_in + (is_call ? 8ULL : 0ULL);
+        // ret，这 8 字节永久留在栈上：上层函数收尾时 mov rbx,[rsp+0x30] / pop rdi 全部
+        // 错位一格，实测 rbx 被读成返回地址 0x140d6a947、rdi 从 0x20 变 0，
+        // 随后 lea r9,[r14+rbx*8] 算出 0xa16b57c28，崩在 mov [r9],rdx。
+        if (ctx && is_call) {
+            const uint64_t want = rsp_in + 8;
             if (ctx->rsp != want) {
                 static int rsp_fixed = 0;
                 if (rsp_fixed++ < 20)
                     std::fprintf(stderr,
-                                 "[rsp-fix] target=0x%llx caller=0x%llx is_call=%d rsp=0x%llx -> 0x%llx\n",
+                                 "[rsp-fix] target=0x%llx caller=0x%llx is_call=1 rsp=0x%llx -> 0x%llx\n",
                                  (unsigned long long)target_va, (unsigned long long)caller,
-                                 (int)is_call, (unsigned long long)ctx->rsp,
-                                 (unsigned long long)want);
+                                 (unsigned long long)ctx->rsp, (unsigned long long)want);
                 ctx->rsp = want;
             }
+        } else if (ctx && ctx->rsp != rsp_in) {
+            static int tail_logged = 0;
+            if (tail_logged++ < 10)
+                std::fprintf(stderr,
+                             "[rsp-tail] target=0x%llx caller=0x%llx 尾跳 rsp 偏离 0x%llx -> 0x%llx（不动）\n",
+                             (unsigned long long)target_va, (unsigned long long)caller,
+                             (unsigned long long)rsp_in, (unsigned long long)ctx->rsp);
         }
         tracer_done(trace_this, target_va, ctx);
         cur_fn_va() = caller;   // 恢复调用者：否则返回点/SAFE 日志会指到被调函数
