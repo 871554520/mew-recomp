@@ -2234,8 +2234,16 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
                         e.out << "      default: {\n"
                                  "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
                               << hexStr(jt_tbl) << "ULL + ix * 4);\n"
-                                 "        if (!jt_slot) { UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-zero\"); }\n"
+                                 "        if (!jt_slot) {\n"
+                                 "          static int jt0_logged = 0;\n"
+                                 "          if (jt0_logged++ < 10)\n"
+                                 "            fprintf(stderr, \"[jt0] rip=0x%llx ix=%llu table=0x%llx\\n\",\n"
+                                 "                    (unsigned long long)0x" << hexStr(rip)
+                              << "ULL, (unsigned long long)ix, (unsigned long long)0x"
+                              << hexStr(jt_tbl) << "ULL);\n"
+                                 "          UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-zero\");\n"
+                                 "        }\n"
                                  "        dispatch_indirect(0x" << hexStr(pe.image_base)
                               << "ULL + jt_slot, ctx); return;\n"
                                  "      }\n"
@@ -3597,8 +3605,16 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
                         e.out << "      default: {\n"
                                  "        uint64_t jt_slot = mem_read<uint32_t>(ctx, 0x"
                               << hexStr(jt_tbl) << "ULL + ix * 4);\n"
-                                 "        if (!jt_slot) { UNIMPL_INSN(0x" << hexStr(rip)
-                              << "ULL, \"jump-table-rva-zero\"); }\n"
+                                 "        if (!jt_slot) {\n"
+                                 "          static int jt0_logged = 0;\n"
+                                 "          if (jt0_logged++ < 10)\n"
+                                 "            fprintf(stderr, \"[jt0] rip=0x%llx ix=%llu table=0x%llx\\n\",\n"
+                                 "                    (unsigned long long)0x" << hexStr(rip)
+                              << "ULL, (unsigned long long)ix, (unsigned long long)0x"
+                              << hexStr(jt_tbl) << "ULL);\n"
+                                 "          UNIMPL_INSN(0x" << hexStr(rip)
+                              << "ULL, \"jump-table-rva-zero\");\n"
+                                 "        }\n"
                                  "        dispatch_indirect(0x" << hexStr(pe.image_base)
                               << "ULL + jt_slot, ctx); return;\n"
                                  "      }\n"
