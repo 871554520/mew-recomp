@@ -339,6 +339,32 @@ jobs:
           grep -n 'CALL RING TRACE' generated/runner.err | head -5 || true
           exit 0
 
+      - name: Stage 5 alt2 - run WITHOUT skip-init (does the CRT write [0x140e3f620]?)
+        run: |
+          # 假设（2026-11-28）：run 46023439342 卡死在 0x140d1f7e4 里一次
+          # `call qword [0x140e3f620]`。这条槽只有三个静态调用点
+          # （0x140d1f803 / 0x140d1fe22 / 0x140d3e1f1），其中 0x140d3e1f1 落在
+          # CRT 初始化区（0x140d3e0xx，__scrt_common_main_seh 就在 0x140d3e738 附近），
+          # 说明这个指针**应该是 CRT 初始化期间写进去的**；而我们一直在用
+          # MEW_SEH_SKIP_INIT=1 跳过 index=2339 那个初始化器。
+          # 所以这一趟把 SKIP_INIT 关掉：如果槽被正确写入、锁不再自旋，
+          # 就证明「当年为了绕过崩溃而跳过的那一条初始化器，正是这里缺的那一步」，
+          # 而且那批 chaininfo/RVA 表/SSE 修复之后 2339 很可能已经不再崩了。
+          set +e
+          MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEED_MLF=1 MEW_CALL_MAIN=1 \
+          MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 \
+          MEW_SAMPLE_SEC=30 MEW_TRACE_IND=1 \
+          timeout 600 ./build-stage3/mew_runner Mewgenics.exe \
+            > generated/runner_noskip.out 2> generated/runner_noskip.err
+          echo "runner_noskip rc=$?" | tee -a generated/runner_noskip.out
+          echo "--- noskip: 跳过初始化器 / SAMPLE / indring ---"
+          grep -E '跳过初始化器|RESUME #|\[SAMPLE\]|\[indring\] target=' generated/runner_noskip.err | tail -30 || true
+          echo "--- noskip: TIMEOUT/CRASH ---"
+          grep -E '\[TIMEOUT\]|\[CRASH\]' generated/runner_noskip.err | head -5 || true
+          echo "--- noskip tail 20 ---"
+          tail -20 generated/runner_noskip.err
+          exit 0
+
       - name: Stage 5 direct - call gpak loader with a zeroed object
         run: |
           set +e
