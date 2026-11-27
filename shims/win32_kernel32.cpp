@@ -910,9 +910,14 @@ void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_broadcast(&cv->cv);
     static int logged = 0;
-    if (logged++ < 20)
+    if (logged++ < 20) {
         std::fprintf(stderr, "[cond] wakeall cv=0x%llx caller=0x%llx\n",
                      (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
+        // run 46061908947 实测：WakeAll 504 次、SleepConditionVariableSRW 只有 1 次，
+        // 说明是「没有等待者还反复唤醒」的空转。caller 落在 thunk 区（0x140bdd9c0）
+        // 不可靠，所以前 3 次把调用环尾巴打出来，看真正的函数链。
+        if (logged <= 3) call_trace().dump_tail(8);
+    }
     ret0(c, 1);   // BOOL：非 0 = 成功（见上）
 }
 
@@ -1707,6 +1712,39 @@ void shim_USER32_RegisterClassExA(X64Ctx* c) { ret0(c, 1); }
 void shim_USER32_GetPropW(X64Ctx* c) { ret0(c, 0); }
 void shim_USER32_SetPropW(X64Ctx* c) { ret0(c, 1); }
 void shim_USER32_RemovePropW(X64Ctx* c) { ret0(c, 1); }
+// MapVirtualKeyW(uCode, uMapType)：run 46061908947 里被调了 836 次且完全未实现
+// （弱占位一律返回 0）。SDL/引擎在枚举键盘布局时会反复问，全 0 会让它一直扫。
+// 这里按 Win32 语义给最小可用映射：
+//   0=MAPVK_VK_TO_VSC  1=MAPVK_VSC_TO_VK  2=MAPVK_VK_TO_CHAR
+//   3=MAPVK_VSC_TO_VK_EX  4=MAPVK_VK_TO_VSC_EX
+void shim_USER32_MapVirtualKeyW(X64Ctx* c) {
+    const uint32_t code = (uint32_t)arg0(c);
+    const uint32_t type = (uint32_t)arg1(c);
+    uint32_t out = 0;
+    switch (type) {
+        case 0:   // VK -> VSC
+        case 4:   // VK -> VSC_EX
+            if (code >= 'A' && code <= 'Z') out = 0x1E + (code - 'A');
+            else if (code >= '0' && code <= '9') out = 0x02 + (code - '0');
+            else if (code == 0x20) out = 0x39;   // space
+            else if (code >= 0x70 && code <= 0x87) out = 0x3B + (code - 0x70);  // F1..F24
+            break;
+        case 1:   // VSC -> VK
+        case 3:   // VSC -> VK_EX
+            if (code >= 0x1E && code <= 0x26) out = 'A' + (code - 0x1E);
+            else if (code >= 0x02 && code <= 0x0B) out = '0' + (code - 0x02);
+            else if (code == 0x39) out = 0x20;
+            break;
+        case 2:   // VK -> CHAR
+            if (code >= 0x30 && code <= 0x5A) out = code;   // 数字与大写字母按 ASCII 回
+            else if (code == 0x20) out = ' ';
+            break;
+        default:
+            break;
+    }
+    ret0(c, out);
+}
+void shim_USER32_MapVirtualKeyA(X64Ctx* c) { shim_USER32_MapVirtualKeyW(c); }
 void shim_USER32_GetDoubleClickTime(X64Ctx* c) { ret0(c, 500); }
 void shim_USER32_MonitorFromPoint(X64Ctx* c) { ret0(c, 0x30001); }
 void shim_USER32_SetRectEmpty(X64Ctx* c) {
@@ -2259,6 +2297,8 @@ RecompFn lookup_api(const char* name) {
         {"SetPropW", shim_USER32_SetPropW},
         {"RemovePropW", shim_USER32_RemovePropW},
         {"GetDoubleClickTime", shim_USER32_GetDoubleClickTime},
+        {"MapVirtualKeyW", shim_USER32_MapVirtualKeyW},
+        {"MapVirtualKeyA", shim_USER32_MapVirtualKeyA},
         {"MonitorFromPoint", shim_USER32_MonitorFromPoint},
         {"SetRectEmpty", shim_USER32_SetRectEmpty},
         {"RegOpenKeyExW", shim_ADVAPI32_RegOpenKeyExW},
