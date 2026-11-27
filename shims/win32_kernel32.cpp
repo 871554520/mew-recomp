@@ -1662,10 +1662,13 @@ void shim_USER32_GetClipboardSequenceNumber(X64Ctx* c) { (void)c; ret0(c, 0); }
 // 出参比直接失败更糟（调用方会拿着未初始化的 hKey/value 继续跑），所以这里给真语义。
 void shim_USER32_BeginPaint(X64Ctx* c) {                 // HDC BeginPaint(HWND, LPPAINTSTRUCT)
     const uint64_t ps = arg1(c);
-    if (ps && guest_mapped(ps, 64)) {
-        std::memset(guest_ptr_from_ctx(c, ps), 0, 64);
+    // PAINTSTRUCT(x64)：hdc@0(8) fErase@8(4) rcPaint@12(16) fRestore@28(4)
+    //                    fIncUpdate@32(4) rgbReserved@36(32)  -> sizeof 68，按 8 对齐 72
+    // 早先这里把 fErase 写到了 +32（那是 fIncUpdate），代码复查时纠正。
+    if (ps && guest_mapped(ps, 72)) {
+        std::memset(guest_ptr_from_ctx(c, ps), 0, 72);
         mem_write<uint64_t>(c, ps + 0, kFakeHdc);        // hdc
-        mem_write<uint32_t>(c, ps + 32, 1);              // fErase
+        mem_write<uint32_t>(c, ps + 8, 1);               // fErase = TRUE
     }
     ret0(c, kFakeHdc);
 }
@@ -1800,7 +1803,20 @@ void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
 }
 
 void shim_OPENGL32_glGetString(X64Ctx* c) {
-    ret0(c, gl_new_cstr(c, gl_string_for((uint32_t)arg0(c))));
+    // 每个 pname 只分配一次：早先每次调用都 guest_alloc，长跑下来会持续泄漏 guest 堆。
+    static uint64_t cache[6] = {0, 0, 0, 0, 0, 0};
+    const uint32_t nm = (uint32_t)arg0(c);
+    int ix = 5;
+    switch (nm) {
+        case 0x1F00: ix = 0; break;   // GL_VENDOR
+        case 0x1F01: ix = 1; break;   // GL_RENDERER
+        case 0x1F02: ix = 2; break;   // GL_VERSION
+        case 0x1F03: ix = 3; break;   // GL_EXTENSIONS
+        case 0x8B8C: ix = 4; break;   // GL_SHADING_LANGUAGE_VERSION
+        default: ix = 5; break;
+    }
+    if (!cache[ix]) cache[ix] = gl_new_cstr(c, gl_string_for(nm));
+    ret0(c, cache[ix]);
 }
 void shim_OPENGL32_glGetIntegerv(X64Ctx* c) {
     const uint32_t pname = (uint32_t)arg0(c);
