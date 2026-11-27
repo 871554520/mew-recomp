@@ -371,6 +371,16 @@ inline void resume_at(uint64_t rip, const Ctx64& w) {
     ::longjmp(resume_buf(), 1);
 }
 
+// 第二阶段是否在「没人认领」时由我们主动跑一遍。
+// 依据：run 45951868177 里 RtlUnwind / RtlUnwindEx 都是 0 次调用（导入表里有、
+// 垫片会打日志，但一次没打），说明 __CxxFrameHandler3 还没走到「找到 catch 后展开」
+// 那一步就死在找 catch 的过程中。所以不能指望 guest 来调 RtlUnwind*，
+// 必须在 unhandled 之前自己把 __finally 跑掉。默认关，用 MEW_SEH_PHASE2=1 打开。
+inline bool seh_phase2_on() {
+    static int v = [] { const char* e = std::getenv("MEW_SEH_PHASE2"); return (e && e[0] == '1') ? 1 : 0; }();
+    return v == 1;
+}
+
 inline bool seh_dispatch_enabled() {
     static int v = [] { const char* e = std::getenv("MEW_SEH_DISPATCH"); return (e && e[0] == '1') ? 1 : 0; }();
     return v == 1;
@@ -539,6 +549,10 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
         }
         virtual_unwind(cur.Rip, &cur, nullptr, nullptr, true);
         if (!cur.Rip) break;
+    }
+    if (seh_phase2_on()) {
+        std::fprintf(stderr, "[seh] unhandled -> 主动跑第二阶段（MEW_SEH_PHASE2=1）\n");
+        unwind_phase2(c, 0, 0, record_va);
     }
     std::fprintf(stderr, "[seh] unhandled: frame chain exhausted\n");
     return false;
