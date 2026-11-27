@@ -169,6 +169,47 @@ std::string host_path_from_guest(X64Ctx* c, uint64_t wpath) {
     return base + "/" + s;
 }
 
+// ---------------- 环境变量表 ----------------
+// 为什么必须给真值（这是 [cxx-eh] #2 的**另一个**可能根因，和 mkdir 那条是两回事）：
+// 引擎的存档/配置目录基本都从 APPDATA / LOCALAPPDATA 拼出来。之前
+// GetEnvironmentVariableW/A 无条件 ret0(c, 0)、GetEnvironmentStringsW 只给
+// "PATH=C:\"，于是 GetEnvironmentVariableW(L"APPDATA") 拿到 0，拼出来的路径是
+// **空串**，std::filesystem::create_directories("") 直接抛
+//   filesystem_error("create_directories: unknown error")      ← 实测 [cxx-eh] #2
+// 那条路径根本走不到 CreateDirectoryW 垫片，所以只修 mkdir 永远不会生效。
+//
+// 这些值经 host_path_from_guest 会变成 "Users/mew/AppData/Roaming" 这类相对目录，
+// 再由 mew_mkpath 逐级建出来 —— 两边是配套的，改一边就得改另一边。
+struct MewEnvEntry { const char* name; const char* value; };
+static const MewEnvEntry kMewEnv[] = {
+    {"APPDATA",      "C:\\Users\\mew\\AppData\\Roaming"},
+    {"LOCALAPPDATA", "C:\\Users\\mew\\AppData\\Local"},
+    {"USERPROFILE",  "C:\\Users\\mew"},
+    {"HOMEDRIVE",    "C:"},
+    {"HOMEPATH",     "\\Users\\mew"},
+    {"TEMP",         "C:\\Users\\mew\\AppData\\Local\\Temp"},
+    {"TMP",          "C:\\Users\\mew\\AppData\\Local\\Temp"},
+    {"USERNAME",     "mew"},
+    {"COMPUTERNAME", "MEW"},
+    {"OS",           "Windows_NT"},
+    {"PATH",         "C:\\Windows;C:\\Windows\\system32;C:\\"},
+};
+
+// Windows 的环境变量名不区分大小写
+static const MewEnvEntry* mew_env_lookup(const char* name) {
+    if (!name || !*name) return nullptr;
+    for (const MewEnvEntry& e : kMewEnv) {
+        const char* a = e.name;
+        const char* b = name;
+        while (*a && *b &&
+               std::tolower((unsigned char)*a) == std::tolower((unsigned char)*b)) {
+            ++a; ++b;
+        }
+        if (!*a && !*b) return &e;
+    }
+    return nullptr;
+}
+
 // 大小写不敏感地找文件（Linux 上 Windows 路径经常大小写不符）
 std::string find_case_insensitive(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -1290,8 +1331,53 @@ void shim_KERNEL32_MulDiv(X64Ctx* c) {
 void shim_KERNEL32_AreFileApisANSI(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_FormatMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
 void shim_KERNEL32_FormatMessageA(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 0); }
+// 环境变量：以前是无条件失败（ret0 0），现在按 kMewEnv 真答。
+// 返回值语义（Win32）：变量不存在 -> 0；缓冲区够 -> 写入的字符数（不含 NUL）；
+// 缓冲区不够 -> 所需大小（含 NUL）。这三种必须分开，引擎靠返回值区分。
+void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) {
+    const std::string name = guest_wstr(c, arg0(c));
+    const uint64_t buf = arg1(c);
+    const uint32_t cap = (uint32_t)arg2(c);   // 单位是 WCHAR
+    const MewEnvEntry* e = mew_env_lookup(name.c_str());
+    static int traced = 0;
+    if (traced++ < 32)
+        std::fprintf(stderr, "[shim] GetEnvironmentVariableW(\"%s\",cap=%u) -> %s\n",
+                     name.c_str(), cap, e ? e->value : "<none>");
+    if (!e) { ret0(c, 0); return; }
+    const std::string val = e->value;
+    const size_t need = val.size() + 1;
+    if (buf && cap >= need && guest_mapped(buf, need * 2)) {
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, buf);
+        for (size_t i = 0; i < val.size(); ++i) p[i] = (uint16_t)(unsigned char)val[i];
+        p[val.size()] = 0;
+        ret0(c, (uint64_t)val.size());
+    } else {
+        ret0(c, (uint64_t)need);
+    }
+}
+void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) {
+    std::string name;
+    if (arg0(c) && guest_mapped(arg0(c), 1)) {
+        const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+        for (size_t i = 0; i < 260 && p[i]; ++i) name.push_back(p[i]);
+    }
+    const uint64_t buf = arg1(c);
+    const uint32_t cap = (uint32_t)arg2(c);
+    const MewEnvEntry* e = mew_env_lookup(name.c_str());
+    static int traced = 0;
+    if (traced++ < 32)
+        std::fprintf(stderr, "[shim] GetEnvironmentVariableA(\"%s\",cap=%u) -> %s\n",
+                     name.c_str(), cap, e ? e->value : "<none>");
+    if (!e) { ret0(c, 0); return; }
+    const std::string val = e->value;
+    const size_t need = val.size() + 1;
+    if (buf && cap >= need && guest_mapped(buf, need)) {
+        std::memcpy(guest_ptr_from_ctx(c, buf), val.c_str(), need);
+        ret0(c, (uint64_t)val.size());
+    } else {
+        ret0(c, (uint64_t)need);
+    }
+}
 void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_SetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 1); }
 
@@ -3008,15 +3094,24 @@ void shim_SHELL32_CommandLineToArgvW(X64Ctx* c) {
 }
 
 void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
+    // 以前只给一条 "PATH=C:\"，MSVC 的 _get_environment 把它当全部环境；
+    // 于是 getenv("APPDATA") 恒为 NULL，存档目录被拼成空串（见 kMewEnv 上面那段注释）。
+    // 这里把整套 kMewEnv 铺成 Win32 要求的 "K=V\0K=V\0…\0\0" 块。
     if (!g_env_w) {
-        g_env_w = guest_alloc(c, 256);
-        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_env_w);
-        std::memset(p, 0, 256);
-        const char* s = "PATH=C:\\";
-        size_t i = 0;
-        for (; s[i]; ++i) p[i] = (uint16_t)s[i];
-        p[i] = 0;      // 第一个字符串结束
-        p[i + 1] = 0;  // 块结束（双 NUL）
+        std::vector<uint16_t> units;
+        for (const MewEnvEntry& e : kMewEnv) {
+            for (const char* p = e.name; *p; ++p) units.push_back((uint16_t)(unsigned char)*p);
+            units.push_back((uint16_t)'=');
+            for (const char* p = e.value; *p; ++p) units.push_back((uint16_t)(unsigned char)*p);
+            units.push_back(0);
+        }
+        units.push_back(0);   // 块结束（双 NUL）
+        g_env_w = guest_alloc(c, units.size() * 2 + 2);
+        if (g_env_w) {
+            std::memcpy(guest_ptr_from_ctx(c, g_env_w), units.data(), units.size() * 2);
+            std::fprintf(stderr, "[shim] GetEnvironmentStringsW -> %zu vars / %zu units\n",
+                         sizeof(kMewEnv) / sizeof(kMewEnv[0]), units.size());
+        }
     }
     ret0(c, g_env_w);
 }
