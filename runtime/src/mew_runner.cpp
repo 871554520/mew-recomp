@@ -336,6 +336,22 @@ int main(int argc, char** argv) {
                     (unsigned long long)entry, cargs[0], cargs[1], cargs[2], cargs[3]);
     }
 
+    // 定向预置：0x1413c60b0 是哈希容器负载因子检查读取的那个浮点。
+    // 它落在可写 data 区、文件初值是 0x001a99ca（约 2.4e-39，几乎必然是垃圾），
+    // 而 check 是 `comiss mlf, ratio ; jae 跳过 ; 否则抛 length_error`——
+    // mlf 只要不是 1.0 就几乎一定抛。手动解出的写出点 0x1400254ba 写的是
+    // 0x1413c60b8（相邻另一个字段），不是这里。先用 MEW_SEED_MLF=1 试预置 1.0f，
+    // 验证「该全局从未被正确初始化」这条假设；默认关，不改变未开开关时的行为。
+    if (const char* e = std::getenv("MEW_SEED_MLF"); e && e[0] == '1') {
+        const uint64_t addr = 0x1413c60b0ULL;
+        const uint32_t one = 0x3f800000u;   // 1.0f
+        std::memcpy(reinterpret_cast<void*>(uintptr_t)(addr + img.mem_bias)), &one, 4);
+        uint32_t before = 0;
+        std::fprintf(stderr, "[seed] 0x%llx (max_load_factor) <- 1.0f\n",
+                     (unsigned long long)addr);
+        (void)before;
+    }
+
     std::printf("runner: calling entry...\n");
     std::fflush(stdout);
 
