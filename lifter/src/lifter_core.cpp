@@ -1164,9 +1164,11 @@ static uint32_t merge_shared_frame_size(const PeImage& pe, uint64_t va, uint32_t
 // MSVC 的 /hotpatch 会在函数体前留一串 0xCC，于是「对函数起点之前那几个字节」的直接调用
 // 会落在一个既不 .pdata、也没被 lift 的地址上 —— dispatcher 命中不了就当场 return，
 // 被调函数根本没执行。
-// 实测：main（0x1409b5230）里就是 `call 0x1409b9967`，而 0x1409b9970 才是 .pdata 入口
-// （前 9 字节全是 cc cc …）。如果不归一化，即使 main 跑起来也只会立刻拿到垃圾返回值返回，
-// 整个游戏不会启动 —— 这一脚静态就能确认，先修。
+// 实测全镜像只有 11 处这种「e8 目标落在填充里」的调用（例如
+// 0x14000a1f8 = 0x14000a200 前 8 字节、0x140363a17 = 0x140363a20 前 9 字节）。
+// 注意：main（0x1409b5230）**不是**这种情形 —— 它的 `e8 32 47 00 00` 在 0x1409b5239、
+// 下一条是 0x1409b523e，加 0x4732 正好是 **0x1409b9970**（.pdata 真入口），
+// 之前把这条算成 0x1409b9967 是加法算错，别据此推断 main 会 dispatch miss。
 static uint64_t normalize_pad_target(const PeImage& pe, uint64_t t) {
     if (pe.hasFunction(t)) return t;
     const Section* sec = pe.byRva((uint32_t)(t - pe.image_base));
