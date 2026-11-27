@@ -310,6 +310,15 @@ static std::string sseRead(const PeImage& pe, const ZydisDecodedOperand& o,
     return "g_u64(" + addr + ")";
 }
 
+// 16 字节操作数的读法：xmm 直接用，内存用 g_ld128（真正的 128 位装载）。
+// 注意不能用 sseRead(...,16) —— 那返回的是 g_u128(...)，类型是 uint64_t，
+// 赋给 XmmReg 会直接编译失败（run 46021918695 的 9 处 error 就是这个）。
+static std::string sseRead128(const PeImage& pe, const ZydisDecodedOperand& o,
+                              uint64_t next_rip, Emit& e) {
+    if (is_xmm_reg(o)) return "ctx->xmm[" + std::to_string(xmmId(o.reg.value)) + "]";
+    return "g_ld128(" + addrExpr(pe, o, next_rip, e) + ")";
+}
+
 bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                 const ZydisDecodedInstruction& insn,
                 const ZydisDecodedOperand* ops, uint64_t next_rip) {
@@ -875,9 +884,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     if (mn == "movhlps" || mn == "movlhps") {
         const int src_lane = (mn == "movhlps") ? 1 : 0;
         const int dst_lane = (mn == "movhlps") ? 0 : 1;
-        std::string src = is_xmm_reg(ops[1])
-            ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]")
-            : ("g_u128(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << "; ctx->xmm[" << dx << "].u64[" << dst_lane
               << "] = s_.u64[" << src_lane << "]; }\n";
         return true;
@@ -885,7 +892,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     // ---- shufpd xmm1, xmm2/m128, imm8：两个 double lane 各按 1 位选择（stub_list: 60 个函数）----
     if (mn == "shufpd") {
         const unsigned imm = (unsigned)ops[2].imm.value.u;
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
                  "    ctx->xmm[" << dx << "].f64[0] = d_.f64[" << (imm & 1) << "];\n"
                  "    ctx->xmm[" << dx << "].f64[1] = s_.f64[" << ((imm >> 1) & 1) << "]; }\n";
@@ -893,7 +900,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- packssdw：两组 4 个 dword 饱和到 int16（stub_list: 86 个函数）----
     if (mn == "packssdw") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
                  "    for (int i=0;i<4;++i) {\n"
                  "      int32_t v0=(int32_t)d_.u32[i], v1=(int32_t)s_.u32[i];\n"
@@ -904,7 +911,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- pabsd：4 个 dword 取绝对值（stub_list: 17 个函数）----
     if (mn == "pabsd") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << ";\n"
                  "    for (int i=0;i<4;++i) { int32_t v=(int32_t)s_.u32[i];\n"
                  "      ctx->xmm[" << dx << "].u32[i] = (uint32_t)(v<0?-v:v); } }\n";
@@ -912,7 +919,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- pmaddwd：16 位成对相乘再相加成 dword（stub_list: 25 个函数）----
     if (mn == "pmaddwd") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
                  "    for (int i=0;i<4;++i) {\n"
                  "      int32_t lo=(int32_t)(int16_t)d_.u16[2*i]  *(int32_t)(int16_t)s_.u16[2*i];\n"
@@ -924,7 +931,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     if (mn == "pshuflw" || mn == "pshufhw") {
         const unsigned imm = (unsigned)ops[2].imm.value.u;
         const bool low = (mn == "pshuflw");
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << ";\n";
         for (int i = 0; i < 4; ++i) {
             const int sel = (int)((imm >> (2 * i)) & 3);
@@ -936,7 +943,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- pshufb：按 mask 的每个字节选源字节，最高位为 1 则写 0（stub_list: 18 个函数）----
     if (mn == "pshufb") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg m_ = " << src << ";\n"
                  "    for (int i=0;i<16;++i) { uint8_t sel=m_.u8[i];\n"
                  "      ctx->xmm[" << dx << "].u8[i] = (sel & 0x80) ? 0 : d_.u8[sel & 0x0F]; } }\n";
@@ -944,14 +951,14 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     }
     // ---- pmovsxbd：把源低 4 个字节符号扩展成 4 个 dword（stub_list: 15 个函数）----
     if (mn == "pmovsxbd") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << ";\n"
                  "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i] = (uint32_t)(int32_t)(int8_t)s_.u8[i]; }\n";
         return true;
     }
     // ---- pmulld：4 个 dword 相乘（stub_list: 12 个函数）----
     if (mn == "pmulld") {
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << "; for (int i=0;i<4;++i) ctx->xmm[" << dx
               << "].u32[i] = ctx->xmm[" << dx << "].u32[i] * s_.u32[i]; }\n";
         return true;
@@ -965,7 +972,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         const bool scalar = (mn == "cmpss" || mn == "cmpsd");
         const int lanes = scalar ? 1 : (single ? 4 : 2);
         const char* FT = single ? "f32" : "f64";
-        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << ";\n";
         for (int i = 0; i < lanes; ++i) {
             e.out << "    { double a_=(double)ctx->xmm[" << dx << "]." << FT << "[" << i << "];"

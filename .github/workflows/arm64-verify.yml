@@ -89,14 +89,16 @@ jobs:
           : > generated/arm64_stage4.txt
           BEST=0
           for K in 0 1 2 3 4 5 6 7; do
-            if ! ./build/mew_lifter --pick-nested --skip $K --exe Mewgenics.exe --out generated/nested.txt > /dev/null 2>&1; then
+            if ! ./build/mew_lifter --pick-nested --skip $K --seeds-inside tools/known_internal_labels.txt \
+              --exe Mewgenics.exe --out generated/nested.txt > /dev/null 2>&1; then
               echo "no candidate at skip=$K"; break
             fi
             MASK=$(awk '/^# root/{for(i=1;i<=NF;i++) if($i ~ /^mask=/) print substr($i,6)}' generated/nested.txt)
             ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
             echo "candidate skip=$K root=0x$ROOT mask=$MASK"
             rm -rf generated/stage4 && mkdir -p generated/stage4
-            ./build/mew_lifter --shards 1 --only generated/nested.txt --out-dir generated/stage4 --exe Mewgenics.exe > /dev/null 2>&1
+            ./build/mew_lifter --shards 1 --only generated/nested.txt --seeds-inside tools/known_internal_labels.txt \
+              --out-dir generated/stage4 --exe Mewgenics.exe > /dev/null 2>&1
             python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap.cpp > /dev/null
             if ! aarch64-linux-gnu-g++ -std=c++17 -O0 -g -rdynamic -I runtime/include -I generated/stage4 \
                  tests/stage4/native_nested.cpp generated/stage4/shard_000.cpp \
@@ -183,8 +185,10 @@ jobs:
           MEW_SPLIT_CHAIN: "1"
         run: |
           mkdir -p generated/stage4
-          ./build/mew_lifter --pick-nested --exe Mewgenics.exe --out generated/nested.txt
+          ./build/mew_lifter --pick-nested --seeds-inside tools/known_internal_labels.txt \
+            --exe Mewgenics.exe --out generated/nested.txt
           ./build/mew_lifter --shards 1 --only generated/nested.txt \
+            --seeds-inside tools/known_internal_labels.txt \
             --out-dir generated/stage4 --exe Mewgenics.exe
           ROOT=$(awk '/^# root/{print $3}' generated/nested.txt | sed 's/va=0x//')
           python3 tools/stage2_wrap.py "$ROOT" generated/nested_wrap.cpp

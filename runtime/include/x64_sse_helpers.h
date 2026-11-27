@@ -14,6 +14,16 @@ inline void g_st32(uint64_t a, uint32_t v) { mem_write<uint32_t>(sse_ctx(), a, v
 inline float g_f32(uint64_t a) { return mem_read<float>(sse_ctx(), a); }
 inline double g_f64(uint64_t a) { return mem_read<double>(sse_ctx(), a); }
 inline uint64_t g_u128(uint64_t a) { return mem_read<uint64_t>(sse_ctx(), a); }
+// 真正的 16 字节装载：g_u128 名字像 128 位，实际只读 8 字节（历史遗留），
+// 不能拿来给 `XmmReg s_ = ...` 赋值 —— run 46021918695 就是这么编挂的：
+//   shard_031.cpp:158536:23: error: conversion from 'uint64_t' to non-scalar type 'XmmReg'
+// 这里按两段 8 字节用 mem_read 读，ARM64 上也不做对齐强转。
+inline XmmReg g_ld128(uint64_t a) {
+    XmmReg r{};
+    r.u64[0] = mem_read<uint64_t>(sse_ctx(), a);
+    r.u64[1] = mem_read<uint64_t>(sse_ctx(), a + 8);
+    return r;
+}
 
 namespace sse {
 
