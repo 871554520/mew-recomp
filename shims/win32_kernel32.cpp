@@ -17,6 +17,8 @@
 #include <cctype>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -928,15 +930,34 @@ void shim_KERNEL32_CreateMutexW(X64Ctx* c) { ret0(c, 0x1003); }
 void shim_KERNEL32_ReleaseMutex(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_SetEndOfFile(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
-    std::string path = host_path_from_guest(c, arg0(c));
-    FILE* f = std::fopen(path.c_str(), "rb");
-    std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=%s\n", path.c_str(), f ? "FILE" : "MISSING");
-    if (f) std::fclose(f);
-    ret0(c, f ? 0x80 : (uint32_t)-1);
+    mew_api_hit("GetFileAttributesW");
+    const std::string path = host_path_from_guest(c, arg0(c));
+    struct stat st;
+    if (!path.empty() && ::stat(path.c_str(), &st) == 0) {
+        // 目录必须报 FILE_ATTRIBUTE_DIRECTORY(0x10)：以前只用 fopen 判「能不能打开」，
+        // 目录会被报成 MISSING，于是 create_directories 永远认为目录建不出来。
+        const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
+        std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=0x%x\n", path.c_str(), attr);
+        ret0(c, attr);
+        return;
+    }
+    ret0(c, (uint32_t)-1);
 }
 void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_SetCurrentDirectoryW(X64Ctx* c) { ret0(c, 1); }
-void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
+    mew_api_hit("CreateDirectoryW");
+    const std::string path = host_path_from_guest(c, arg0(c));
+    if (path.empty()) { ret0(c, 0); return; }
+    // 必须真的落盘：std::filesystem::create_directories 建完会**再查一遍**是否
+    // 存在，如果这里只返回 1 而不创建，第二次查询仍是「不存在」，MSVC 就抛
+    //   filesystem_error("create_directories: unknown error")
+    // 实测 run 46079343652 的 [cxx-eh] #2，throw_pc=0x14023e254，
+    // handler=0x140d4014c —— 那就是引擎在建存档/配置目录时炸掉的。
+    if (::mkdir(path.c_str(), 0777) == 0 || errno == EEXIST) { ret0(c, 1); return; }
+    std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") 失败 errno=%d\n", path.c_str(), errno);
+    ret0(c, 0);
+}
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_FindFirstFileW(X64Ctx* c) {
     // 这原本是个静默返回 INVALID_HANDLE_VALUE 的桩：如果游戏是靠目录枚举
