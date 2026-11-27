@@ -1085,6 +1085,16 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 static uint32_t lookup_size_override(uint64_t va) {
     static const std::unordered_map<uint64_t, uint32_t> m = {
         {0x1403862d0ULL, 0x1bb},
+        // 0x140386180（算新桶数）末尾是 `jmp 0x1403862d0`，中间隔着一条 .pdata。
+        // 只补 0x1403862d0 的话，这条 jmp 仍然是跨函数尾跳：
+        // run 45965655068 里 0x140386180 返回时 rsi/rdi 被下游覆盖
+        // （rsi:0x10013eb0->0x1413c60c8、rdi:0x100021a0->0x200），caller 的
+        // 循环指针被毁 -> 无限 alloc+splice -> timeout。
+        // 把 0x140386180 一口气补到 0x14038648b（含 _Vec.assign、mask/_Maxidx 写回、
+        // 重链循环、以及 0x14038647e 那个 "invalid hash bucket count" 冷桩），
+        // 让 jmp / ja 全部变成函数内标签，帧（push rdi / sub rsp,0x20 … add rsp,0x20 / pop rdi）
+        // 也完整落在一个函数里。0x30b = 0x14038648b - 0x140386180。
+        {0x140386180ULL, 0x30b},
         // 0x140be0a60：MSVC 把一个「共享序言/共享尾声」的真实函数拆成了三条 .pdata
         //   （0x140be0a60..0x140be0a83 / 0x140be0a83..0x140be0ac7 / 0x140be0ac7..0x140be0ad8），
         //   但只有第一段有 `sub rsp,0x28`，后两段直接往 [rsp+0x20]/[rsp+0x30]
@@ -2384,7 +2394,11 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             if (mn == "jmp") {
                 if (ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                     uint64_t t = next_rip + (int64_t)ops[0].imm.value.s;
-                    if (!pe.hasFunction(t) || t == va) work.push_back(t);
+                    // 落在本函数（含被合并进来的扩展范围）之内就继续跟，
+                    // 这样 `jmp 0x1403862d0` 这种「同一真函数的后半段」才会变成
+                    // 本地标签，而不是跨函数尾跳把 rsp/寄存器连续性打断。
+                    if (!pe.hasFunction(t) || t == va || (t >= va && t < va + size))
+                        work.push_back(t);
                     break;
                 }
                 // 跳转表
