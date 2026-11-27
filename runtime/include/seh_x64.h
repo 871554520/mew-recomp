@@ -377,10 +377,18 @@ inline void resume_at(uint64_t rip, const Ctx64& w) {
 // 那一步就死在找 catch 的过程中。所以不能指望 guest 来调 RtlUnwind*，
 // 必须在 unhandled 之前自己把 __finally 跑掉。默认关，用 MEW_SEH_PHASE2=1 打开。
 // 是否在「没人认领」时把异常就地吞掉、并且**跳过当前 C++ 初始化器**继续循环。
-// 依据：run 45951868177/45953571612 的帧链显示 C++ 初始化器循环就是
-// 0x140d3e738..0x140d3e8a9（它引用 XCU 表尾 0x140e44858，表首 0x140e44670、
-// 共 61 项，第 0 项 0x140025400 抛 length_error，第 38 项 0x1400266c0 才构造
-// 那棵 std::map）。第 0 项一抛，后面 60 个全局构造全废。
+// 依据：XCU 表首 0x140e44670、表尾 0x140e44858、共 61 项，第 0 项 0x140025400
+// 抛 length_error，第 38 项 0x1400266c0 才构造那棵 std::map —— 第 0 项一抛，
+// 后面 60 个全局构造全废。
+// 真正要 resume 回去的是 **_initterm 本体 0x140d6aec8..0x140d6af09**：
+//     cmp rcx,rdx / je done / mov rbx,rcx / mov rdi,rdx
+//   loop: mov rax,[rbx] / test rax,rax / je skip / call rax
+//         add rbx,8 / cmp rbx,rdi / jne loop
+// 异常帧链里的 depth=6 pc=0x140d6aef5 正是 `call rax` 的下一条。循环状态在
+// callee-saved 的 rbx/rdi 里，virtual_unwind 会从帧里恢复它们，所以 resume 到
+// 0x140d6aef5 就能「丢掉这一项、接着跑下一项」。
+// 注意不要用 0x140d3e738：那是 __scrt_common_main_seh 一类，resume 到那里会
+// 一次性跳过**全部**剩余初始化器。
 // 打开这个开关后：异常落到 unhandled 时，沿帧链展开到 0x140d3e738 的那一帧
 // （此时 Rip 正好是 call <initializer> 的下一条指令），resume 过去 →
 // 循环会接着跑下一项，等于「跳过这一项、别让它毁掉整条初始化链」。
@@ -579,16 +587,16 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
         Ctx64 w;
         ctx_to_win(c, &w);
         for (int i = 0; i < 64 && w.Rip; ++i) {
-            if (w.Rip >= 0x140d3e738ULL && w.Rip < 0x140d3e8a9ULL) {
+            if (w.Rip >= 0x140d6aec8ULL && w.Rip < 0x140d6af09ULL) {
                 std::fprintf(stderr,
-                    "[seh] 跳过当前初始化器，回到循环 0x140d3e738（rip=0x%llx rsp=0x%llx）\n",
+                    "[seh] 跳过当前初始化器，回到 _initterm 循环 0x140d6aec8（rip=0x%llx rsp=0x%llx）\n",
                     (unsigned long long)w.Rip, (unsigned long long)w.Rsp);
                 resume_at(w.Rip, w);   // longjmp，循环继续下一项
                 return true;
             }
             virtual_unwind(w.Rip, &w, nullptr, nullptr, false);
         }
-        std::fprintf(stderr, "[seh] 帧链里没找到 0x140d3e738，跳过初始化器失败\n");
+        std::fprintf(stderr, "[seh] 帧链里没找到 _initterm(0x140d6aec8)，跳过初始化器失败\n");
     }
     std::fprintf(stderr, "[seh] unhandled: frame chain exhausted\n");
     return false;
