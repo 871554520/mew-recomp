@@ -13,3 +13,4 @@ t=1795726400 round-M: 每条写指令记 guest pc（SAFE 日志精确到指令�
 t=1795726400 round-N: CFG guard 改为 rax=rcx（原样返回目标）
 t=1795726400 round-O: 观测 calloc(0x140d7a31c) 返回值 + 多地址 TRACE_FN
 t=1795726400 round-P: guest 堆基址挪到 4GB 以下（0x10000000）
+t=1795726400 round-Q: 修复 cur_fn_va 未恢复（[ret]/in_fn 指错人）

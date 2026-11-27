@@ -404,11 +404,13 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
             (void)is_call;
             ctx->rsp += 8;
             tracer_done(trace_this, target_va, ctx);
+            cur_fn_va() = caller;
             return;
         }
         it->second(ctx);
         if (guard) abi_check(ctx, snap, target_va, caller);
         tracer_done(trace_this, target_va, ctx);
+        cur_fn_va() = caller;   // 恢复调用者：否则返回点/SAFE 日志会指到被调函数
         return;
     }
     // 诊断：找最近的下界函数，判断是“函数内偏移”还是“完全在表外”
