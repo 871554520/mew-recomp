@@ -590,6 +590,10 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
     if (seh_skip_init_on()) {
         Ctx64 w;
         ctx_to_win(c, &w);
+        // 与 phase 2 同一个坑：X64Ctx 里没有可靠的 guest PC，起点必须取 [rsp] 的
+        // 返回地址。否则帧链从垃圾起点翻，永远碰不到 _initterm（实测三次都报
+        // "帧链里没找到 _initterm(0x140d6aec8)"，而 [fn] 0x140d6aec8 明明进来过）。
+        if (c->rsp) w.Rip = rd64(c->rsp);
         for (int i = 0; i < 64 && w.Rip; ++i) {
             if (w.Rip >= 0x140d6aec8ULL && w.Rip < 0x140d6af09ULL) {
                 std::fprintf(stderr,
