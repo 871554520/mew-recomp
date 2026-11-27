@@ -257,6 +257,9 @@ void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     size_t n = (size_t)arg2(c);
     uint32_t flags = (uint32_t)arg1(c);
     // 统一走固定 Guest 堆池：地址一定落在堆区，SAFE_MEM 用区间比较 O(1) 放行
+    // 天文数字的申请（实测 malloc(2^64-0x2B0)、malloc(1GiB)）光凭尺寸看不出是谁算的，
+    // 一超过阈值就把 guest 调用环打出来：那个减法溢出的现场才是要找的东西。
+    if (n > (64u << 20)) call_trace().dump("huge alloc");
     uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x8u) != 0);  // HEAP_ZERO_MEMORY=0x8
     // 返回 0 时把 caller 也打出来：这类请求通常是「路径解析器拿到坏指针后算出的天文数字」，
     // 栈上那一层的 caller 才是要查的对象。
@@ -297,6 +300,7 @@ void shim_KERNEL32_HeapReAlloc(X64Ctx* c) {
 
     // 语义对齐 Windows：lpMem == NULL 等价于 HeapAlloc；dwBytes == 0 也要给有效指针
     if (!mem) {
+        if (n > (64u << 20)) call_trace().dump("huge alloc(realloc)");
         uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & kHeapZeroMemory) != 0);
         if (!g && n > (1u << 24))
             std::fprintf(stderr, "[shim] HeapReAlloc(NULL, %zu) refused caller=0x%llx\n",
