@@ -46,3 +46,12 @@
 # 收尾段（add rsp,0x20 / pop rdi / ret）在 0x140d6aedd 这个 fragment 体内，
 # 所以从循环头进来的那一趟能把 rsp 正常复原；不要给 0x140d6aefe 另开入口。
 0x140d6aedd
+
+# run 45965655068 运行期发现（discovered_entries.txt：`0x140bc5e04 # caller=0x140bc5d50`）。
+# 0x140bc5e04 是紧邻 0x140bc5d50 的下一条 .pdata 入口（0x140bc5d50..0x140bc5e04 结束于它），
+# 开头 `48 89 5c 24 70` = mov [rsp+0x70],rbx —— **没有自己的序言**，
+# 属于同一族「共享序言/尾声」：真函数体跨了这两条 .pdata，只有前一段有 sub rsp。
+# 但全镜像里扫不到任何 jcc/jmp/call 直接指向它（跳转表间接命中），
+# 所以 merge_shared_frame_size 的「jcc + 紧邻」判定抓不到，只能在这里显式登记。
+# 登记成 fragment 后，间接跳转才能命中，而不是 dispatch miss 后当场 return、把返回地址留在栈上。
+0x140bc5e04
