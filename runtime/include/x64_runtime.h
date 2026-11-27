@@ -377,7 +377,7 @@ struct AbiSnapshot {
 inline AbiSnapshot abi_snap(const X64Ctx* c) {
     return AbiSnapshot{c->rbx, c->rbp, c->rsi, c->rdi, c->r12, c->r13, c->r14, c->r15, c->rsp};
 }
-inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller);
+inline void abi_check(X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller);
 
 // MEW_STACK_REPAIR=1：调用边界强制平衡模拟栈。
 // 实测存在 rsp 逐层漏 8 字节（-8/-24/-48/-64），会让 MSVC 的 stack cookie
@@ -403,13 +403,34 @@ inline void abi_guard_after_call(X64Ctx* ctx, const AbiSnapshot& s, uint64_t tar
     abi_check(ctx, s, target, caller);
 }
 
-inline void abi_check(const X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller) {
+inline void abi_check(X64Ctx* c, const AbiSnapshot& s, uint64_t target, uint64_t caller) {
     static int logged = 0;
+    static int repaired = 0;
+    const long long dsp = (long long)(c->rsp - s.rsp);
+    const bool reg_bad = c->rbx != s.rbx || c->rbp != s.rbp || c->rsi != s.rsi || c->rdi != s.rdi ||
+                         c->r12 != s.r12 || c->r13 != s.r13 || c->r14 != s.r14 || c->r15 != s.r15;
+    // 调用边界恢复 callee-saved 是 x64 ABI 的**硬保证**（rbx/rbp/rsi/rdi/r12-r15 由被调方
+    // 负责恢复），所以按快照写回**等价于严格执行 ABI**，不改变语义。
+    // 需要它的原因：我们在「跨 fragment / 共享序言尾声」这类边界上偶尔恢复不全——
+    // 实测 0x140386180 返回时 rsi/rdi 被下游覆盖（rsi:0x10013eb0->0x1413c60c8、
+    // rdi:0x100021a0->0x200），把 caller 的循环指针毁掉，于是插入循环无限跑
+    // （map size 一路涨到 65/223 才被 timeout 掐掉）。
+    // 跟着 MEW_STACK_REPAIR 开关走：线上实验阶段默认开，修复完边界问题可以关掉验证。
+    if (reg_bad && mew_stack_repair_on()) {
+        if (repaired++ < 40)
+            std::fprintf(stderr,
+                "[abi-repair] target=0x%llx caller=0x%llx 恢复 callee-saved "
+                "rbx:0x%llx->0x%llx rsi:0x%llx->0x%llx rdi:0x%llx->0x%llx rbp:0x%llx->0x%llx\n",
+                (unsigned long long)target, (unsigned long long)caller,
+                (unsigned long long)c->rbx, (unsigned long long)s.rbx,
+                (unsigned long long)c->rsi, (unsigned long long)s.rsi,
+                (unsigned long long)c->rdi, (unsigned long long)s.rdi,
+                (unsigned long long)c->rbp, (unsigned long long)s.rbp);
+        c->rbx = s.rbx; c->rbp = s.rbp; c->rsi = s.rsi; c->rdi = s.rdi;
+        c->r12 = s.r12; c->r13 = s.r13; c->r14 = s.r14; c->r15 = s.r15;
+    }
     if (logged > 40) return;
-    long long dsp = (long long)(c->rsp - s.rsp);
-    bool bad = c->rbx != s.rbx || c->rbp != s.rbp || c->rsi != s.rsi || c->rdi != s.rdi ||
-               c->r12 != s.r12 || c->r13 != s.r13 || c->r14 != s.r14 || c->r15 != s.r15 ||
-               (dsp != 0 && dsp != 8);
+    const bool bad = reg_bad || (dsp != 0 && dsp != 8);
     if (!bad) return;
     ++logged;
     call_trace().dump("abi-violation");
