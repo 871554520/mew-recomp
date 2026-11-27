@@ -1108,6 +1108,27 @@ static uint32_t lookup_size_override(uint64_t va) {
         //   补到 0x78（= 0x140be0ad8-0x140be0a60，含最后那个 ret）之后，
         //   0x140be0a83 / 0x140be0ac7 都成了函数内的本地标签。
         {0x140be0a60ULL, 0x78},
+        // 0x14004ba20：`std::vector<node*>::assign(count, fill)` —— rehash 里
+        //   `_Vec.assign(2*_Newsize, _Myhead)` 的那个真身。MSVC 把它拆成 **五条**
+        //   .pdata（0x14004ba20..62 / 62..0x14004baf5 / …baf5..bb10 / bb10..bb16 / bb16..bb1c，
+        //   后四条 unwind flags=0x4 CHAININFO 指回第一段），只有第一段有
+        //   `mov [rsp+0x20],rbx; mov [rsp+0x18],r8; push rsi; sub rsp,0x20`。
+        //   按 0x42 字节单独翻时，最后两条指令是 `jae 0x14004baf5` / `ja 0x14004bb16`，
+        //   两个目标都在段外 → 函数体在 0x14004ba62 就走到头，**整个 assign 一次都没执行**
+        //   就返回宿主（run 45978138365 的 `[rsp-repair] target=0x14004ba20
+        //   caller=0x140386180 delta=-40 -> 8` 那 40 字节就是没撤的 push rsi+sub rsp,0x20）。
+        //   后果不是崩溃而是**静默卡死**：assign 没扩容，_Vec 还是旧 8 项(64 字节)数组，
+        //   而调用方紧接着把 _Mask/_Maxidx 写成 63/64 并按 64 桶重链
+        //   （`and r11,[_Mask]; shl r11,4; add r11,[_Vec._Myfirst]` → 最远写到 +0x3f8），
+        //   于是重链循环把 guest 堆写穿、节点链被毁 → `mov rcx,[rcx]` 永远回不到
+        //   _Myhead → 0x140386180 里的重链循环死转，调用环 idx 冻结在 [12027]，
+        //   600 秒和 1800 秒停在同一处（不是慢，是卡住）。
+        //   0xf6 = 0x14004bb16 - 0x14004ba20：覆盖两条 ret（0x14004baf4 / 0x14004bb0f）
+        //   和 `call 0x140d4ca78` 那个 throw 冷桩（尾部 0x14004bb15 的 int3 会被剥掉）；
+        //   最后那条 `ja 0x14004bb16` 落在补长边界上（count > 0x1FFFFFFFFFFFFFFF，永不成立），
+        //   保持和 present 版本一样的「段外 jcc」处理，不把 bb16 那个 call+int3 桩并进来，
+        //   免得 int3 进预扫把整个函数判成 UNIMPL。
+        {0x14004ba20ULL, 0xf6},
     };
     auto it = m.find(va);
     return it == m.end() ? 0u : it->second;
