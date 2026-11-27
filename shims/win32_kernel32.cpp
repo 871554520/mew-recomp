@@ -34,6 +34,7 @@ void shim_KERNEL32_RtlPcToFileHeader(X64Ctx*);
 void shim_KERNEL32_OutputDebugStringA(X64Ctx*);
 void shim_KERNEL32_GetCommandLineA(X64Ctx*);
 void shim_KERNEL32_GetCommandLineW(X64Ctx*);
+void shim_SHELL32_CommandLineToArgvW(X64Ctx*);
 void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx*);
 void shim_KERNEL32_GetStartupInfoW(X64Ctx*);
 void shim_KERNEL32_EncodePointer(X64Ctx*);
@@ -1488,6 +1489,7 @@ RecompFn lookup_api(const char* name) {
         {"DecodePointer", shim_KERNEL32_DecodePointer},
         {"GetCommandLineA", shim_KERNEL32_GetCommandLineA},
         {"GetCommandLineW", shim_KERNEL32_GetCommandLineW},
+        {"CommandLineToArgvW", shim_SHELL32_CommandLineToArgvW},
         {"GetEnvironmentStringsW", shim_KERNEL32_GetEnvironmentStringsW},
         {"FreeEnvironmentStringsW", shim_KERNEL32_FreeEnvironmentStringsW},
         {"GetStartupInfoW", shim_KERNEL32_GetStartupInfoW},
@@ -1727,6 +1729,32 @@ void shim_KERNEL32_GetCommandLineW(X64Ctx* c) {
         p[i] = 0;
     }
     ret0(c, g_cmdline_w);
+}
+
+// CommandLineToArgvW(lpCmdLine, pNumArgs) —— 之前是 UNIMPL（返回 0）。
+// 这个 API 由 shell32 导出，但我们的垫片表只按函数名索引，所以放这里即可。
+// 它的返回是**宽字符指针数组**，调用方一般拿着 argv[0] 当 exe 路径用；
+// 返回 0 的话上层可能直接解引用空指针，或者把命令行解析成 0 个参数。
+// 这里和 GetCommandLineW 保持同一口径：1 个参数，argv[0] = "Mewgenics.exe"。
+void shim_SHELL32_CommandLineToArgvW(X64Ctx* c) {
+    uint64_t nargs_out = arg1(c);
+    uint64_t wbuf = guest_alloc(c, 64);
+    if (!wbuf) { if (nargs_out) mem_write<int32_t>(c, nargs_out, 0); ret0(c, 0); return; }
+    {
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, wbuf);
+        const char* s = "Mewgenics.exe";
+        size_t i = 0;
+        for (; s[i]; ++i) p[i] = (uint16_t)s[i];
+        p[i] = 0;
+    }
+    uint64_t argv = guest_alloc(c, 16);
+    if (!argv) { if (nargs_out) mem_write<int32_t>(c, nargs_out, 0); ret0(c, 0); return; }
+    mem_write<uint64_t>(c, argv, wbuf);
+    mem_write<uint64_t>(c, argv + 8, 0);
+    if (nargs_out) mem_write<int32_t>(c, nargs_out, 1);
+    std::fprintf(stderr, "[shim] CommandLineToArgvW -> 1 arg (argv=0x%llx)\n",
+                 (unsigned long long)argv);
+    ret0(c, argv);
 }
 
 void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
