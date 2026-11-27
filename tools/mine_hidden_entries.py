@@ -254,6 +254,27 @@ except Exception as exc:  # noqa: BLE001
     print('tail-jump-thunk scan failed:', exc)
 print('tail-jump-thunk (任意前缀 + jmp[rip], 前置填充) candidates:', n_tjthunk)
 
+# 运行期实证过的漏网入口：既没有 .pdata，前面又不到 3 个 cc 填充，所以上面三条
+# 静态规则一条都收不到；但镜像里确实有**直接 call** 指向它们，运行期表现就是
+#   [FATAL] Unmapped indirect target: 0x… (nearest_lo=…, delta=…)
+# 每一条都必须来自真实 run 的日志（不是猜），加的时候写清 run id + 反汇编形态。
+RUNTIME_PROVEN_ENTRIES = [
+    # run 46080964765 (339c746, 基线轮)：
+    #   [FATAL] Unmapped indirect target: 0x140bf9d80 (nearest_lo=0x140bf9d60 delta=32)
+    #   in_fn=0x140bf9ab0 hits=1/2/3
+    # 0x140bf9ab0(352B,有 .pdata) 里 0x140bf9ac3 处是 `e8 b8 02 00 00` = call 0x140bf9d80；
+    # 目标形态 `0f bd c1 74 1a 48 63 c8 85 c0 78 13 48 8d 05 … 80 3c 01 00` 是位图检查，
+    # 和 0x140bf9d60 是同源内联对（后者前面有 10 个 cc，已被 padding 规则收到）。
+    # 它前面只有 2 个 cc（0x140bf9d7e/7f），阈值 3 所以漏掉。
+    0x140bf9d80,
+]
+_n_rt = 0
+for _va in RUNTIME_PROVEN_ENTRIES:
+    if _va not in seeds and not _inside_known(_va):
+        seeds.add(_va)
+        _n_rt += 1
+print('runtime-proven entries added:', _n_rt)
+
 print('padding-entry candidates:', n_pad, 'pdata_ranges:', len(pdata_ranges))
 print('total seeds:', len(seeds))
 
