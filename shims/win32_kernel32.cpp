@@ -1371,6 +1371,42 @@ void shim_USER32_MessageBoxA(X64Ctx* c) {
     ret0(c, 1);
 }
 
+// ---------------- COMCTL32：任务对话框（诊断用） ----------------
+// SDL3 的 SDL_ShowSimpleMessageBox 在 Windows 上**优先**用 TaskDialogIndirect
+// （comctl32 v6，动态 GetProcAddress 取）。这个名字以前不在 lookup_api 里，于是
+// GetProcAddress 返回 0，SDL 认为「本系统没有 task dialog」——错误正文就这么丢了。
+// run 46047307348 里连续三次 `LoadLibraryW(comctl32) -> GetProcAddress(TaskDialogIndirect)
+// -> 0 -> CreateCompatibleDC -> 一次大 HeapAlloc -> SleepConditionVariableSRW(INFINITE)
+// -> ExitProcess(3)`，正是三次「想弹错误框但弹不出来」，正文一条都没落日志。
+//
+// 这里给它一个真垫片：按 TASKDIALOGCONFIG 的 x64 布局把标题/主提示/正文/页脚打出来，
+// 然后当作「用户点了 OK」立刻返回 S_OK。SDL 的消息框因此不再返回失败、也不阻塞。
+// 布局（x64）：+0x00 cbSize(UINT) / +0x20 pszWindowTitle / +0x30 pszMainInstruction
+//              / +0x38 pszContent / +0x70 pszExpandedInformation / +0x90 pszFooter
+void shim_COMCTL32_TaskDialogIndirect(X64Ctx* c) {
+    const uint64_t cfg = arg0(c);
+    uint32_t cb = 0;
+    std::string title, instr, content, expanded, footer;
+    if (cfg && guest_mapped(cfg, 0x20)) {
+        cb = mem_read<uint32_t>(c, cfg);
+        if (guest_mapped(cfg, 0xb0)) {
+            title = guest_wstr(c, mem_read<uint64_t>(c, cfg + 0x20));
+            instr = guest_wstr(c, mem_read<uint64_t>(c, cfg + 0x30));
+            content = guest_wstr(c, mem_read<uint64_t>(c, cfg + 0x38));
+            expanded = guest_wstr(c, mem_read<uint64_t>(c, cfg + 0x70));
+            footer = guest_wstr(c, mem_read<uint64_t>(c, cfg + 0x90));
+        }
+    }
+    std::fprintf(stderr,
+                 "[shim] TaskDialogIndirect cbSize=0x%x title=\"%s\" main=\"%s\" content=\"%s\""
+                 " expanded=\"%s\" footer=\"%s\"\n",
+                 cb, title.c_str(), instr.c_str(), content.c_str(), expanded.c_str(), footer.c_str());
+    if (arg1(c)) mem_write<int32_t>(c, arg1(c), 1);   // IDOK
+    if (arg2(c)) mem_write<int32_t>(c, arg2(c), 0);
+    if (arg3(c)) mem_write<int32_t>(c, arg3(c), 0);
+    ret0(c, 0);   // S_OK
+}
+
 // ---- 输入：一律「没有按键」 ----
 void shim_USER32_GetAsyncKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetKeyState(X64Ctx* c) { (void)c; ret0(c, 0); }
@@ -1604,6 +1640,12 @@ RecompFn lookup_api(const char* name) {
         {"IsValidLocale", shim_KERNEL32_IsValidLocale},
         {"WideCharToMultiByte", shim_KERNEL32_WideCharToMultiByte},
         {"MultiByteToWideChar", shim_KERNEL32_MultiByteToWideChar},
+        // 错误弹窗一族：SDL3 的 SDL_ShowSimpleMessageBox 优先走 TaskDialogIndirect，
+        // 取不到才回落 MessageBoxW/A。三个名字以前一个都没登记，所以游戏的三次
+        // 报错框不但弹不出来，连正文都没进日志（run 46047307348）。
+        {"TaskDialogIndirect", shim_COMCTL32_TaskDialogIndirect},
+        {"MessageBoxA", shim_USER32_MessageBoxA},
+        {"MessageBoxW", shim_USER32_MessageBoxW},
     };
     for (const auto& e : kApis)
         if (std::strcmp(e.name, name) == 0) return e.fn;

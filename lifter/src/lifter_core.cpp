@@ -3765,7 +3765,7 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             // （run 46023439342 里 target=0x140be0980 正是这么来的）。
             // 生成期打一行，shards.log 里就能看到哪些函数是「走掉」的。
             static int walkoff_logged = 0;
-            if (walkoff_logged < 300) {
+            if (walkoff_logged < 4000) {
                 ++walkoff_logged;
                 std::fprintf(stderr, "[walkoff] fn=0x%llx rip=0x%llx next=0x%llx\n",
                              (unsigned long long)va, (unsigned long long)rip,

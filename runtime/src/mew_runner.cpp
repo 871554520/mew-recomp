@@ -456,6 +456,11 @@ int main(int argc, char** argv) {
             }
         }
     }
+    // 正常收尾（没有 ExitProcess 垫片介入时）也留一份调用环尾巴：以前只有
+    // timeout/crash 两条路径 dump，于是「自己走完再返回」的 run 一点环数据都没有。
+    std::fprintf(stderr, "\n===== CALL RING TRACE (exit) =====\n");
+    call_trace().dump_tail(64);
+    std::fflush(stderr);
     mew_unimpl_dump("exit");
     return 0;
 }

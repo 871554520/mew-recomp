@@ -626,6 +626,9 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
             std::fprintf(stderr,
                          "[api] indirect call target=0（未解析的导入）in_fn=0x%llx is_call=%d -> 当作返回 0\n",
                          (unsigned long long)cur_fn_va(), (int)is_call);
+        // 前三次把调用环尾巴打出来：`call [rsp+0x38]` 这种站点的"0"到底是谁传下来的，
+        // 只有看调用链才知道（run 46047307348 的三次视频初始化失败全靠这条定位）。
+        if (null_logged <= 3) call_trace().dump("null-target");
         if (ctx) {
             ctx->rax = 0;
             if (is_call) ctx->rsp += 8;
@@ -660,6 +663,10 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
                              api[0] ? api : "<unreadable>",
                              (unsigned long long)cur_fn_va(), (int)is_call,
                              handled ? "调用垫片" : "返回 0");
+            // api=<unreadable> 说明目标既不是镜像 RVA 也不是函数指针，而是**从栈/堆上读来的
+            // 垃圾值**（实测 0x58 / 0x2 / 0x50934f30 / 0x7f34793ff700）。前三次打调用环，
+            // 才能看出是谁把这种东西当函数指针传下来的。
+            if (!api[0] && iat_logged <= 3) call_trace().dump("bad-pointer");
             if (handled) {
                 if (is_call) ctx->rsp += 8;   // 与 lifter 改写路径一致：垫片返回后弹掉返回地址
                 tracer_done(trace_this, target_va, ctx);
