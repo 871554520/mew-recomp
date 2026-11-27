@@ -6,11 +6,11 @@ on:
       - '.stage3-trigger'
   workflow_dispatch:
 
-# 同一时间只留一轮：新触发会把还在跑的旧轮取消掉（之前两个 stage3 并行抢 runner，
-# 互相拖慢还浪费额度）。
+# 推送触发：同一时间只留一轮（新提交顶掉旧轮，避免抢 runner）。
+# 手动 workflow_dispatch：每轮独立 group，不 cancel 正在跑的轮次（补跑被顶掉的 ref 时不再误杀）。
 concurrency:
-  group: stage3-full
-  cancel-in-progress: true
+  group: stage3-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'full' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   full:
