@@ -863,32 +863,15 @@ void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
 // pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
 // 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
 void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
-    CvSlot* cv = cv_for(arg0(c), true);
-    SrwSlot* s = srw_for(arg1(c), true);
+    // **单线程模拟：没有别的线程会来 Wake，真等就是死锁。**
+    // run 46023439342 的卡死（0x140d1f7e4，rsp 30 分钟不动）就是这条：
+    // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
+    // 现在按「超时」立刻返回 0，并打一行日志让下一轮 artifact 能证实这条路径。
     const uint32_t ms = (uint32_t)arg2(c);
-    if (!cv || !s) { ret0(c, 0); return; }
-    const bool was_shared = __atomic_load_n(&s->shared, __ATOMIC_SEQ_CST) > 0;
-    pthread_rwlock_unlock(&s->rw);
-    pthread_mutex_lock(&cv->mu);
-    int rc = 0;
-    if (ms == 0xFFFFFFFFu) {
-        rc = pthread_cond_wait(&cv->cv, &cv->mu);
-    } else {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += (time_t)(ms / 1000u);
-        ts.tv_nsec += (long)(ms % 1000u) * 1000000L;
-        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
-        rc = pthread_cond_timedwait(&cv->cv, &cv->mu, &ts);
-    }
-    pthread_mutex_unlock(&cv->mu);
-    if (was_shared) {
-        pthread_rwlock_rdlock(&s->rw);
-        __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
-    } else {
-        pthread_rwlock_wrlock(&s->rw);
-    }
-    ret0(c, rc == 0 ? 1 : 0);
+    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> timeout(0)\n",
+                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms);
+    (void)cv_for; (void)srw_for;
+    ret0(c, 0);
 }
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
@@ -1515,6 +1498,17 @@ RecompFn lookup_api(const char* name) {
         {"GetCurrentProcessId", shim_KERNEL32_GetCurrentProcessId},
         {"GetCurrentThread", shim_KERNEL32_GetCurrentThread},
         {"GetCurrentProcess", shim_KERNEL32_GetCurrentProcess},
+        // 条件变量 / SRW 锁：实现了但一直没登记（run 46023439342 卡死点的直接嫌疑）。
+        // 现在 SleepConditionVariableSRW 按单线程语义立即超时返回，不再死等。
+        {"SleepConditionVariableSRW", shim_KERNEL32_SleepConditionVariableSRW},
+        {"WakeConditionVariable", shim_KERNEL32_WakeConditionVariable},
+        {"WakeAllConditionVariable", shim_KERNEL32_WakeAllConditionVariable},
+        {"AcquireSRWLockExclusive", shim_KERNEL32_AcquireSRWLockExclusive},
+        {"AcquireSRWLockShared", shim_KERNEL32_AcquireSRWLockShared},
+        {"ReleaseSRWLockExclusive", shim_KERNEL32_ReleaseSRWLockExclusive},
+        {"ReleaseSRWLockShared", shim_KERNEL32_ReleaseSRWLockShared},
+        {"TryAcquireSRWLockExclusive", shim_KERNEL32_TryAcquireSRWLockExclusive},
+        {"TryAcquireSRWLockShared", shim_KERNEL32_TryAcquireSRWLockShared},
         {"Sleep", shim_KERNEL32_Sleep},
         {"SleepEx", shim_KERNEL32_Sleep},
         {"GetTickCount", shim_KERNEL32_GetTickCount},
@@ -1598,6 +1592,10 @@ RecompFn lookup_api(const char* name) {
         {"SwitchToThread", shim_KERNEL32_SwitchToThread},
         {"SetThreadPriority", shim_KERNEL32_SetThreadPriority},
         {"GetACP", shim_KERNEL32_GetACP},
+        {"SleepConditionVariableSRW", shim_KERNEL32_SleepConditionVariableSRW},
+        {"SleepConditionVariableCS", shim_KERNEL32_SleepConditionVariableSRW},
+        {"WakeConditionVariable", shim_KERNEL32_WakeConditionVariable},
+        {"WakeAllConditionVariable", shim_KERNEL32_WakeAllConditionVariable},
         {"GetOEMCP", shim_KERNEL32_GetOEMCP},
         {"GetCPInfo", shim_KERNEL32_GetCPInfo},
         {"GetStringTypeW", shim_KERNEL32_GetStringTypeW},
@@ -1613,6 +1611,21 @@ RecompFn lookup_api(const char* name) {
 }
 
 }  // namespace
+
+// 运行时兜底桥：dispatch_indirect 遇到「未绑定的 IAT 槽」时，把槽里的
+// IMAGE_IMPORT_BY_NAME 解成 API 名，再经这里直接执行对应垫片。
+// 返回 1 表示已执行（调用方负责弹掉模拟返回地址），0 表示没有实现。
+extern "C" int mew_call_api_by_name(const char* name, X64Ctx* ctx) {
+    if (!name || !ctx) return 0;
+    RecompFn fn = lookup_api(name);
+    if (!fn) {
+        const char* bang = std::strchr(name, '!');
+        if (bang) fn = lookup_api(bang + 1);
+    }
+    if (!fn) return 0;
+    fn(ctx);
+    return 1;
+}
 
 // 合成地址反查表（0x5000000xx 是哪个 API）+ 追踪开关。
 // 打开后，每一次经合成地址进入的垫片都会打印 (名称, rcx, rdx, r8 -> rax)。
