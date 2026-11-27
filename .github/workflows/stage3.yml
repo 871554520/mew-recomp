@@ -301,14 +301,16 @@ jobs:
           #   140be0980  填槽 + `call [rsp+0x38]` 的宿主（[rsp-repair] delta=0 -> 8 就是它）
           #   140bfef60  填槽例程（按 rcx/rdx/r8/r9 四个形参条件写指针）
           #   140bb0660  调用 140be0980 的那一层
-          # 先扫 stage3（主构建）再回落 stage3b（reflow 构建）：run 46042045237 里
-          # 三个新 VA 只有标题没有正文，因为它们不在 stage3b 的种子集里，awk 扫不到。
+          # 先查 stage3（主构建），再回落 stage3b（reflow 构建）：
+          # run 46042045237 里三个新 VA 只打了标题没有正文 —— 因为它们在 stage3b 的
+          # 种子集里根本不存在，awk 扫不到。两个目录都扫一遍即可。
           for VA in 140d79870 140d79928 140d79600 140be0980 140bfef60 140bb0660; do
             echo "===== body sub_$VA (stage3) =====" >> generated/stage3b_abort_chain.txt
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3/shard_*.cpp >> generated/stage3b_abort_chain.txt 2>/dev/null || true
             echo "===== body sub_$VA (stage3b) =====" >> generated/stage3b_abort_chain.txt
             awk "/void sub_$VA\\(X64Ctx/,/^}/" generated/stage3b/shard_*.cpp >> generated/stage3b_abort_chain.txt 2>/dev/null || true
           done
+          wc -l generated/stage3b_abort_chain.txt
           wc -l generated/stage3b_abort_chain.txt
 
       - name: Stage 5 - build launcher
