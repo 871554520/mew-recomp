@@ -320,43 +320,41 @@ inline PcmpStr pcmp_core(const XmmReg& a, const XmmReg& b, int nA, int nB, uint8
     const uint8_t* pa = (const uint8_t*)&a;
     const uint8_t* pb = (const uint8_t*)&b;
     uint32_t bits = 0;
-    for (int i = 0; i < nB; ++i) {            // 位图下标 = haystack 位置
-        const int32_t h = pcmp_elem(pb, i, unit, sgn);
-        bool hit = false;
-        if (agg == 0) {                        // equal any
-            for (int j = 0; j < nA; ++j)
-                if (h == pcmp_elem(pa, j, unit, sgn)) { hit = true; break; }
-        } else if (agg == 1) {                 // ranges：needle 两两成区间
-            for (int j = 0; j + 1 < nA; j += 2) {
-                const int32_t lo = pcmp_elem(pa, j, unit, sgn);
-                const int32_t hi = pcmp_elem(pa, j + 1, unit, sgn);
-                if (lo <= h && h <= hi) { hit = true; break; }
-            }
-        } else if (agg == 2) {                 // equal each：同下标逐元素
-            if (i < nA && h == pcmp_elem(pa, i, unit, sgn)) hit = true;
-        } else {                               // equal ordered：A 的前缀出现在 i 处
-            // **不能**用 `i + nA <= nB` 当硬条件。运行期证据（run 46005327501 的 objdump）：
-            // 调用方在 `mov eax,16 / mov edx,eax` 之后走 pcmpestrm，拿到位图先 `bsr` 取**最高**
-            // 置位，再 `btr` 清掉重来，并对每个候选位置重新 `movdqu + xorps + ptest` 做
-            // 完整 16 字节比对才认命中（0x140d1a451..0x140d1a45d），尾部还有
-            // `and (1<<r12)-1` 只保留低 r12 位。这套「先候选、再逐位验证」的写法只有在
-            // 位图**包含部分前缀匹配**时才成立：否则 la=lb=16 时位图只剩 bit0，
-            // bsr/btr 重试循环退化，正是 std::out_of_range 的来源。
-            // 所以这里按「能比多少比多少」：k_max = min(nA, nB - i)，全部相等就置位。
-            if (i < nB) {
+    if (agg == 2) {                            // equal each：全 n 个元素逐个比较
+        // 硬件实测（workflow pcmp-hw，2026-11-28）：equal-each 比全部 16/8 个元素，
+        // la/lb 只影响 CF/ZF/SF，不裁剪位图。旧实现只比前 nB 个、还要求 i<nA，
+        // 与 CPU 不符（hw=0xffff，旧模型=0x3）。
+        for (int i = 0; i < n_elem; ++i)
+            if (pcmp_elem(pb, i, unit, sgn) == pcmp_elem(pa, i, unit, sgn))
+                bits |= (1u << i);
+    } else {
+        for (int i = 0; i < nB; ++i) {         // 位图下标 = haystack 位置
+            const int32_t h = pcmp_elem(pb, i, unit, sgn);
+            bool hit = false;
+            if (agg == 0) {                    // equal any
+                for (int j = 0; j < nA; ++j)
+                    if (h == pcmp_elem(pa, j, unit, sgn)) { hit = true; break; }
+            } else if (agg == 1) {             // ranges：needle 两两成区间
+                for (int j = 0; j + 1 < nA; j += 2) {
+                    const int32_t lo = pcmp_elem(pa, j, unit, sgn);
+                    const int32_t hi = pcmp_elem(pa, j + 1, unit, sgn);
+                    if (lo <= h && h <= hi) { hit = true; break; }
+                }
+            } else {                           // equal ordered：A 的前缀出现在 i 处
+                // **不能**用 `i + nA <= nB` 当硬条件（run 46005327501 的 objdump：
+                // 调用方 bsr→btr 枚举候选，再逐位完整比对；只有「部分前缀也置位」才成立）。
                 const int k_max = (nA < nB - i) ? nA : (nB - i);
                 hit = true;
                 for (int k = 0; k < k_max; ++k)
                     if (pcmp_elem(pb, i + k, unit, sgn) != pcmp_elem(pa, k, unit, sgn)) { hit = false; break; }
             }
+            if (hit) bits |= (1u << i);
         }
-        if (hit) bits |= (1u << i);
     }
-    // 极性（imm8[4]）：负极性在**有效 haystack 元素**范围内取反
-    if (imm & 0x10) {
-        const uint32_t valid = (nB >= n_elem) ? full : ((1u << nB) - 1u);
-        bits = (bits ^ full) & valid;
-    }
+    // 硬件实测：equal-ordered 且 nA=0 是真空匹配，位图全 1（旧模型给 0）。
+    if (agg == 3 && nA == 0) bits = full;
+    // 极性（imm8[4]）：硬件对全部 n 位取反（旧实现按 nB 掩码，hw=0xfffd vs 旧 0x5）。
+    if (imm & 0x10) bits = (~bits) & full;
     r.bits = bits & full;
     return r;
 }

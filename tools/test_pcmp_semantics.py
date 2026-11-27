@@ -37,32 +37,41 @@ def pcmp_core(a: bytes, b: bytes, nA: int, nB: int, imm: int) -> int:
             v -= 65536
         return v
 
+    # 真硬件对照（workflow pcmp-hw，2026-11-28）：三处按 CPU 实测修正
+    #   ① equal-each 比较全部 n 个元素，长度只影响标志位（hw=0xffff vs 旧模型 0x3）
+    #   ② 负极性对全部 n 位取反，不按 nB 掩码（hw=0xfffd vs 旧模型 0x5）
+    #   ③ equal-ordered 且 nA=0：真空匹配，位图全 1（hw=0xffff vs 旧模型 0）
+    full = (1 << n) - 1
     bits = 0
-    for i in range(nB):
-        h = el(b, i)
-        hit = False
-        if agg == 0:                       # equal any
-            hit = any(h == el(a, j) for j in range(nA))
-        elif agg == 1:                     # ranges：needle 两两成区间
-            j = 0
-            while j + 1 < nA:
-                if el(a, j) <= h <= el(a, j + 1):
-                    hit = True
-                    break
-                j += 2
-        elif agg == 2:                     # equal each
-            hit = (i < nA and h == el(a, i))
-        else:                              # equal ordered（前缀语义）
-            k_max = min(nA, nB - i)
-            hit = k_max > 0 and all(el(b, i + k) == el(a, k) for k in range(k_max))
-        if hit:
-            bits |= 1 << i
+    if agg == 2:                           # equal each：全 n 个元素逐位比
+        for i in range(n):
+            if el(b, i) == el(a, i):
+                bits |= 1 << i
+    else:
+        for i in range(nB):
+            h = el(b, i)
+            hit = False
+            if agg == 0:                   # equal any
+                hit = any(h == el(a, j) for j in range(nA))
+            elif agg == 1:                 # ranges：needle 两两成区间
+                j = 0
+                while j + 1 < nA:
+                    if el(a, j) <= h <= el(a, j + 1):
+                        hit = True
+                        break
+                    j += 2
+            else:                          # equal ordered（前缀语义；nA=0 由下面整段处理）
+                k_max = min(nA, nB - i)
+                hit = k_max > 0 and all(el(b, i + k) == el(a, k) for k in range(k_max))
+            if hit:
+                bits |= 1 << i
 
-    if imm & 0x10:                         # 负极性，只在有效 haystack 范围内取反
-        full = (1 << n) - 1
-        valid = full if nB >= n else ((1 << nB) - 1)
-        bits = (bits ^ full) & valid
-    return bits & ((1 << n) - 1)
+    if agg == 3 and nA == 0:               # 真空匹配：全 1
+        bits = full
+
+    if imm & 0x10:                         # 负极性：全部 n 位取反（与硬件一致）
+        bits = (~bits) & full
+    return bits & full
 
 
 def pad(s: bytes) -> bytes:
@@ -79,16 +88,16 @@ CASES = [
     # equal-any：needle {0x00} 在 "abc\0" 里命中位置 3
     ("equal-any 命中 bit3", b"\x00", b"abc\x00", 1, 4, 0x00, 0b1000),
     # equal-each：同下标逐元素相等
-    ("equal-each 前两位相等", b"ab", b"ab", 2, 2, 0x08, 0b11),
+    ("equal-each 全 16 位相等（hw 实测）", b"ab", b"ab", 2, 2, 0x08, 0xFFFF),
     # ranges：needle 两两成区间 [a,z]，haystack "m"
     ("ranges [a,z] 命中 m", b"az", b"m", 2, 1, 0x04, 0b1),
     # 负极性：needle 'x' 不在 "axb" 的位置 0、2
-    ("负极性取反", b"x", b"axb", 1, 3, 0x10, 0b101),
+    ("负极性取反（hw 实测 0xfffd）", b"x", b"axb", 1, 3, 0x10, 0xFFFD),
     # la=lb=16 全等串：只有 bit0。前缀语义比的是「needle 的前缀」，
     # i>=1 时 needle[0] 要等于 haystack[i]，全等串下就对不上
     ("la=lb=16 全等：只有 bit0", b"0123456789abcdef", b"0123456789abcdef", 16, 16, 0x0C, 0b1),
     # 长度 0：needle 空 → 无命中
-    ("nA=0 无命中", b"", b"abc", 0, 3, 0x0C, 0),
+    ("nA=0 真空匹配（hw 实测 0xffff）", b"", b"abc", 0, 3, 0x0C, 0xFFFF),
 ]
 
 
