@@ -376,6 +376,19 @@ inline void resume_at(uint64_t rip, const Ctx64& w) {
 // 垫片会打日志，但一次没打），说明 __CxxFrameHandler3 还没走到「找到 catch 后展开」
 // 那一步就死在找 catch 的过程中。所以不能指望 guest 来调 RtlUnwind*，
 // 必须在 unhandled 之前自己把 __finally 跑掉。默认关，用 MEW_SEH_PHASE2=1 打开。
+// 是否在「没人认领」时把异常就地吞掉、并且**跳过当前 C++ 初始化器**继续循环。
+// 依据：run 45951868177/45953571612 的帧链显示 C++ 初始化器循环就是
+// 0x140d3e738..0x140d3e8a9（它引用 XCU 表尾 0x140e44858，表首 0x140e44670、
+// 共 61 项，第 0 项 0x140025400 抛 length_error，第 38 项 0x1400266c0 才构造
+// 那棵 std::map）。第 0 项一抛，后面 60 个全局构造全废。
+// 打开这个开关后：异常落到 unhandled 时，沿帧链展开到 0x140d3e738 的那一帧
+// （此时 Rip 正好是 call <initializer> 的下一条指令），resume 过去 →
+// 循环会接着跑下一项，等于「跳过这一项、别让它毁掉整条初始化链」。
+inline bool seh_skip_init_on() {
+    static int v = [] { const char* e = std::getenv("MEW_SEH_SKIP_INIT"); return (e && e[0] == '1') ? 1 : 0; }();
+    return v == 1;
+}
+
 inline bool seh_phase2_on() {
     static int v = [] { const char* e = std::getenv("MEW_SEH_PHASE2"); return (e && e[0] == '1') ? 1 : 0; }();
     return v == 1;
@@ -561,6 +574,21 @@ inline bool raise_exception_dispatch(X64Ctx* c, uint32_t code, uint32_t flags,
     if (seh_phase2_on()) {
         std::fprintf(stderr, "[seh] unhandled -> 主动跑第二阶段（MEW_SEH_PHASE2=1）\n");
         unwind_phase2(c, 0, 0, record_va);
+    }
+    if (seh_skip_init_on()) {
+        Ctx64 w;
+        ctx_to_win(c, &w);
+        for (int i = 0; i < 64 && w.Rip; ++i) {
+            if (w.Rip >= 0x140d3e738ULL && w.Rip < 0x140d3e8a9ULL) {
+                std::fprintf(stderr,
+                    "[seh] 跳过当前初始化器，回到循环 0x140d3e738（rip=0x%llx rsp=0x%llx）\n",
+                    (unsigned long long)w.Rip, (unsigned long long)w.Rsp);
+                resume_at(w.Rip, w);   // longjmp，循环继续下一项
+                return true;
+            }
+            virtual_unwind(w.Rip, &w, nullptr, nullptr, false);
+        }
+        std::fprintf(stderr, "[seh] 帧链里没找到 0x140d3e738，跳过初始化器失败\n");
     }
     std::fprintf(stderr, "[seh] unhandled: frame chain exhausted\n");
     return false;
