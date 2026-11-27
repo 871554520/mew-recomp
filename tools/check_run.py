@@ -42,6 +42,13 @@ def main():
     print(f'   entry returned         {count(r"entry returned", err)}')
     print(f'   [main] 补调/已进过      {count(r"\[main\]", err)}')
     print(f'   [fn] 0x140385f80       {count(r"\[fn\] 0x140385f80", err)}   (走到容器插入才 >0)')
+    # main 链路：__scrt_common_main_seh(0x140d3e738) 的尾部会把 0x1409b5230 当函数指针
+    # 交给 0x140ba3a40；main 最终要调游戏入口 0x1409b9970。
+    for va, note in (('0x140d3e738', 'CRT 主流程'), ('0x1409b5140', '传 main 指针的 thunk'),
+                     ('0x140ba3a40', '接函数指针的包装'), ('0x1409b5230', 'main 候选'),
+                     ('0x1409b9970', '游戏入口')):
+        hit = count(r'\[fn\] ' + re.escape(va), err)
+        print(f'   [fn] {va} {hit:>4}   ({note})')
     print(f'   [extend] 0x1403862d0   {count(r"\[extend\] 0x1403862d0", shards)}   (白名单补长 43 -> 443，在 shards.log)')
     print(f'   [merge] 共享序言合并    {count(r"\[merge\]", shards)}   (在 shards.log)')
     for m in re.findall(r'\[merge\] .*', shards)[:8]:
