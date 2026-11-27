@@ -64,7 +64,13 @@ def main():
     print(f'   UNIMPL distinct={len(unimpl)}', dict(unimpl.most_common(8)) if unimpl else '')
     print(f'   prefetchw              {count("prefetchw", err)}')
     print(f'   ABI VIOLATION          {count(r"ABI VIOLATION", err)}')
-    print(f'   CRASH                  {count(r"\[CRASH\]", err)}   TIMEOUT {count(r"\[TIMEOUT\]", err)}   LIVELOCK {count(r"LIVELOCK", err)}')
+    print(f'   CRASH                  {count(r"\[CRASH\]", err)}   TIMEOUT {count(r"\[TIMEOUT\]", err)}   LIVELOCK {count("LIVELOCK", err)}')
+    # ExitProcess 是"进程被 guest 主动结束"的信号（rc=255 常来自这里，而不是 main 返回）。
+    # 它后面紧跟一个 CALL RING TRACE，第一条 FUNC 就是"谁叫的 abort"。
+    print(f'   ExitProcess            {count("ExitProcess", err)}')
+    m = re.search(r'\[shim\] ExitProcess\((\d+)\)\s*\n=+ CALL RING TRACE[^\n]*\n(?:\s+\[(\d+)\] FUNC (\S+)[^\n]*\n)?', err)
+    if m:
+        print(f'      code={m.group(1)}  第一个调用帧={m.group(3) or "?"}')
 
     print('\n== 3. manifest 尺寸抽查（lift 之后的权威长度）')
     if manifest:
@@ -92,7 +98,26 @@ def main():
     else:
         print('   manifest.tsv 不在 artifact 里')
 
-    print('\n== 4. lifted C++ 抽查（hot_functions.txt）')
+    print('\n== 4. 最后停在哪（快速定位，不用翻 20 万行）')
+    for pat, label in ((r'\[shim\] .*', 'shim'),
+                       (r'\[api\] <- \S+', 'api'),
+                       (r'\[fn\] 0x[0-9a-f]+', 'fn'),
+                       (r'\[merge\] .*', 'merge(在 shards.log)')):
+        src = shards if 'merge' in label else err
+        lines = re.findall(pat, src)
+        if lines:
+            print(f'   最后 3 条 {label}:')
+            for ln in lines[-3:]:
+                print('     ', ln.strip()[:120])
+    # 最后一条 CRASH/超时/致命行，通常就是结局
+    tail = re.findall(r'(?:\[CRASH\].*|\[TIMEOUT\].*|\[FATAL\].*|\[LIVELOCK\].*|Unhandled.*)', err)
+    if tail:
+        print('   最后一条致命/异常行:', tail[-1].strip()[:160])
+    ro = out.strip().splitlines()
+    if ro:
+        print('   runner.out 尾部:', ro[-1][:120])
+
+    print('\n== 5. lifted C++ 抽查（hot_functions.txt）')
     if hot:
         for va in ('140385f80', '140386180', '140386250', '1403862d0'):
             print(f'   sub_{va}: {"有" if ("void sub_"+va) in hot else "缺"}')
