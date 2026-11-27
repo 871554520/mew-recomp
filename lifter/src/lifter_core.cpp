@@ -934,6 +934,21 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         e.out << "  }\n";
         return true;
     }
+    // ---- pshufb：按 mask 的每个字节选源字节，最高位为 1 则写 0（stub_list: 18 个函数）----
+    if (mn == "pshufb") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg m_ = " << src << ";\n"
+                 "    for (int i=0;i<16;++i) { uint8_t sel=m_.u8[i];\n"
+                 "      ctx->xmm[" << dx << "].u8[i] = (sel & 0x80) ? 0 : d_.u8[sel & 0x0F]; } }\n";
+        return true;
+    }
+    // ---- pmovsxbd：把源低 4 个字节符号扩展成 4 个 dword（stub_list: 15 个函数）----
+    if (mn == "pmovsxbd") {
+        std::string src = sseRead(pe, ops[1], next_rip, e, 16);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i] = (uint32_t)(int32_t)(int8_t)s_.u8[i]; }\n";
+        return true;
+    }
     if (mn == "shufps") {
         uint8_t imm = (uint8_t)ops[2].imm.value.u;
         std::string src = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
@@ -946,6 +961,29 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         }
         e.out << "}; for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i]=t[i]; }\n";
         return true;
+    }
+    // VEX 版搬移：操作数形状与 legacy 相同，只是 VEX 写到 xmm 时要清零高位（SDM 规定）。
+    if (mn == "vmovd" || mn == "vmovq") {
+        const int bytes = (mn == "vmovd") ? 4 : 8;
+        if (is_xmm_reg(ops[0])) {
+            std::string v = is_gpr_reg(ops[1])
+                ? ("read_reg(ctx," + std::to_string(gprId(ops[1].reg.value)) + "," + std::to_string(bytes) + ")")
+                : ("g_u64(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+            e.out << "  ctx->xmm[" << dx << "].u64[0] = " << v << "; ctx->xmm[" << dx
+                  << "].u64[1] = 0ULL;\n";
+            return true;
+        }
+        if (is_gpr_reg(ops[0]) && is_xmm_reg(ops[1])) {
+            e.out << "  write_reg(ctx," << dg << ",ctx->xmm[" << xmmId(ops[1].reg.value) << "].u64[0],"
+                  << bytes << ");\n";
+            return true;
+        }
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && is_xmm_reg(ops[1])) {
+            e.out << "  g_st64(" << addrExpr(pe, ops[0], next_rip, e) << ", ctx->xmm["
+                  << xmmId(ops[1].reg.value) << "].u64[0]);\n";
+            return true;
+        }
+        return false;
     }
     if (mn == "movd" || mn == "movq") {
         int bytes = (mn == "movd") ? 4 : 8;
@@ -1579,6 +1617,11 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
+        } else if (mn == "out") {
+            /* 端口写：丢弃 */;
+        } else if (mn == "in") {
+            // 端口读：没有真实端口空间，给 0；仍按目的宽度写入（artifact 里 32 个函数只缺这条）
+            storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
         } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
@@ -2911,6 +2954,11 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
 
         if (tryEmitSse(e, pe, mn, insn, ops, next_rip)) {
             /* SSE 已处理 */
+        } else if (mn == "out") {
+            /* 端口写：丢弃 */;
+        } else if (mn == "in") {
+            // 端口读：没有真实端口空间，给 0；仍按目的宽度写入（artifact 里 32 个函数只缺这条）
+            storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
         } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
