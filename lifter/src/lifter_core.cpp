@@ -1076,6 +1076,18 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 static uint32_t lookup_size_override(uint64_t va) {
     static const std::unordered_map<uint64_t, uint32_t> m = {
         {0x1403862d0ULL, 0x1bb},
+        // 0x140be0a60：MSVC 把一个「共享序言/共享尾声」的真实函数拆成了三条 .pdata
+        //   （0x140be0a60..0x140be0a83 / 0x140be0a83..0x140be0ac7 / 0x140be0ac7..0x140be0ad8），
+        //   但只有第一段有 `sub rsp,0x28`，后两段直接往 [rsp+0x20]/[rsp+0x30]
+        //   存 callee-saved 并共用第一段的 `add rsp,0x28; ret`。
+        //   按 0x23 字节单独翻第一段时，函数内的 `jne 0x140be0a83` 落到段外 →
+        //   dispatcher 把它当独立函数尾跳进去（实测 ABI guard 报
+        //   target=0x140be0a83 rsp_delta=48，trace 里 ret=0x0）→ 没有序言却执行共享尾声，
+        //   rsp 直接偏 0x28，把 [rsp+0x38] 那个 out 槽写成旧栈值，随后
+        //   `call qword [rsp+0x38]` 把一个栈地址当函数指针调（FATAL 0x7f16895ffdc8）。
+        //   补到 0x78（= 0x140be0ad8-0x140be0a60，含最后那个 ret）之后，
+        //   0x140be0a83 / 0x140be0ac7 都成了函数内的本地标签。
+        {0x140be0a60ULL, 0x78},
     };
     auto it = m.find(va);
     return it == m.end() ? 0u : it->second;
