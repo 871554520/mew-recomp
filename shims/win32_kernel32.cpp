@@ -858,7 +858,17 @@ void shim_KERNEL32_GetTickCount64(X64Ctx* c) {
 }
 
 // ---------------- 模块/调试/杂项 ----------------
-void shim_KERNEL32_GetLastError(X64Ctx* c) { ret0(c, (uint64_t)g_last_error); }
+void shim_KERNEL32_GetLastError(X64Ctx* c) {
+    // run 46157938266 的教训：修掉 1813 之后，错误格式化器读到的变成一个**陈旧的真值** 2
+    // （ERROR_FILE_NOT_FOUND，来源是我们 GetFileAttributesExW 对 settings.txt 的正常失败探测），
+    // 15 次格式化全是 2 —— 也就是说 SDL/引擎报的错和我们以为的失败点根本不是一件事。
+    // 这里把「谁在读 last error、读到什么」打出来，第一次就能把陈旧值的来源钉死。
+    static int traced = 0;
+    if (traced++ < 40)
+        std::fprintf(stderr, "[shim] GetLastError() -> %u caller=0x%llx\n",
+                     (unsigned)g_last_error, (unsigned long long)cur_fn_va());
+    ret0(c, (uint64_t)g_last_error);
+}
 void shim_KERNEL32_SetLastError(X64Ctx* c) { g_last_error = (uint32_t)arg0(c); ret0(c, 0); }
 void shim_KERNEL32_GetModuleHandleW(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleHandleA(X64Ctx* c) { ret0(c, 0x140000000ULL); }
@@ -3936,11 +3946,16 @@ void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
         std::string blob = "PATH=C:\\";
         blob.push_back('\0');
         extern char** environ;
+        int injected = 0;
         for (char** e = environ; e && *e; ++e)
-            if (env_passthrough(*e)) { blob += *e; blob.push_back('\0'); }
+            if (env_passthrough(*e)) { blob += *e; blob.push_back('\0'); ++injected; }
         blob.push_back('\0');
         const size_t units = blob.size();
         const size_t bytes = units * 2 < 256 ? 256 : units * 2;
+        // 一行日志：到底把几个宿主变量交出去了。dummy 视频轮的对照能否成立全看这个数——
+        // 如果是 0，说明 SDL_VIDEODRIVER=dummy 根本没进 guest，那一轮的 video 对照无效。
+        std::fprintf(stderr, "[shim] GetEnvironmentStringsW -> %zu 字符 / 透传 %d 个宿主变量\n",
+                     units, injected);
         g_env_w = guest_alloc(c, bytes);
         uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_env_w);
         std::memset(p, 0, bytes);
