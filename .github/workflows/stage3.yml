@@ -491,6 +491,25 @@ jobs:
           tail -40 generated/runner.err
           echo '--- trace blocks ---'
           grep -n 'CALL RING TRACE' generated/runner.err | head -5 || true
+          # ===== 判读摘要：本轮结论全部落在 job log 里，避免为了几个数字去拉 27 MB artifact =====
+          echo '===== 判读摘要 (run '"$GITHUB_RUN_ID"') ====='
+          echo "runner_lines=$(wc -l < generated/runner.err 2>/dev/null)"
+          echo "runner_bytes=$(stat -c %s generated/runner.err 2>/dev/null)"
+          for pat in '[FATAL] Unmapped indirect target' '[int3-trap]' '[rsp-repair]' '[cxx-eh]' '[abi-repair]' '[CRASH]' '[SAFE]' '[LIVELOCK]'; do
+            echo "count $pat = $(grep -c -- "$pat" generated/runner.err 2>/dev/null)"
+          done
+          echo '--- FATAL 明细（最多 20 条）---'
+          grep '\[FATAL\] Unmapped indirect target' generated/runner.err | head -20 || true
+          echo '--- ExitProcess / [wr] totals ---'
+          grep -E '\[shim\] ExitProcess\(|\[wr\] totals' generated/runner.err | head -10 || true
+          echo '--- initGraphics 入口标志 0x1413c14fa（MEW_WATCH）---'
+          grep -i '1413c14fa' generated/runner.err | head -8 || true
+          echo '--- 阶段函数 [fn]（8 个）---'
+          grep -E '^\[fn\] 0x(1409b5380|1409b8bb0|1409b58b0|1409b6c00|1409b5ed0|140a10240|140745f60|140951060)' generated/runner.err | head -20 || true
+          echo '--- glGetString 明细 ---'
+          grep 'glGetString' generated/runner.err | head -8 || true
+          echo '--- 最后 5 行 ---'
+          tail -5 generated/runner.err
           exit 0
 
       - name: Stage 5 alt2 - run WITHOUT skip-init (does the CRT write [0x140e3f620]?)
