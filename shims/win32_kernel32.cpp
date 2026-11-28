@@ -458,6 +458,25 @@ void shim_KERNEL32_CreateFileA(X64Ctx* c) {
 // FindExInfoStandard 处理（dir/path 直接 stat 就有），所以共用同一套枚举。
 void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) { shim_KERNEL32_FindFirstFileW(c); }
 
+// ---------------- USER32 的 DPI / Touch 系列 ----------------
+// windows video driver 的 CreateDevice（0x140bfb770）会对 USER32.DLL 逐个
+// GetProcAddress 取下面 8 个，包装函数 0x140c03100 在拿到 0 时会 SetError
+// 并返回 0，而调用方紧跟 `test rax,rax; je <整个 CreateDevice 失败>`。
+// 实测日志里这 8 个**全部返回 0x0**，于是 windows driver 永远建不起来，
+// SDL_VideoInit 里 rdi 拿不到设备、_this 永远为 0、SDL_CreateWindow 入口即失败。
+// 返回值按「成功」的语义给：BOOL 类给 1；context 类给一个非零句柄；
+// awareness 给 1(DpiAwarenessUnaware) —— 这是最保守且不会触发重算的取值。
+void shim_USER32_SetProcessDPIAware(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_SetProcessDpiAwarenessContext(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_SetThreadDpiAwarenessContext(X64Ctx* c) { ret0(c, 1); }   // 返回旧 ctx
+void shim_USER32_GetThreadDpiAwarenessContext(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetAwarenessFromDpiAwarenessContext(X64Ctx* c) { ret0(c, 1); }  // UNAWARE
+void shim_USER32_AreDpiAwarenessContextsEqual(X64Ctx* c) { ret0(c, arg0(c) == arg1(c) ? 1u : 0u); }
+void shim_USER32_IsValidDpiAwarenessContext(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_RegisterTouchWindow(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_GetTouchInputInfo(X64Ctx* c) { ret0(c, 1); }
+void shim_USER32_CloseTouchInputHandle(X64Ctx* c) { ret0(c, 1); }
+
 // ---------------- 路径规范化 + Local 堆（std::filesystem 的依赖）----------------
 // MSVC 的 std::filesystem 需要绝对化/规范化路径时走这一组：
 //   LocalAlloc -> GetFullPathNameW -> LocalFree
@@ -2826,6 +2845,16 @@ RecompFn lookup_api(const char* name) {
         {"CreateFileA", shim_KERNEL32_CreateFileA},
         {"FindFirstFileExW", shim_KERNEL32_FindFirstFileExW},
         {"GetFileAttributesExW", shim_KERNEL32_GetFileAttributesExW},
+        {"SetProcessDPIAware", shim_USER32_SetProcessDPIAware},
+        {"SetProcessDpiAwarenessContext", shim_USER32_SetProcessDpiAwarenessContext},
+        {"SetThreadDpiAwarenessContext", shim_USER32_SetThreadDpiAwarenessContext},
+        {"GetThreadDpiAwarenessContext", shim_USER32_GetThreadDpiAwarenessContext},
+        {"GetAwarenessFromDpiAwarenessContext", shim_USER32_GetAwarenessFromDpiAwarenessContext},
+        {"AreDpiAwarenessContextsEqual", shim_USER32_AreDpiAwarenessContextsEqual},
+        {"IsValidDpiAwarenessContext", shim_USER32_IsValidDpiAwarenessContext},
+        {"RegisterTouchWindow", shim_USER32_RegisterTouchWindow},
+        {"GetTouchInputInfo", shim_USER32_GetTouchInputInfo},
+        {"CloseTouchInputHandle", shim_USER32_CloseTouchInputHandle},
         {"GetFullPathNameW", shim_KERNEL32_GetFullPathNameW},
         {"LocalAlloc", shim_KERNEL32_LocalAlloc},
         {"LocalFree", shim_KERNEL32_LocalFree},
