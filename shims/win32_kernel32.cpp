@@ -157,6 +157,16 @@ namespace {
 thread_local uint64_t g_tls[1024];
 bool g_tls_used[1024] = {false};
 std::mutex g_tls_mu;
+
+// Win32 的「最后一次错误」。为什么必须有：以前 GetLastError 恒返回 0，
+// 于是 MSVC 把**任何** Win32 失败都翻译成 error_code(0, system_category())；
+// 而 FormatMessageW(0) 在真机上拿不到消息 → MSVC 的 _Winerror_message 返回
+// "unknown error"（小写、无数字）。这正是 run 46088817207 里那条
+//   [cxx-eh] #2 filesystem_error what="create_directories: unknown error"
+// 里一个错误码都看不到的原因，也让它看起来像"没有错误码"的怪现象。
+// 现在由各垫片在失败时写入，GetLastError 如实返回。
+thread_local uint32_t g_last_error = 0;
+inline void mew_set_last_error(uint32_t e) { g_last_error = e; }
 FILE* g_stdout_file = nullptr;
 
 FILE* file_from_handle(uint64_t h) { return (FILE*)(uintptr_t)HandleTable::instance().get(h); }
@@ -552,6 +562,7 @@ void shim_KERNEL32_GetFullPathNameW(X64Ctx* c) {
 // GetFileAttributesExW：拿不到时返回 FALSE 并置 last error。
 // 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
+    const std::string raw  = guest_wstr(c, arg0(c));
     const std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
     const uint64_t out = arg2(c);   // lpFileInformation（第 3 个参数 = r8）
     // 以前这里只 fopen 判"能不能打开"，**一个字节都没往 lpFileInformation 写**。
@@ -562,7 +573,14 @@ void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
     // run 上实测就是 `[shim] GetFileAttributesExW("./")=TRUE` 却仍然抛异常 ——
     // 返回 TRUE 但结构是空的，等于什么都没说。
     struct stat st;
-    const bool ok = !path.empty() && ::stat(path.c_str(), &st) == 0;
+    // 空路径必须失败：Windows 上 GetFileAttributesExW(L"") 返回 FALSE 且
+    // GetLastError=ERROR_PATH_NOT_FOUND(3)。以前我们把 "" 翻译成 "./" 然后报 TRUE，
+    // 等于告诉 std::filesystem「这个并不存在的路径组件其实是个目录」，它就会一路
+    // 走下去、最后抛 filesystem_error。run 46088817207 里连续三次
+    //   [shim] GetFileAttributesExW(guest="" host="./")=TRUE attr=0x10
+    // 紧接着就是 [cxx-eh] #2，证据链就在这里。
+    const bool ok = !raw.empty() && !path.empty() && ::stat(path.c_str(), &st) == 0;
+    if (!ok) mew_set_last_error(raw.empty() ? 3u : 2u);   // 3=PATH_NOT_FOUND / 2=FILE_NOT_FOUND
     const uint32_t attr = ok ? (S_ISDIR(st.st_mode) ? 0x10u : 0x80u) : 0u;
     if (ok && out) {
         // WIN32_FILE_ATTRIBUTE_DATA（36 字节，x64）
@@ -590,10 +608,10 @@ void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
     if (traced++ < 24) {
         // 同时打 **guest 原始路径** 和翻译后的宿主路径：`std::filesystem` 抛异常时我们
         // 一直只看到翻译结果（连续三次都是 "./"），无法判断引擎到底问的是 C:\、C: 还是别的。
-        const std::string raw = guest_wstr(c, arg0(c));
         std::fprintf(stderr,
-                     "[shim] GetFileAttributesExW(guest=\"%s\" host=\"%s\")=%s attr=0x%x size=%lld caller=0x%llx\n",
-                     raw.c_str(), path.c_str(), ok ? "TRUE" : "FALSE", attr,
+                     "[shim] GetFileAttributesExW(guest=\"%s\" host=\"%s\" ptr=0x%llx)=%s attr=0x%x size=%lld caller=0x%llx\n",
+                     raw.c_str(), path.c_str(), (unsigned long long)arg0(c),
+                     ok ? "TRUE" : "FALSE", attr,
                      ok ? (long long)st.st_size : -1LL,
                      (unsigned long long)cur_fn_va());
     }
@@ -780,8 +798,8 @@ void shim_KERNEL32_GetTickCount64(X64Ctx* c) {
 }
 
 // ---------------- 模块/调试/杂项 ----------------
-void shim_KERNEL32_GetLastError(X64Ctx* c) { ret0(c, 0); }
-void shim_KERNEL32_SetLastError(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_GetLastError(X64Ctx* c) { ret0(c, (uint64_t)g_last_error); }
+void shim_KERNEL32_SetLastError(X64Ctx* c) { g_last_error = (uint32_t)arg0(c); ret0(c, 0); }
 void shim_KERNEL32_GetModuleHandleW(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleHandleA(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleFileNameW(X64Ctx* c) { ret0(c, 0); }
@@ -1060,9 +1078,10 @@ void shim_KERNEL32_ReleaseMutex(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_SetEndOfFile(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
     mew_api_hit("GetFileAttributesW");
+    const std::string raw  = guest_wstr(c, arg0(c));
     const std::string path = host_path_from_guest(c, arg0(c));
     struct stat st;
-    if (!path.empty() && ::stat(path.c_str(), &st) == 0) {
+    if (!raw.empty() && !path.empty() && ::stat(path.c_str(), &st) == 0) {
         // 目录必须报 FILE_ATTRIBUTE_DIRECTORY(0x10)：以前只用 fopen 判「能不能打开」，
         // 目录会被报成 MISSING，于是 create_directories 永远认为目录建不出来。
         const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
@@ -1074,6 +1093,7 @@ void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
         ret0(c, attr);
         return;
     }
+    mew_set_last_error(raw.empty() ? 3u : 2u);   // 3=PATH_NOT_FOUND / 2=FILE_NOT_FOUND
     ret0(c, (uint32_t)-1);
 }
 void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) {
@@ -1155,8 +1175,16 @@ void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
         ret0(c, 1);
         return;
     }
-    std::fprintf(stderr, "[shim] CreateDirectoryW(guest=\"%s\" host=\"%s\") 失败 errno=%d\n",
-                 guest_wstr(c, arg0(c)).c_str(), path.c_str(), errno);
+    // 失败时必须把 last error 写对：MSVC 的 __std_fs_create_directory 是
+    // 「GetLastError() → __std_win_error → error_code」这条路，last error 为 0
+    // 就会翻成 error_code(0, system_category())，what() 里只剩 "unknown error"。
+    uint32_t winerr = 5;                       // ERROR_ACCESS_DENIED
+    if (errno == EEXIST) winerr = 183;         // ERROR_ALREADY_EXISTS
+    else if (errno == ENOENT) winerr = 3;      // ERROR_PATH_NOT_FOUND
+    else if (errno == ENOSPC) winerr = 112;    // ERROR_DISK_FULL
+    mew_set_last_error(winerr);
+    std::fprintf(stderr, "[shim] CreateDirectoryW(guest=\"%s\" host=\"%s\") 失败 errno=%d winerr=%u\n",
+                 guest_wstr(c, arg0(c)).c_str(), path.c_str(), errno, winerr);
     ret0(c, 0);
 }
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
