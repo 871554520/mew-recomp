@@ -643,6 +643,34 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
     static uint64_t stdio_left = 4ull << 20;
     const uint64_t h = arg0(c);
     const bool is_std = (h == 0x1001 || h == 0x1002);
+    // run 46159179391 之后加的纯观测（不改行为）：guest 自己的输出到底有没有走到 WriteFile。
+    // 判据：0x1002 计数为 0 → guest 的 stderr 没经过这里（CRT 的 stdio 句柄不是我们发的
+    // 0x1002，或者它走 WriteConsoleW / WriteFile 到别的句柄）；计数 >0 但日志里没有可读文本
+    // → 是我们的转发路径有问题（句柄没绑上 FILE*，或者缓冲没刷）。
+    static uint64_t wf_std = 0, wf_other = 0;
+    static int wf_traced = 0;
+    if (is_std) ++wf_std; else ++wf_other;
+    if (wf_traced < 60) {
+        ++wf_traced;
+        char head[129];
+        size_t hn = 0;
+        if (buf && want && guest_mapped(buf, want)) {
+            const size_t lim = want < 64 ? want : 64;
+            for (size_t i = 0; i < lim && hn + 3 < sizeof(head); ++i) {
+                static const char* hex = "0123456789abcdef";
+                const uint8_t v = mem_read<uint8_t>(c, buf + i);
+                head[hn++] = hex[v >> 4];
+                head[hn++] = hex[v & 15];
+            }
+        }
+        head[hn] = 0;
+        std::fprintf(stderr, "[shim] WriteFile(h=0x%llx, want=%u) file=%s head=%s\n",
+                     (unsigned long long)h, want, f ? "yes" : "NO-FILE*", head);
+    } else if (wf_traced == 60) {
+        ++wf_traced;
+        std::fprintf(stderr, "[shim] WriteFile 前 60 次明细到此为止（std=0x1001/0x1002 累计 %llu / 其它 %llu）\n",
+                     (unsigned long long)wf_std, (unsigned long long)wf_other);
+    }
     if (is_std && stdio_left == 0) {
         if (got_ptr) mem_write<uint32_t>(c, got_ptr, 0);
         ret0(c, 1);
@@ -658,6 +686,9 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
             if (stdio_left == 0) std::fprintf(stderr, "[shim] guest stdio 预算 4 MB 用完，之后丢弃\n");
         }
     }
+    if (is_std && wf_traced <= 60)
+        std::fprintf(stderr, "[shim] WriteFile(h=0x%llx) -> took=%llu\n",
+                     (unsigned long long)h, (unsigned long long)got);
     if (got_ptr) mem_write<uint32_t>(c, got_ptr, (uint32_t)got);
     ret0(c, 1);
 }
@@ -3993,14 +4024,18 @@ void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) {
 
 void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
     uint32_t n = (uint32_t)arg0(c);
+    // 前 5 次带 caller 打出来：确认 CRT/SDL 拿到的 stderr 就是我们绑的 0x1002。
+    static int gsh_traced = 0;
+    const bool gsh_log = (gsh_traced++ < 5);
     // guest 的 stdout/stderr 以前只返回一个数字句柄、却没进句柄表，于是
     // WriteFile(0x1002,…) 查不到 FILE*，内容被**静默丢弃**。run 46155264395 里
     // SDL 自己的报错和游戏自己的日志就是这么消失的（runner.err 只有我们 fprintf 的行）。
     // 现在把三个标准句柄真正绑到宿主 std stream，guest 的 printf/stderr 直接落进 runner.err，
     // 这是我们第一次能看见 guest 自己说的话（SDL_LOGGING / 引擎日志都走这条路）。
-    if (n == (uint32_t)-10) { HandleTable::instance().set(0x1000, stdin);  ret0(c, 0x1000); return; }
-    if (n == (uint32_t)-11) { HandleTable::instance().set(0x1001, stdout); ret0(c, 0x1001); return; }
-    if (n == (uint32_t)-12) { HandleTable::instance().set(0x1002, stderr); ret0(c, 0x1002); return; }
+    if (n == (uint32_t)-10) { HandleTable::instance().set(0x1000, stdin);  if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-10) -> 0x1000 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1000); return; }
+    if (n == (uint32_t)-11) { HandleTable::instance().set(0x1001, stdout); if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-11) -> 0x1001 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1001); return; }
+    if (n == (uint32_t)-12) { HandleTable::instance().set(0x1002, stderr); if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-12) -> 0x1002 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1002); return; }
+    if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(%d) -> -1 caller=0x%llx\n", (int)n, (unsigned long long)cur_fn_va());
     ret0(c, (uint64_t)-1);
 }
 
