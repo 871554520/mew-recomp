@@ -747,6 +747,12 @@ jobs:
             echo "unimpl_insn_lines=$(grep -c '\[UNIMPL INSN\]' generated/runner.err 2>/dev/null)"
             echo "unimpl_func_lines=$(grep -c '\[UNIMPL FUNC\]' generated/runner.err 2>/dev/null)"
             echo
+            echo '===== stub_list 前 150 行 ====='
+            head -150 generated/stage3/stub_list.tsv 2>/dev/null
+            echo
+            echo '===== UNIMPL FUNC TABLE ====='
+            grep -A 45 'UNIMPL FUNC TABLE' generated/runner.err 2>/dev/null | head -50
+            echo
             echo '===== UNIMPL API TABLE（聚合表）====='
             grep -A30 'UNIMPL API TABLE' generated/runner.err 2>/dev/null | head -36
             echo
@@ -781,10 +787,18 @@ jobs:
           # 公开通道：GitHub annotation（由 Actions 服务发布，不需要仓库写权限）。
           # 日志接口要 admin、artifact 要 token、contents 写权限在账号级被降级成只读，
           # 三种都试过了；annotation 是唯一「谁都能读」的通道（check-runs/annotations API）。
-          # 内容 base64 后塞进单条 notice，本地解码即得完整摘要。
+          # 内容 base64 **分片**塞进 notice：单条 notice 的 message 会被 GitHub 截到 4096 字符，
+          # 截断后 base64 后半段解不出来（run 46163832725 只剩前 3072 字节明文，
+          # stub_list / UNIMPL FUNC TABLE 全被切掉）。每片 3000 字符（4 的倍数，可独立解码），
+          # 每步最多 10 条 -> 约 22.5 KB 明文；stub_list 与 UNIMPL FUNC 已挪到摘要前部。
           head -c 60000 diag-summary.txt > /tmp/diag-small.txt 2>/dev/null || cp diag-summary.txt /tmp/diag-small.txt
           python3 - <<'PY'
-          import base64, os
+          import base64
           data = open('/tmp/diag-small.txt', 'rb').read()
-          print('::notice title=diag-b64::' + base64.b64encode(data).decode())
+          b64 = base64.b64encode(data).decode()
+          CH = 3000
+          parts = [b64[i:i+CH] for i in range(0, len(b64), CH)][:10]
+          n = len(parts)
+          for i, p in enumerate(parts):
+              print(f'::notice title=diag-b64-{i+1}/{n}::{p}')
           PY
