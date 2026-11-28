@@ -1517,7 +1517,12 @@ void shim_KERNEL32_EnumResourceNamesW(X64Ctx* c) { mew_api_hit("EnumResourceName
     if (logged++ < 8)
         std::fprintf(stderr, "[shim] EnumResourceNamesW(type=%u) -> FALSE（guest 镜像无 .rsrc）\n",
                      (unsigned)(uint32_t)arg1(c));
-    mew_set_last_error(1813);   // ERROR_RESOURCE_TYPE_NOT_FOUND
+    // run 46156655665 的实测：这一句把 1813 永久留在 thread_local 的 last-error 里，
+    // 之后**每一次** GetLastError() 都读到它 —— 包括游戏自己的错误格式化器
+    // 0x140c15820（一轮里 FormatMessageW(id=1813) 出现 15 次，全是假象，真正的失败码
+    // 被它盖掉了）。这里先改成不设错误，当作对照实验：1813 消失后如果程序走得更远，
+    // 就说明游戏的某条错误分支是被这个陈旧值带偏的，之后我再把「成功时清 last-error」
+    // 做成全局规范。
     ret0(c, 0);
 }
 
@@ -2018,7 +2023,42 @@ void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_SetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 1); }
 
 // ---------------- 控制台（失败要如实，不能假装写成功） ----------------
-void shim_KERNEL32_WriteConsoleW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_WriteConsoleW(X64Ctx* c) {
+    // 以前是纯 no-op（返回 0）。SDL3 的 Windows 构建在「有控制台」的判定下会把
+    // SDL_Log 走 WriteConsoleW 而不是 stderr，那条路一直丢——run 46156655665 就是
+    // 用来确认到底走哪条的。这里按 UTF-16 计数缓冲转 UTF-8 落到宿主 stderr，
+    // 并限 256 KB，避免刷屏（stderr 已有 4 MB 预算，这条是独立通道）。
+    const uint64_t buf = arg1(c);
+    const uint32_t chars = (uint32_t)arg2(c);
+    const uint64_t wrote_ptr = arg3(c);
+    static uint64_t left = 256ull << 10;
+    uint32_t done = 0;
+    if (buf && chars && guest_mapped(buf, (size_t)chars * 2)) {
+        std::string out;
+        out.reserve((size_t)chars);
+        for (uint32_t i = 0; i < chars && out.size() < left; ++i) {
+            const uint32_t u = mem_read<uint16_t>(c, buf + (uint64_t)i * 2);
+            if (u < 0x80) out.push_back((char)u);
+            else if (u < 0x800) {
+                out.push_back((char)(0xC0 | (u >> 6)));
+                out.push_back((char)(0x80 | (u & 0x3F)));
+            } else {
+                out.push_back((char)(0xE0 | (u >> 12)));
+                out.push_back((char)(0x80 | ((u >> 6) & 0x3F)));
+                out.push_back((char)(0x80 | (u & 0x3F)));
+            }
+        }
+        if (out.size() > left) out.resize((size_t)left);
+        if (!out.empty()) {
+            std::fwrite(out.data(), 1, out.size(), stderr);
+            std::fflush(stderr);
+            left -= out.size();
+        }
+        done = chars;
+    }
+    if (wrote_ptr) mem_write<uint32_t>(c, wrote_ptr, done);
+    ret0(c, 1);
+}
 void shim_KERNEL32_GetConsoleMode(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_SetStdHandle(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_AttachConsole(X64Ctx* c) { (void)c; ret0(c, 0); }
