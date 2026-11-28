@@ -267,6 +267,20 @@ RUNTIME_PROVEN_ENTRIES = [
     # 和 0x140bf9d60 是同源内联对（后者前面有 10 个 cc，已被 padding 规则收到）。
     # 它前面只有 2 个 cc（0x140bf9d7e/7f），阈值 3 所以漏掉。
     0x140bf9d80,
+    # run 46104754966 (f52777c, MEW_TRACE_N=400)：
+    #   [fn] 0x140bb0720 rcx=0x140e63b80 ×2（runner.err 第 52462 / 53391 行），
+    #   rdx=0x0  r8=0x141135198("windows" 字符串)  r9=0x1fff0000
+    #   → 'No dynamic %s support in current SDL video driver (%s)'
+    #   两次都紧跟在 SDL_CreateWindowWithProperties 的 +0x20 调用之后、建窗之前。
+    # 0x140be8190 没有 .pdata（padding-entry 形态，同 0x140bf9d80 / 0x140bea300 / 0x1409db940）：
+    #   mov rcx,[0x1413b45e0]; test rcx,rcx; je; cmp byte [rcx+0x30a],0; je +3;
+    #   mov al,1; ret / mov rax,[rcx+0x240]; mov byte [rcx+0x30a],1;
+    #   test rax,rax; je +3; jmp rax   = SDL_GL_LoadLibrary 快路。
+    # 0x140be81d0 是紧跟其后的另一个 padding-entry（0x140be81cc 起是 cc cc 补齐）：
+    #   mov r8,[rip+…]; mov rdx,rcx; lea rcx,['No dynamic %s support…'];
+    #   mov r8,[r8]; jmp SDL_SetError(0x140bb0720)。
+    0x140be8190,
+    0x140be81d0,
 ]
 _n_rt = 0
 for _va in RUNTIME_PROVEN_ENTRIES:
