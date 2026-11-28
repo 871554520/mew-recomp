@@ -1421,6 +1421,49 @@ void shim_WINMM_timeGetTime(X64Ctx* c) {
     ret0(c, (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000ull));
 }
 
+// ---------------- exitprocess 轮暴露的三个缺项（run 46144294316） ----------------
+// 三个 API 在镜像里的**唯一**调用点（IAT 槽反向扫描 Mewgenics.exe 得到）：
+//   EnumResourceNamesW       0x140c066bd（fn 0x140c065ea）：edx=0xe → 资源类型 14=RT_GROUP_ICON，
+//                            r8 = 回调 0x140c07dc0，r9 = 栈上一个 0x50 大小的结构
+//   FreeLibraryAndExitThread  0x140d4ea8d（fn 0x140d4ea3c）：调用点后面紧跟 int3（noreturn 诱饵）
+//   WINMM!timeBeginPeriod     0x140bc935e（fn 0x140bc9330）：与 timeEndPeriod 成对导入
+// 三者都只被调用过一次，且都在游戏决定「收工」之后，不影响主流程。
+
+// 枚举资源名：游戏只用它找图标（RT_GROUP_ICON）。我们的 PE 加载器不铺 .rsrc，
+// 所以如实回答「这个模块没有该类资源」：一次都不回调、返回 FALSE，
+// 并置 ERROR_RESOURCE_TYPE_NOT_FOUND(1813)。
+// 不要伪造资源名 —— 假名字会让它接着去 LoadImageW 拿失败句柄，多出一条噪音。
+void shim_KERNEL32_EnumResourceNamesW(X64Ctx* c) { mew_api_hit("EnumResourceNamesW");
+    static int logged = 0;
+    if (logged++ < 8)
+        std::fprintf(stderr, "[shim] EnumResourceNamesW(type=%u) -> FALSE（guest 镜像无 .rsrc）\n",
+                     (unsigned)(uint32_t)arg1(c));
+    mew_set_last_error(1813);   // ERROR_RESOURCE_TYPE_NOT_FOUND
+    ret0(c, 0);
+}
+
+// Windows 语义：先释放模块，然后**立即结束调用线程，永不返回**。
+// 以前没实现 → 返回 0 → 顺流跌进调用点后面那条 int3，被 int3-trap 当成崩溃停住。
+// 现在按语义收尾：worker 线程 pthread_exit，主线程 exit（能把日志刷干净）。
+void shim_KERNEL32_FreeLibraryAndExitThread(X64Ctx* c) { mew_api_hit("FreeLibraryAndExitThread");
+    const uint32_t code = (uint32_t)arg1(c);
+    std::fprintf(stderr, "[shim] FreeLibraryAndExitThread(h=0x%llx code=%u)\n",
+                 (unsigned long long)arg0(c), code);
+    std::fflush(stderr);
+    if (real_threads() && is_guest_worker_thread())
+        pthread_exit(reinterpret_cast<void*>((uintptr_t)code));
+    std::exit((int)code);
+}
+
+// 只影响宿主定时器精度，我们不需要真的提高精度；返回 TIMERR_NOERROR(0) 即可。
+void shim_WINMM_timeBeginPeriod(X64Ctx* c) { mew_api_hit("timeBeginPeriod");
+    static int logged = 0;
+    if (logged++ < 4)
+        std::fprintf(stderr, "[shim] timeBeginPeriod(%u)\n", (unsigned)(uint32_t)arg0(c));
+    ret0(c, 0);
+}
+void shim_WINMM_timeEndPeriod(X64Ctx* c) { (void)c; ret0(c, 0); }
+
 void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
     const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
     std::fprintf(stderr, "[game] %s\n", p ? p : "");
@@ -3333,6 +3376,7 @@ RecompFn lookup_api(const char* name) {
         {"EnumDisplayDevicesW", shim_USER32_EnumDisplayDevicesW},
         {"EnumDisplayMonitors", shim_USER32_EnumDisplayMonitors},
         {"EnumDisplaySettingsW", shim_USER32_EnumDisplaySettingsW},
+        {"EnumResourceNamesW", shim_KERNEL32_EnumResourceNamesW},
         {"EnumSystemLocalesW", shim_KERNEL32_EnumSystemLocalesW},
         {"ExitThread", shim_KERNEL32_ExitThread},
         {"FindClose", shim_KERNEL32_FindClose},
@@ -3342,6 +3386,7 @@ RecompFn lookup_api(const char* name) {
         {"FormatMessageA", shim_KERNEL32_FormatMessageA},
         {"FormatMessageW", shim_KERNEL32_FormatMessageW},
         {"FreeLibrary", shim_KERNEL32_FreeLibrary},
+        {"FreeLibraryAndExitThread", shim_KERNEL32_FreeLibraryAndExitThread},
         {"FreeLibraryWhenCallbackReturns", shim_KERNEL32_FreeLibraryWhenCallbackReturns},
         {"GetAsyncKeyState", shim_USER32_GetAsyncKeyState},
         {"GetClientRect", shim_USER32_GetClientRect},
@@ -3456,6 +3501,9 @@ RecompFn lookup_api(const char* name) {
         {"WaitForSingleObjectEx", shim_KERNEL32_WaitForSingleObjectEx},
         {"WaitForThreadpoolWorkCallbacks", shim_KERNEL32_WaitForThreadpoolWorkCallbacks},
         {"WriteConsoleW", shim_KERNEL32_WriteConsoleW},
+        // WINMM 的定时器精度开关（run 46144294316 的 UNIMPL 表里 timeBeginPeriod 被调 1 次）
+        {"timeBeginPeriod", shim_WINMM_timeBeginPeriod},
+        {"timeEndPeriod", shim_WINMM_timeEndPeriod},
     };
     for (const auto& e : kApis)
         if (std::strcmp(e.name, name) == 0) return e.fn;
