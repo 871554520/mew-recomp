@@ -441,7 +441,10 @@ void shim_KERNEL32_CreateFileW(X64Ctx* c) { mew_api_hit("CreateFileW");
     uint32_t access = (uint32_t)arg1(c);
     const char* mode = (access & 0x40000000u) ? "wb+" : ((access & 0x80000000u) ? "rb" : "rb");
     FILE* f = std::fopen(path.c_str(), mode);
-    std::fprintf(stderr, "[shim] CreateFileW(\"%s\", 0x%x) = %p\n", path.c_str(), access, (void*)f);
+    // fn= 是「当前所在的 guest 函数起点」（.pdata 口径），不是返回地址：
+    // 这样日志里能直接按函数过滤（run 46169415454 的 CreateFileW 行没有 caller，无法定位调用者）。
+    std::fprintf(stderr, "[shim] CreateFileW(\"%s\", 0x%x) = %p fn=0x%llx\n", path.c_str(), access,
+                 (void*)f, (unsigned long long)cur_fn_va());
     if (!f) { ret0(c, (uint64_t)-1); return; }
     uint64_t h = HandleTable::instance().add(f);
     maybe_probe_gpak(f, h, path);
