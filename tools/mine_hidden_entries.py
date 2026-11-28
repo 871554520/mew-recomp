@@ -281,6 +281,20 @@ RUNTIME_PROVEN_ENTRIES = [
     #   mov r8,[r8]; jmp SDL_SetError(0x140bb0720)。
     0x140be8190,
     0x140be81d0,
+    # run 46115661940 (9526b92, 像素格式日志轮)：
+    #   探测函数 0x140c8a550(452B,有 .pdata) 在 +0x094 处 `call 0x140c8b0c0`，
+    #   时机正好夹在 ChoosePixelFormat(+0x0a1 实际是 +0x0a1 之后的 +0x0b1 SetPixelFormat)
+    #   与 ReleaseDC(+0x18f) 之间 —— 就是“验证这个像素格式真能建 GL 上下文”那一步。
+    #   日志里 10x10 探测窗 → ChoosePixelFormat -> 1 → wglCreateContext -> 0x30001
+    #   → wglMakeCurrent/WakeDeleteContext 全成功，随后才报 0x140e806e8，
+    #   和这个函数返回 false 的位置吻合。
+    # 0x140c8b0c0 没有 .pdata（padding-entry 形态，同 0x140be8190 / 0x140bf9d80）：
+    #   前填充 0x140c8b0b8..0x140c8b0bf，后填充 0x140c8b1a6..0x140c8b1af，
+    #   即 [0x140c8b0c0, 0x140c8b1b0) ≈ 240 字节。
+    #   同圈 0x140c8a720/0x140c8aaf0/0x140c8ab20/0x140c8ae40/0x140c8afc0/
+    #   0x140c8b050/0x140c8b1b0/0x140c8b220/0x140c8b510/0x140c8b5d0 全有 .pdata，
+    #   只有它没有 —— 与 0x140be8190 当初同一个孤例形态。
+    0x140c8b0c0,
 ]
 _n_rt = 0
 for _va in RUNTIME_PROVEN_ENTRIES:
