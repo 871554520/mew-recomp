@@ -638,7 +638,26 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
     uint32_t want = (uint32_t)arg2(c);
     uint64_t got_ptr = arg3(c);
     size_t got = 0;
-    if (f && buf && want) got = std::fwrite(guest_ptr_from_ctx(c, buf), 1, want, f);
+    // 标准句柄放行 guest 自己的输出，但要设总量预算：游戏/SDL 一旦刷屏会把 runner.err
+    // 撑爆（上一轮 16k 行已经不小），4 MB 之后再来的直接吞掉并留一行说明。
+    static uint64_t stdio_left = 4ull << 20;
+    const uint64_t h = arg0(c);
+    const bool is_std = (h == 0x1001 || h == 0x1002);
+    if (is_std && stdio_left == 0) {
+        if (got_ptr) mem_write<uint32_t>(c, got_ptr, 0);
+        ret0(c, 1);
+        return;
+    }
+    if (f && buf && want) {
+        size_t take = want;
+        if (is_std && (uint64_t)take > stdio_left) take = (size_t)stdio_left;
+        got = std::fwrite(guest_ptr_from_ctx(c, buf), 1, take, f);
+        if (is_std) {
+            stdio_left -= (uint64_t)got;
+            std::fflush(f);
+            if (stdio_left == 0) std::fprintf(stderr, "[shim] guest stdio 预算 4 MB 用完，之后丢弃\n");
+        }
+    }
     if (got_ptr) mem_write<uint32_t>(c, got_ptr, (uint32_t)got);
     ret0(c, 1);
 }
@@ -3919,9 +3938,14 @@ void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) {
 
 void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
     uint32_t n = (uint32_t)arg0(c);
-    if (n == (uint32_t)-10) { ret0(c, 0x1000); return; }
-    if (n == (uint32_t)-11) { ret0(c, 0x1001); return; }
-    if (n == (uint32_t)-12) { ret0(c, 0x1002); return; }
+    // guest 的 stdout/stderr 以前只返回一个数字句柄、却没进句柄表，于是
+    // WriteFile(0x1002,…) 查不到 FILE*，内容被**静默丢弃**。run 46155264395 里
+    // SDL 自己的报错和游戏自己的日志就是这么消失的（runner.err 只有我们 fprintf 的行）。
+    // 现在把三个标准句柄真正绑到宿主 std stream，guest 的 printf/stderr 直接落进 runner.err，
+    // 这是我们第一次能看见 guest 自己说的话（SDL_LOGGING / 引擎日志都走这条路）。
+    if (n == (uint32_t)-10) { HandleTable::instance().set(0x1000, stdin);  ret0(c, 0x1000); return; }
+    if (n == (uint32_t)-11) { HandleTable::instance().set(0x1001, stdout); ret0(c, 0x1001); return; }
+    if (n == (uint32_t)-12) { HandleTable::instance().set(0x1002, stderr); ret0(c, 0x1002); return; }
     ret0(c, (uint64_t)-1);
 }
 
