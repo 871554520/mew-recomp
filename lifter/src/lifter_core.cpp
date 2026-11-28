@@ -1992,9 +1992,9 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
             // int3 = 断点/致命陷阱。以前当 no-op，未捕获的 C++ 异常“返回”后控制流会
             // 跌落进紧邻的冷块（D15/Q3 实测：0x140a2880a 的 int3 跌到 0x140a28815，
             // 执行 EAGAIN 冷块并写坏 0x1412f7ffc，才是 #3 EAGAIN 的来源）。
-            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x\""
-                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\\n"
-                  "  return;\\n";
+            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x"
+                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\n"
+                  "  return;\n";
         } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
@@ -3378,9 +3378,9 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             // int3 = 断点/致命陷阱。以前当 no-op，未捕获的 C++ 异常“返回”后控制流会
             // 跌落进紧邻的冷块（D15/Q3 实测：0x140a2880a 的 int3 跌到 0x140a28815，
             // 执行 EAGAIN 冷块并写坏 0x1412f7ffc，才是 #3 EAGAIN 的来源）。
-            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x\""
-                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\\n"
-                  "  return;\\n";
+            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x"
+                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\n"
+                  "  return;\n";
         } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
