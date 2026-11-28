@@ -737,8 +737,11 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             return true;
         }
     }
-    if (mn == "ucomiss" || mn == "comiss" || mn == "ucomisd" || mn == "comisd") {
-        bool single = (mn == "ucomiss" || mn == "comiss");
+    // VEX 版（vcomisd/vucomiss）操作数形状与 legacy 完全一样（2 操作数、只写 EFLAGS），
+    // 直接并进这一支即可。stub_list 里 vcomisd 出现在 17 个函数、vcomiss/vucomisd 各 8/6。
+    if (mn == "ucomiss" || mn == "comiss" || mn == "vucomiss" || mn == "vcomiss" ||
+        mn == "ucomisd" || mn == "comisd" || mn == "vucomisd" || mn == "vcomisd") {
+        bool single = (mn == "ucomiss" || mn == "comiss" || mn == "vucomiss" || mn == "vcomiss");
         std::string a = single ? ("ctx->xmm[" + std::to_string(dx) + "].f32[0]")
                                : ("ctx->xmm[" + std::to_string(dx) + "].f64[0]");
         std::string b = single ? ((is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[0]")
@@ -758,15 +761,18 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
             e.out << "  ctx->xmm[" << dx << "].f64[0] = (double)(int64_t)" << src << ";\n";
         return true;
     }
-    if (mn == "cvttss2si" || mn == "cvttsd2si") {
+    // CVTSI2SS/SD 的**带舍入**版（cvtsd2si/cvtss2si）：与上一条只差舍入方式，
+    // stub_list 里 cvtsd2si 出现在 9 个函数。helper 见 sse::cvtsd2si。
+    if (mn == "cvttss2si" || mn == "cvttsd2si" || mn == "cvtss2si" || mn == "cvtsd2si") {
+        const bool single = (mn == "cvttss2si" || mn == "cvtss2si");
+        const std::string h = (mn.rfind("cvtt", 0) == 0 ? "cvtt" : "cvt") +
+                              std::string(single ? "ss2si" : "sd2si");
         int w = ops[0].size / 8;
-        std::string src = (is_xmm_reg(ops[1])) ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]." + (mn == "cvttss2si" ? "f32[0]" : "f64[0]"))
-                                               : ((mn == "cvttss2si") ? ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")")
-                                                                       : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")"));
-        if (mn == "cvttss2si")
-            e.out << "  write_reg(ctx," << dg << ",(uint64_t)(int64_t)sse::cvttss2si(" << src << ")," << w << ");\n";
-        else
-            e.out << "  write_reg(ctx," << dg << ",(uint64_t)sse::cvttsd2si(" << src << ")," << w << ");\n";
+        std::string src = (is_xmm_reg(ops[1]))
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]." + (single ? "f32[0]" : "f64[0]"))
+            : ((single) ? ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")")
+                        : ("g_f64(" + addrExpr(pe, ops[1], next_rip, e) + ")"));
+        e.out << "  write_reg(ctx," << dg << ",(uint64_t)(int64_t)sse::" << h << "(" << src << ")," << w << ");\n";
         return true;
     }
     if (mn == "cvtss2sd") {
@@ -928,6 +934,87 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         }
         return true;
     }
+    // ==== 批次3：VEX 整数逐 lane 运算（stub_list 里最大的一族）====
+    // 语义全部在 runtime/include/x64_sse_helpers.h 的 avx::i_binop* 里（按字节读写，
+    // 128/256 位通用；VEX 128 位写的高半清零由 avx::wr_reg 统一负责）。
+    //   vpaddd 5 / vpsubd 10 / vpaddq / vpsubq / vpmaxsd 5 / vpminsd … 每补一条解锁一批函数。
+    // 名字长度是硬判据，不能用前缀糊过去：
+    //   vpaddd/vpsubq 全 6 字符；带饱和的 vpaddsb/vpaddusw 是 7~8 字符，
+    //   语义是"饱和"而不是回绕，误当回绕会静默算错，所以只认 6 字符的 pure 版。
+    //   vpmaxsd/vpmaxub/vpminsw/vpminud 全 7 字符。
+    const bool is_addsub = ((mn.rfind("vpadd", 0) == 0 || mn.rfind("vpsub", 0) == 0) && mn.size() == 6);
+    const bool is_minmax = ((mn.rfind("vpmax", 0) == 0 || mn.rfind("vpmin", 0) == 0) && mn.size() == 7);
+    if ((is_addsub || is_minmax) && insn.operand_count >= 3) {
+        const char sz = mn.back();
+        const int unit = (sz == 'b') ? 1 : (sz == 'w') ? 2 : (sz == 'd') ? 4 : (sz == 'q') ? 8 : 0;
+        if (unit == 0) return false;
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int op = (mn.rfind("vpadd", 0) == 0) ? 0
+                     : (mn.rfind("vpsub", 0) == 0) ? 1
+                     : (mn.rfind("vpmax", 0) == 0) ? 2 : 3;
+        // 有符号/无符号只影响 max/min：vpmaxsd(mn[5]=='s') 与 vpmaxub(mn[5]=='u')。
+        // vpadd*/vpsub* 的 mn[5] 是尺寸字母，sgn 对它们无意义，取 false 即可。
+        const bool sgn = (op >= 2) && (mn.size() >= 6) && (mn[5] == 's');
+        const int s1 = xmmId(ops[1].reg.value);
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::i_binop(ctx, " << dx << ", " << s1 << ", " << xmmId(ops[2].reg.value)
+                  << ", " << bytes << ", " << unit << ", " << op << ", " << (sgn ? "true" : "false") << ");\n";
+        } else {
+            e.out << "  avx::i_binop_mem(ctx, " << dx << ", " << s1 << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << bytes << ", " << unit << ", "
+                  << op << ", " << (sgn ? "true" : "false") << ");\n";
+        }
+        return true;
+    }
+    // ---- VEX 打包移位 ----
+    // vpsllq/vpsrlq/vpslld/vpsrld/vpsraw/vpsrad（第三操作数 = imm8 / xmm / 内存），
+    // 以及 AVX2 的 vpsravd/vpsravw（每个 lane 一个独立计数）。
+    // vpslldq/vpsrldq 是"整个寄存器按字节移"，不是每 lane 按 qword 移，必须排除。
+    if ((mn.rfind("vpsll", 0) == 0 || mn.rfind("vpsrl", 0) == 0 ||
+         mn.rfind("vpsra", 0) == 0) && mn != "vpslldq" && mn != "vpsrldq" &&
+        insn.operand_count >= 3) {
+        const char sz = mn.back();
+        const int unit = (sz == 'w') ? 2 : (sz == 'd') ? 4 : (sz == 'q') ? 8 : 0;
+        if (unit == 0) return false;
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int op = (mn.rfind("vpsll", 0) == 0) ? 0 : (mn.rfind("vpsrl", 0) == 0) ? 1 : 2;
+        const bool per_lane = (mn == "vpsravd" || mn == "vpsravw" || mn == "vpsravq");
+        const int s1 = xmmId(ops[1].reg.value);
+        if (ops[2].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+            const int sh = (int)(ops[2].imm.value.u & 0xFFULL);
+            e.out << "  avx::i_shift(ctx, " << dx << ", " << s1 << ", " << op << ", " << unit
+                  << ", " << sh << ", " << bytes << ");\n";
+        } else if (per_lane) {
+            if (is_xmm_reg(ops[2])) {
+                e.out << "  avx::i_shift_lane(ctx, " << dx << ", " << s1 << ", "
+                      << xmmId(ops[2].reg.value) << ", " << op << ", " << unit << ", " << bytes << ");\n";
+            } else {
+                e.out << "  avx::i_shift_lane_mem(ctx, " << dx << ", " << s1 << ", "
+                      << addrExpr(pe, ops[2], next_rip, e) << ", " << op << ", " << unit << ", " << bytes << ");\n";
+            }
+        } else if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::i_shift_reg(ctx, " << dx << ", " << s1 << ", "
+                  << xmmId(ops[2].reg.value) << ", " << op << ", " << unit << ", " << bytes << ");\n";
+        } else {
+            e.out << "  avx::i_shift_mem(ctx, " << dx << ", " << s1 << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << op << ", " << unit << ", " << bytes << ");\n";
+        }
+        return true;
+    }
+    // ---- VPSHUFB：按第二个源逐字节重排（每 16 字节一个索引表，索引最高位置位则写 0）----
+    if (mn == "vpshufb" && insn.operand_count >= 3) {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int s1 = xmmId(ops[1].reg.value);
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::pshufb(ctx, " << dx << ", " << s1 << ", "
+                  << xmmId(ops[2].reg.value) << ", " << bytes << ");\n";
+        } else {
+            e.out << "  avx::pshufb_mem(ctx, " << dx << ", " << s1 << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << bytes << ");\n";
+        }
+        return true;
+    }
+
     // ---- VSHUFPS：4 操作数（dest, src1, src2, imm），立即数在 ops[3] ----
     if (mn == "vshufps" && insn.operand_count >= 4) {
         const unsigned imm = (unsigned)ops[3].imm.value.u;
@@ -2133,12 +2220,18 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
         } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
-        } else if (mn == "ldmxcsr") {
-            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
-            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
-        } else if (mn == "stmxcsr") {
+        } else if (mn == "ldmxcsr" || mn == "vldmxcsr") {
+            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模。
+            // VEX 版（vldmxcsr）Zydis 给的是「xmm 目标 + m32」两操作数，地址可能不在 ops[0]，
+            // 所以按类型找内存操作数，不要写死下标。
+            const ZydisDecodedOperand& m_ = (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY || insn.operand_count < 2)
+                ? ops[0] : ops[1];
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, m_, next_rip, e) << ");\n";
+        } else if (mn == "stmxcsr" || mn == "vstmxcsr") {
+            const ZydisDecodedOperand& m_ = (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY || insn.operand_count < 2)
+                ? ops[0] : ops[1];
             // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
-            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x1F80u);\n";
+            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, m_, next_rip, e) << ", 0x1F80u);\n";
         } else if (mn == "fldcw") {
             e.out << "  (void)mem_read<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "fnstcw") {
@@ -3524,12 +3617,18 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
-        } else if (mn == "ldmxcsr") {
-            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
-            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
-        } else if (mn == "stmxcsr") {
+        } else if (mn == "ldmxcsr" || mn == "vldmxcsr") {
+            // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模。
+            // VEX 版（vldmxcsr）Zydis 给的是「xmm 目标 + m32」两操作数，地址可能不在 ops[0]，
+            // 所以按类型找内存操作数，不要写死下标。
+            const ZydisDecodedOperand& m_ = (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY || insn.operand_count < 2)
+                ? ops[0] : ops[1];
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, m_, next_rip, e) << ");\n";
+        } else if (mn == "stmxcsr" || mn == "vstmxcsr") {
+            const ZydisDecodedOperand& m_ = (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY || insn.operand_count < 2)
+                ? ops[0] : ops[1];
             // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
-            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x1F80u);\n";
+            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, m_, next_rip, e) << ", 0x1F80u);\n";
         } else if (mn == "fldcw") {
             e.out << "  (void)mem_read<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "fnstcw") {

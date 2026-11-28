@@ -52,6 +52,21 @@ inline int64_t cvttsd2si(double d) {
     return (int64_t)d;
 }
 
+// x86-64 CVTSS2SI / CVTSD2SI：**带舍入**（按 MXCSR 的舍入模式，默认就近取偶）。
+// 与上面的 CVTT* 只差舍入方式；stub_list 里 cvtsd2si 出现在 9 个函数里，
+// 之前没实现，整函数被占位。NaN / 超界按 SDM 给的是「整数不定值」。
+inline int32_t cvtss2si(float f) {
+    const double r = std::nearbyint((double)f);   // 先舍入再判界，避免 2^31-0.4 这类舍入后越界
+    if (std::isnan(r) || r >= 2147483648.0 || r < -2147483648.0) return (int32_t)0x80000000u;
+    return (int32_t)r;
+}
+inline int64_t cvtsd2si(double d) {
+    const double r = std::nearbyint(d);
+    if (std::isnan(r) || r >= 9223372036854775808.0 || r < -9223372036854775808.0)
+        return (int64_t)0x8000000000000000ull;
+    return (int64_t)r;
+}
+
 // UCOMISS / COMISS：无序(NaN) -> ZF=PF=CF=1
 inline void ucomiss(X64Ctx* c, float a, float b) {
     c->of = false;
@@ -252,6 +267,132 @@ inline void extractf128(X64Ctx* c, int d, int s, int imm) {
     std::memset(out + 16, 0, 16);
     wr_reg(c, d, 16, out);
 }
+// ---- 批次3：VEX 整数逐 lane 运算 ----
+// 为什么：stub_list 前 30 名里 vcomisd 17 / vpsubd 10 / vpsravd 8 / vpshufb 8 /
+// vpsrlq 7 / vpaddd 5 / vpmaxsd 5 全落在这一族，每补一条就整函数解锁 5~17 个。
+// 全部按字节读写（rd_reg/wr_reg），因此 128/256 位通用，VEX 128 位写的高半清零
+// 由 wr_reg 统一负责，不用每条指令各写一遍。
+// unit ∈ {1,2,4,8}；op: 0=add 1=sub 2=max 3=min；sgn 决定 max/min 按有符号比。
+inline int64_t lane_get(const uint8_t* p, int unit) {
+    int64_t v = 0;
+    std::memcpy(&v, p, (size_t)unit);
+    return v;
+}
+inline void lane_put(uint8_t* p, int unit, int64_t v) { std::memcpy(p, &v, (size_t)unit); }
+// unit < 8 时把高位置成符号位（有符号 max/min、算术右移要用）
+inline int64_t lane_sext(int64_t v, int unit) {
+    if (unit >= 8) return v;
+    const uint64_t mask = (1ULL << (unit * 8)) - 1ULL;
+    const uint64_t sign = 1ULL << (unit * 8 - 1);
+    uint64_t u = (uint64_t)v & mask;
+    if (u & sign) u |= ~mask;
+    return (int64_t)u;
+}
+inline void i_binop_core(uint8_t* a, const uint8_t* b, int bytes, int unit, int op, bool sgn) {
+    for (int i = 0; i + unit <= bytes; i += unit) {
+        int64_t x = lane_get(a + i, unit), y = lane_get(b + i, unit);
+        if (sgn) { x = lane_sext(x, unit); y = lane_sext(y, unit); }
+        int64_t r;
+        switch (op) {
+            case 0:  r = x + y; break;
+            case 1:  r = x - y; break;
+            case 2:  r = (x > y) ? x : y; break;
+            default: r = (x < y) ? x : y; break;
+        }
+        lane_put(a + i, unit, r);   // 只写回 unit 字节，模 2^bits 截断自动完成
+    }
+}
+inline void i_binop(X64Ctx* c, int d, int s1, int s2, int bytes, int unit, int op, bool sgn) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    rd_reg(c, s2, bytes, b);
+    i_binop_core(a, b, bytes, unit, op, sgn);
+    wr_reg(c, d, bytes, a);
+}
+inline void i_binop_mem(X64Ctx* c, int d, int s1, uint64_t addr, int bytes, int unit, int op, bool sgn) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    i_binop_core(a, b, bytes, unit, op, sgn);
+    wr_reg(c, d, bytes, a);
+}
+// 单个 lane 的移位。op: 0=shl 1=shr(逻辑) 2=sar(算术)。
+// 越界按 SDM：逻辑移给 0，算术右移给符号位（负数 -1，非负 0）。
+inline void i_shift_one(uint8_t* p, int unit, int op, int sh) {
+    const int bits = unit * 8;
+    int64_t v = lane_get(p, unit);
+    if (sh < 0) sh = 0;
+    if (op == 0)      v = (sh >= bits) ? 0 : (int64_t)((uint64_t)v << sh);
+    else if (op == 1) v = (sh >= bits) ? 0 : (int64_t)((uint64_t)v >> sh);
+    else {
+        v = lane_sext(v, unit);
+        v = (sh >= bits) ? (v < 0 ? -1 : 0) : (v >> sh);
+    }
+    lane_put(p, unit, v);
+}
+// 立即数/统一计数形式（vpsrlq/vpsrld/vpsllq + imm，以及计数来自 XMM 低 64 位的形式）
+inline void i_shift(X64Ctx* c, int d, int s1, int op, int unit, int sh, int bytes) {
+    uint8_t a[32];
+    rd_reg(c, s1, bytes, a);
+    for (int i = 0; i + unit <= bytes; i += unit) i_shift_one(a + i, unit, op, sh);
+    wr_reg(c, d, bytes, a);
+}
+// 计数来自源寄存器低 64 位（VEX 变长移位里「计数在 xmm」的那一版）
+inline void i_shift_reg(X64Ctx* c, int d, int s1, int s2, int op, int unit, int bytes) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    rd_reg(c, s2, bytes, b);
+    const int sh = (int)(lane_get(b, 8) & 0xFFULL);
+    for (int i = 0; i + unit <= bytes; i += unit) i_shift_one(a + i, unit, op, sh);
+    wr_reg(c, d, bytes, a);
+}
+inline void i_shift_mem(X64Ctx* c, int d, int s1, uint64_t addr, int op, int unit, int bytes) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    const int sh = (int)(lane_get(b, 8) & 0xFFULL);
+    for (int i = 0; i + unit <= bytes; i += unit) i_shift_one(a + i, unit, op, sh);
+    wr_reg(c, d, bytes, a);
+}
+// 每 lane 各自一个计数（vpsravd / vpsravw）
+inline void i_shift_lane(X64Ctx* c, int d, int s1, int s2, int op, int unit, int bytes) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    rd_reg(c, s2, bytes, b);
+    for (int i = 0; i + unit <= bytes; i += unit)
+        i_shift_one(a + i, unit, op, (int)(lane_get(b + i, unit) & 0xFF));
+    wr_reg(c, d, bytes, a);
+}
+inline void i_shift_lane_mem(X64Ctx* c, int d, int s1, uint64_t addr, int op, int unit, int bytes) {
+    uint8_t a[32], b[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    for (int i = 0; i + unit <= bytes; i += unit)
+        i_shift_one(a + i, unit, op, (int)(lane_get(b + i, unit) & 0xFF));
+    wr_reg(c, d, bytes, a);
+}
+// vpshufb：每 16 字节一个独立索引表；索引最高位为 1 时该字节写 0
+inline void pshufb(X64Ctx* c, int d, int s1, int s2, int bytes) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, s1, bytes, a);
+    rd_reg(c, s2, bytes, b);
+    for (int i = 0; i < bytes; ++i) {
+        const int base = i & ~0xF;
+        o[i] = (b[i] & 0x80) ? (uint8_t)0 : a[base + (b[i] & 0x0F)];
+    }
+    wr_reg(c, d, bytes, o);
+}
+inline void pshufb_mem(X64Ctx* c, int d, int s1, uint64_t addr, int bytes) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    for (int i = 0; i < bytes; ++i) {
+        const int base = i & ~0xF;
+        o[i] = (b[i] & 0x80) ? (uint8_t)0 : a[base + (b[i] & 0x0F)];
+    }
+    wr_reg(c, d, bytes, o);
+}
+
 inline void zeroupper(X64Ctx* c) { zero_all_hi(c); }
 
 }  // namespace avx
