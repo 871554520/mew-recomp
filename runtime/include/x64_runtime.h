@@ -840,6 +840,11 @@ inline void register_guest_range(uint64_t guest_lo, uint64_t len) {
 inline bool host_page_mapped(uint64_t addr, size_t n) {
     static const long page = sysconf(_SC_PAGESIZE);
     if (!page) return false;
+    // 溢出护栏（run 46153406360 的崩因）：addr+n-1 是 uint64_t 加法，addr 靠近
+    // UINT64_MAX 时会**回绕**。实测 addr=0xffffffffffffffff、n=8 → hi=0，
+    // 于是 `for (a=lo; a<=hi; ...)` 一次都不执行、函数直接返回 true，
+    // 调用方 memcpy 读 -1 → SIGSEGV fault=0xffffffffffffffff。
+    if (!n || addr > UINT64_MAX - (uint64_t)n) return false;
     uint64_t lo = addr & ~(uint64_t)(page - 1);
     uint64_t hi = (addr + n - 1) & ~(uint64_t)(page - 1);
     unsigned char vec = 0;
@@ -850,6 +855,11 @@ inline bool host_page_mapped(uint64_t addr, size_t n) {
 
 inline bool guest_mapped(uint64_t addr, size_t n = 1) {
     if (!addr) return false;
+    // 同一个回绕护栏，再补一条「非用户空间」上界：x86-64 用户态地址都在
+    // 0x800000000000 以下（我们自己的栈 0x7f..、堆池 0x10000000 都在内），
+    // 内核半边一律判未映射，避免任何 -1/-N 类指针走到 memcpy。
+    if (addr >= 0x800000000000ULL) return false;
+    if (n > 1 && addr > UINT64_MAX - (uint64_t)(n - 1)) return false;
     // O(1)：固定 Guest 堆池 / 镜像 / 栈区 都在这几条区间比较里
     if (g_guest_heap.contains(addr, n)) return true;
     for (const auto& r : guest_mem_ranges())
@@ -1141,6 +1151,10 @@ inline void mew_dump_guest_str(const char* tag, uint64_t va) {
     char buf[160];
     size_t n = 0;
     for (; n + 1 < sizeof(buf); ++n) {
+        // 逐字节复核：上面只查了首字节是否映射，字符串若紧贴已映射页末尾，
+        // 读到下一页未映射处会 SIGSEGV —— 这是在 __fastfail 现场里，崩掉就等于
+        // 把真因吞了。诊断代码永远不能自己崩。
+        if (!guest_mapped(va + n, 1)) break;
         char c = p[n];
         if (!c) break;
         buf[n] = (c >= 0x20 && c < 0x7f) ? c : '.';
