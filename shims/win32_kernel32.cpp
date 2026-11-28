@@ -3905,7 +3905,15 @@ void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
     if (logged++ < 20)
         std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx) caller=0x%llx\n", i,
                      (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
-    g_api_trace() = true;   // 从这里开始逐 API 打印，直到 fastfail 现场
+    // \u53ea\u6709\u663e\u5f0f\u6253\u5f00 MEW_API_TRACE_ALL=1 \u624d\u9010 API \u6253\u5370\u3002
+    // run 46169415454 \u8bc1\u636e\uff1a\u8fd9\u91cc\u65e0\u6761\u4ef6\u7f6e true\uff0cCRT \u4e00\u8c03 FlsSetValue
+    // \u5c31\u6c38\u4e45\u6253\u5f00\uff0c600 \u79d2\u5199\u51fa 5.04 GB / 82,023,955 \u884c
+    // \uff0841M \u8fdb + 41M \u51fa\uff0c\u6bcf\u79d2\u7ea6 6.8 \u4e07\u6b21 API\uff09\uff0c\u628a\u5224\u8bfb\u5168\u6df9\u4e86\u3002
+    static const bool api_trace_all = []() {
+        const char* e = std::getenv("MEW_API_TRACE_ALL");
+        return e && e[0] == '1';
+    }();
+    if (api_trace_all) g_api_trace() = true;
     if (i < 1024) g_tls[i] = arg1(c);
     ret0(c, 1);
 }
