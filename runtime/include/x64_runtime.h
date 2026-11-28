@@ -17,6 +17,9 @@
 
 struct X64Ctx;  // 前向声明：环形追踪与 SSE 辅助早于完整定义
 
+// 前置声明：dispatch_indirect 的 null-target 日志要用它（定义在 mem_read 之前，见下）
+inline uint64_t mew_guest_ret(X64Ctx* ctx);
+
 // 运行时兜底桥（定义在 shims/win32_kernel32.cpp）：按 API 名直接执行垫片。
 // dispatch_indirect 遇到「未绑定的 IAT 槽」时把槽里的 RVA 解成 API 名，再经这里调用实现。
 extern "C" int mew_call_api_by_name(const char* name, X64Ctx* ctx);
@@ -668,10 +671,15 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     // 静默吞掉会把真正的问题藏起来（thunk 那次就是靠 FATAL 才定案的）。
     if (!target_va) {
         static int null_logged = 0;
+        // 带上 ret（guest 栈顶那个返回地址）：没有它就只能知道"哪个函数里"，不知道
+        // "哪一条 call"。run 46144294316 的 in_fn=0x1409b5380 就是这样只剩一个函数名，
+        // 追不到具体是哪一个导入。ret 是调用点的下一字节，可以直接反查。
         if (null_logged++ < 20)
             std::fprintf(stderr,
-                         "[api] indirect call target=0（未解析的导入）in_fn=0x%llx is_call=%d -> 当作返回 0\n",
-                         (unsigned long long)cur_fn_va(), (int)is_call);
+                         "[api] indirect call target=0（未解析的导入）in_fn=0x%llx is_call=%d ret=0x%llx sp=0x%llx -> 当作返回 0\n",
+                         (unsigned long long)cur_fn_va(), (int)is_call,
+                         (unsigned long long)(ctx ? mew_guest_ret(ctx) : 0),
+                         (unsigned long long)(ctx ? ctx->rsp : 0));
         // 前三次把调用环尾巴打出来：`call [rsp+0x38]` 这种站点的 0 是谁传下来的，
         // 只有看调用链才知道（run 46047307348 的三次视频初始化失败靠它定位）。
         if (null_logged <= 3) call_trace().dump("null-target");
