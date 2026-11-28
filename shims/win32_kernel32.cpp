@@ -745,9 +745,33 @@ void shim_KERNEL32_InitializeCriticalSection(X64Ctx* c) {
 // 改成 thread_local 后：B 自己的计数是 0->1，会真的去 lock。
 thread_local std::unordered_map<uint64_t, int> g_cs_depth;
 
+// 静态/零初始化的 CRITICAL_SECTION：Windows 里这种对象（.data 里的 {0}）必须先
+// InitializeCriticalSection 才有内核对象；但实测程序里有大量「静态 CS 直接用」的写法，
+// 我们的垫片以前看到 mutex 槽是 0 就整段跳过 pthread_mutex_lock —— 临界区等于没锁，
+// 这正是「rdi 被别的线程踩成 IMUL 残值」这类竞态的温床（run 46149048002，6 条表族 SAFE）。
+// 这里做延迟初始化：第一次用到时补一把真 mutex 并写回 guest 结构。
+std::mutex g_cs_init_mu;
+static uint64_t ensure_cs_mutex(X64Ctx* c, uint64_t cs) {
+    uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
+    if (m || !cs) return m;
+    std::lock_guard<std::mutex> lk(g_cs_init_mu);
+    m = mem_read<uint64_t>(c, cs);
+    if (!m) {
+        pthread_mutex_t* pm = new pthread_mutex_t;
+        pthread_mutex_init(pm, nullptr);
+        m = (uint64_t)((int64_t)(uintptr_t)pm - (int64_t)c->mem_bias);
+        mem_write<uint64_t>(c, cs, m);
+        static int logged = 0;
+        if (logged++ < 20)
+            std::fprintf(stderr, "[shim] 延迟初始化 CS 0x%llx -> mutex 0x%llx\n",
+                         (unsigned long long)cs, (unsigned long long)m);
+    }
+    return m;
+}
+
 void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
     uint64_t cs = arg0(c);
-    uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
+    uint64_t m = ensure_cs_mutex(c, cs);
     int d = ++g_cs_depth[cs];   // thread_local：只看本线程的重入深度
     static int logged = 0;
     if (logged++ < 40)
@@ -760,7 +784,7 @@ void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
 
 void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
     uint64_t cs = arg0(c);
-    uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
+    uint64_t m = ensure_cs_mutex(c, cs);
     int d = 0;
     auto it = g_cs_depth.find(cs);
     if (it != g_cs_depth.end() && it->second > 0) d = --it->second;
