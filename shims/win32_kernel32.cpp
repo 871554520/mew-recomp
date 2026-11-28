@@ -829,7 +829,61 @@ void shim_KERNEL32_InitializeSListHead(X64Ctx* c) { if (arg0(c)) mem_write<uint6
 void shim_KERNEL32_SetUnhandledExceptionFilter(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_UnhandledExceptionFilter(X64Ctx* c) { ret0(c, 1); }
 
-void shim_KERNEL32_MultiByteToWideChar(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_KERNEL32_MultiByteToWideChar(X64Ctx* c) {
+    // (CodePage, dwFlags, lpMultiByteStr, cbMultiByte, lpWideCharStr, cchWideChar)
+    // **返回 0 就是失败**。旧实现是 `(void)c; ret0(c, 0);` —— 和 GetCurrentDirectoryW 同病：
+    // MSVC 的 std::filesystem 做窄→宽（path::wstring / 错误消息）时会用它，拿到 0 就
+    // 当失败，最终翻成一个没有任何数字的 error_code。
+    // 按 UTF-8 解码成 UTF-16：游戏内路径与消息全是 ASCII，CP_ACP 在真机上也等价于
+    // 当前 ANSI 代码页，这里统一按 UTF-8 处理（非 ASCII 遇到再按日志里的 cp 分支）。
+    const uint32_t cp  = (uint32_t)arg0(c);
+    const uint64_t src = arg2(c);
+    const int      cb  = (int)arg3(c);
+    const uint64_t dst = arg4(c);
+    const int      cch = (int)arg5(c);
+    if (!src) { mew_set_last_error(87); ret0(c, 0); return; }   // ERROR_INVALID_PARAMETER
+
+    const bool nul_term = cb < 0;
+    size_t nbytes = 0;
+    if (nul_term) {
+        const char* p = (const char*)guest_ptr_from_ctx(c, src);
+        nbytes = p ? std::strlen(p) + 1 : 0;
+    } else {
+        nbytes = (size_t)cb;
+    }
+
+    std::vector<uint16_t> w;
+    w.reserve(nbytes + 1);
+    for (size_t i = 0; i < nbytes;) {
+        const uint8_t b = mem_read<uint8_t>(c, src + i);
+        if (b == 0) { w.push_back(0); ++i; if (nul_term) break; continue; }
+        uint32_t cpv = b;
+        size_t extra = 0;
+        if (b >= 0xF0)      { cpv = b & 0x07u; extra = 3; }
+        else if (b >= 0xE0) { cpv = b & 0x0Fu; extra = 2; }
+        else if (b >= 0xC0) { cpv = b & 0x1Fu; extra = 1; }
+        ++i;
+        for (size_t k = 0; k < extra && i < nbytes; ++k, ++i)
+            cpv = (cpv << 6) | (uint32_t)(mem_read<uint8_t>(c, src + i) & 0x3Fu);
+        if (cpv < 0x10000u) {
+            w.push_back((uint16_t)cpv);
+        } else {
+            cpv -= 0x10000u;
+            w.push_back((uint16_t)(0xD800u + (cpv >> 10)));
+            w.push_back((uint16_t)(0xDC00u + (cpv & 0x3FFu)));
+        }
+    }
+
+    static int logged = 0;
+    if (logged++ < 10)
+        std::fprintf(stderr, "[shim] MultiByteToWideChar(cp=%u, cb=%d, cch=%d) = %zu caller=0x%llx\n",
+                     cp, cb, cch, w.size(), (unsigned long long)cur_fn_va());
+
+    if (!dst || cch == 0) { ret0(c, (uint64_t)w.size()); return; }   // 只问所需长度
+    if ((size_t)cch < w.size()) { mew_set_last_error(122); ret0(c, 0); return; }  // INSUFFICIENT_BUFFER
+    for (size_t i = 0; i < w.size(); ++i) mem_write<uint16_t>(c, dst + i * 2, w[i]);
+    ret0(c, (uint64_t)w.size());
+}
 void shim_KERNEL32_lstrlenW(X64Ctx* c) {
     const uint16_t* p = (const uint16_t*)guest_ptr_from_ctx(c, arg0(c));
     size_t n = 0;
