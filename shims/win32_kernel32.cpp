@@ -650,6 +650,12 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
     static uint64_t wf_std = 0, wf_other = 0;
     static int wf_traced = 0;
     if (is_std) ++wf_std; else ++wf_other;
+    // 每 200 次报一次累计：这一轮无论 WriteFile 被调 0 次、60 次还是几万次，
+    // 日志里都一定留得下一行可判读的「std / 其它」总数（_exit 会跳过 atexit，
+    // 不能指望轮末钩子）。
+    if (((wf_std + wf_other) % 200) == 0)
+        std::fprintf(stderr, "[shim] WriteFile 累计: std(0x1001|0x1002)=%llu other=%llu\n",
+                     (unsigned long long)wf_std, (unsigned long long)wf_other);
     if (wf_traced < 60) {
         ++wf_traced;
         char head[129];
