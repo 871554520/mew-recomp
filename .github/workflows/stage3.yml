@@ -507,7 +507,7 @@ jobs:
           echo "runner_lines=$(wc -l < generated/runner.err 2>/dev/null)"
           echo "runner_bytes=$(stat -c %s generated/runner.err 2>/dev/null)"
           for pat in '[FATAL] Unmapped indirect target' '[int3-trap]' '[rsp-repair]' '[cxx-eh]' '[abi-repair]' '[CRASH]' '[SAFE]' '[LIVELOCK]'; do
-            echo "count $pat = $(grep -c -- "$pat" generated/runner.err 2>/dev/null)"
+            echo "count $pat = $(grep -c -F -- "$pat" generated/runner.err 2>/dev/null)"
           done
           echo '--- FATAL 明细（最多 20 条）---'
           grep '\[FATAL\] Unmapped indirect target' generated/runner.err | head -20 || true
