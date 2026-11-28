@@ -408,9 +408,24 @@ jobs:
           #        0x1412e8588  0x140ba7850 的 jmp [slot]，appmain 末尾尾调用的那个函数
           #      这两个槽在文件里是 0（没有延迟导入目录），运行期才被填成函数指针；
           #      看 [watch] R 打出来的 val 就知道真实目标地址。
-          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400,0x1400598f0,0x140386250,0x140d6aec8,0x140386180,0x1409b5230,0x1409b5140,0x140ba3a40,0x140ba6f90,0x140ba6fd0,0x140d64d48,0x140a3af80,0x140ba5070,0x140b9aa90,0x140c15800,0x140c15820,0x1409da290,0x140a5c8b0,0x140c90160,0x140c7e260,0x140c7eba0,0x140ce2910,0x140be76d0,0x140bf9a50,0x140c7d4b0,0x140bfb770,0x140c7d310,0x140bef420,0x140bf9700,0x140bc8f60,0x140bfe390,0x140bdede0,0x140b4e250,0x140c7f740,0x140bfb180,0x140bef6f0,0x140c8ead0,0x140c85400,0x140c88b20,0x140c8e8a0,0x140c861d0,0x140c8d9b0,0x140be7d20,0x140c7f440,0x140be7ee0,0x140bb0720,0x140bc2810,0x140c8a720,0x140be8190,0x140be81d0,0x140a28500,0x140d1ba18,0x140026890,0x140a27ca0,0x140d1ba40 \
-          MEW_WATCH=0x1412f7fb0,0x1412f7ff8,0x1412f7ffc \
-          MEW_SAMPLE_SEC=60 MEW_TRACE_IND=1 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEH_SKIP_INIT=1 MEW_SEED_MLF=1 MEW_CALL_MAIN=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 MEW_WATCH_N=0 MEW_LIVELOCK_N=0 MEW_TRACE_N=800 timeout 600 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
+          MEW_TRACE_FN=0x140d7a31c,0x140d6a8b4,0x140385f80,0x140025400,0x1400598f0,0x140386250,0x140d6aec8,0x140386180,0x1409b5230,0x1409b5140,0x140ba3a40,0x140ba6f90,0x140ba6fd0,0x140d64d48,0x140a3af80,0x140ba5070,0x140b9aa90,0x140c15800,0x140c15820,0x1409da290,0x140a5c8b0,0x140c90160,0x140c7e260,0x140c7eba0,0x140ce2910,0x140be76d0,0x140bf9a50,0x140c7d4b0,0x140bfb770,0x140c7d310,0x140bef420,0x140bf9700,0x140bc8f60,0x140bfe390,0x140bdede0,0x140b4e250,0x140c7f740,0x140bfb180,0x140bef6f0,0x140c8ead0,0x140c85400,0x140c88b20,0x140c8e8a0,0x140c861d0,0x140c8d9b0,0x140be7d20,0x140c7f440,0x140be7ee0,0x140bb0720,0x140bc2810,0x140c8a720,0x140be8190,0x140be81d0,0x140a28500,0x140d1ba18,0x140026890,0x140a27ca0,0x140d1ba40,0x140d676d8,0x140d6772c \
+          # 本轮（F+E2+G）新增两样观测，纯观测不改行为：
+          #   a) MEW_WATCH 补 0x1413bb7f0：那是 0x140d77340 惰性建表用的 128 项分块
+          #      指针表首项（r12 = 0x1413bb7f0）。disasm（run 46148219285）证明正常路径
+          #      下 0x140d7743d 那条写的 rax 不可能为 0（进搜索分支前 jne 已判
+          #      table[ebx] != 0，且 r8 == ebx），除非有线程把表项清成 0 —— 所以看这条
+          #      地址上的 W 值就能证伪/证实「假互斥」这条（G 修的就是它）。
+          #   a2) MEW_WATCH 补 0x1413bbbf0：全局「已分配槽数」。兄弟函数 0x140d77480
+          #      用它当护栏（cmp ebx,[0x1413bbbf0]; jae 失败返回），而 0x140d77340
+          #      不用它、直接 r8=(ebx*64+slot)>>6 索引 —— 这个不对称正是「计数与表
+          #      内容短暂不一致」的入口，所以要看它有没有被减/被清零。
+          #   b) MEW_TRACE_FN 补 0x140d676d8 / 0x140d6772c：内存分配器的加锁/解锁对
+          #      （rcx=7），看次数与顺序是否成对。
+          # MEW_WATCH_N 从 0（不封顶）改成 2000（每地址独立）：新加的 0x1413bb7f0/bbf0
+          # 是被扫描循环反复读的热地址，不封顶会把日志冲成十几万行；老三条地址实测
+          # 各自只有 1x 条事件，2000 对它们等价于不封顶。
+          MEW_WATCH=0x1412f7fb0,0x1412f7ff8,0x1412f7ffc,0x1413bb7f0,0x1413bbbf0 \
+          MEW_SAMPLE_SEC=60 MEW_TRACE_IND=1 MEW_ABI_GUARD=1 MEW_STACK_REPAIR=1 MEW_SEH_DISPATCH=1 MEW_SEH_PHASE2=1 MEW_SEH_SKIP_INIT=1 MEW_SEED_MLF=1 MEW_CALL_MAIN=1 MEW_UNIMPL_CONTINUE=1 MEW_SAFE_MEM=1 MEW_WATCH_N=2000 MEW_LIVELOCK_N=0 MEW_TRACE_N=800 timeout 600 ./build-stage3/mew_runner Mewgenics.exe > generated/runner.out 2> generated/runner.err
           echo "runner rc=$?" | tee -a generated/runner.out
           echo "--- stdout tail ---"; tail -20 generated/runner.out
           echo "--- unimpl/api log (first 40) ---"
