@@ -335,6 +335,25 @@ int main(int argc, char** argv) {
     map_fake_ranges(img);
     setup_peb(img, &ctx);
     run_tls_callbacks(img, &ctx, tls_callbacks);
+    // ===== P13（2026-11-29）：MEW_INIT_FIRST=1 =====
+    // --call 直调从结构上跳过了 PE entry 与 _initterm（见工程总账 3.7）：全局构造器一个
+    // 不跑，ucrt 的 per-thread data / abort handler 表全是垃圾，任何 abort 都会跳到野地址。
+    // 这个模式先手动 dispatch 一次 _initterm 表区间 [0x140e3fee0, 0x140e44858)，
+    // 再直调目标，才是「隔离验证 gpak」唯一站得住的通道。
+    if (call_va) {
+        const char* init_first = std::getenv("MEW_INIT_FIRST");
+        if (init_first && init_first[0] == '1') {
+            std::fprintf(stderr, "[runner] MEW_INIT_FIRST=1: dispatch _initterm(0x140e3fee0, 0x140e44858) via 0x140d6aecb\n");
+            ctx.rcx = 0x140e3fee0ULL;
+            ctx.rdx = 0x140e44858ULL;
+            ctx.rsp -= 8;
+            mem_write<uint64_t>(&ctx, ctx.rsp, 0xDEAD0001ULL);   // 哨兵返回地址
+            dispatch_indirect(0x140d6aecbULL, &ctx, true);
+            std::fprintf(stderr, "[runner] _initterm done (rax=0x%llx rsp=0x%llx), now calling 0x%llx\n",
+                         (unsigned long long)ctx.rax, (unsigned long long)ctx.rsp,
+                         (unsigned long long)call_va);
+        }
+    }
     if (!call_va) {
         ctx.rcx = 0;   // hInstance
         ctx.rdx = 0;   // hPrevInstance
