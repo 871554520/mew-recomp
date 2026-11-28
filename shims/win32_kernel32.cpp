@@ -1516,14 +1516,20 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     // **单线程模拟：没有别的线程会来 Wake，真等就是死锁。**
     // run 46023439342 的卡死（0x140d1f7e4，rsp 30 分钟不动）就是这条：
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
-    // 现在按「超时」立刻返回 0，并打一行日志让下一轮 artifact 能证实这条路径。
+    // 现在**一律按「已被唤醒」返回 TRUE**，并打一行日志让下一轮 artifact 能证实这条路径。
     const uint32_t ms = (uint32_t)arg2(c);
-    // 关键：参数是 INFINITE(0xFFFFFFFF) 时**不可能超时**。上面那版一律返回 FALSE(0)，
-    // 于是 CRT 的 _Cnd_wait 把它解释成「死锁」并抛
-    //   std::system_error("resource deadlock would occur")
-    // （run 46047307348 的 [cxx-eh] #1）。单线程模拟下没人会 signal，正确做法是
-    // 「假装已被唤醒」——返回 TRUE，让等待方继续走，而不是抛异常把 main 打死。
-    const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
+    // **限时等待也必须返回 TRUE（run 46118344430 的新根因，是我自己引入的回归）。**
+    // ae69621 把 GetLastError 做成真实现之后，`ms != INFINITE -> 返回 FALSE(0)` 这条
+    // 分支就变成致命缺陷：CRT 的 _Cnd_wait 把 FALSE 解释成失败，再拿 GetLastError() 的
+    // **残留值**当失败原因交给 _Throw_C_error，于是抛出
+    //   std::system_error(35 "resource deadlock would occur")
+    //   std::system_error(11 "resource unavailable try again")
+    // ——本轮 [cxx-eh] #1/#2/#3 全是这么来的，最后一次没人接住，展开阶段崩在
+    // [SAFE] unmapped read addr=0x1c。以前 GetLastError 恒返回 0，返回 FALSE 会被当成
+    // 成功（_Rc==0），所以这个坑一直没露头。
+    // 单线程模拟下没有任何线程会真的 signal，正确做法只有一个：一律「假装已被唤醒」，
+    // 让等待方回上层重检 predicate。宁可多转一圈，也不能抛异常把进程打死。
+    const uint64_t ret = 1ull;
     // 带上 caller：run 46055985114 里 485 次 wake 都是同一个 cv(0x509355c0)，
     // 只有 caller 能区分「SDL 事件队列在转」还是「引擎自己的 job 池在等不存在的线程」。
     // 参数顺序修正（run 46065844562 的日志误读）：SleepConditionVariableSRW(cv, srw, ms, flags)
@@ -1531,12 +1537,16 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     // 于是「0x1412f80a0 没人唤醒」是假象——0x1412f80a0 是 SRW 锁，真 cv 是 rcx 那个。
     // 实测对照：wait 的 rcx=0x1413c62e8，而 _Cnd_signal 打的 wake cv=0x1413c62e8 —— 同一个对象，
     // 所以那条「两个 cv 永不配对」的结论作废。
-    static int wait_logged = 0;
-    if (wait_logged++ < 20)
-        std::fprintf(stderr, "[cond] wait cv=0x%llx srw=0x%llx ms=%u -> %s(%llu) caller=0x%llx\n",
+    // 计数分开：以前 20 条名额全被 INFINITE 占满，限时等待一次都没打出来（本轮 20 条
+    // [cond] wait 全是 ms=4294967295），正是因为看不见，这个坑才拖到建窗成功之后才暴露。
+    static int wait_inf_logged = 0;
+    static int wait_timed_logged = 0;
+    const bool ms_inf = (ms == 0xFFFFFFFFu);
+    if (ms_inf ? (wait_inf_logged++ < 12) : (wait_timed_logged++ < 24))
+        std::fprintf(stderr, "[cond] wait cv=0x%llx srw=0x%llx ms=%u(%s) -> signaled(1) caller=0x%llx\n",
                      (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
-                     ret ? "signaled" : "timeout",
-                     (unsigned long long)ret, (unsigned long long)cur_fn_va());
+                     ms_inf ? "INFINITE" : "timed",
+                     (unsigned long long)cur_fn_va());
     (void)cv_for; (void)srw_for;
     // **真正的语义：释放调用方持有的 SRW → 等待 → 重新获取。**
     // 以前这里只「假装已唤醒」就返回，SRW 一直攥在等待方手里；别的线程要改 predicate
