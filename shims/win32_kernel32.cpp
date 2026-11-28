@@ -2646,6 +2646,49 @@ void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
     ret0(c, 1);
 }
 
+// BOOL wglGetPixelFormatAttribivARB(HDC, int iPixelFormat, int iLayerPlane,
+//                                  UINT nAttributes, const int* piAttribs, int* piValues)
+// 为什么必须实现：SDL 的 WIN_GL_SetupWindow 拿到 wglChoosePixelFormatARB 之后，
+// 会再用本函数逐项核对属性；这个函数缺失时 wglGetProcAddress 返回 0，SDL 判
+//   "No matching GL pixel format available"
+// 并放弃建 GL 上下文（run 46105611557 实测这条 2 次，正好对应两轮建窗）。
+void shim_OPENGL32_wglGetPixelFormatAttribivARB(X64Ctx* c) {
+    const uint32_t n = (uint32_t)arg3(c);
+    const uint64_t pattr = arg4(c);
+    const uint64_t pval = arg5(c);
+    if (!pattr || !pval || n == 0 || n > 64) { ret0(c, 0); return; }
+    for (uint32_t i = 0; i < n; ++i) {
+        const int32_t a = mem_read<int32_t>(c, pattr + (uint64_t)i * 4);
+        int32_t v = 0;
+        switch (a) {
+            case 0x2001: v = 1; break;       // WGL_DRAW_TO_WINDOW_ARB
+            case 0x2003: v = 0x2027; break;  // WGL_ACCELERATION_ARB = FULL
+            case 0x200B: v = 1; break;       // WGL_SUPPORT_OPENGL_ARB
+            case 0x2011: v = 1; break;       // WGL_DOUBLE_BUFFER_ARB
+            case 0x2013: v = 0x202B; break;  // WGL_PIXEL_TYPE_ARB = RGBA
+            case 0x2014: v = 32; break;      // WGL_COLOR_BITS_ARB
+            case 0x2015: v = 8; break;       // WGL_RED_BITS_ARB
+            case 0x2017: v = 8; break;       // WGL_GREEN_BITS_ARB
+            case 0x2019: v = 8; break;       // WGL_BLUE_BITS_ARB
+            case 0x201B: v = 8; break;       // WGL_ALPHA_BITS_ARB
+            case 0x2022: v = 24; break;      // WGL_DEPTH_BITS_ARB
+            case 0x2023: v = 8; break;       // WGL_STENCIL_BITS_ARB
+            default:     v = 0; break;       // STEREO / SAMPLES / SAMPLE_BUFFERS = 0
+        }
+        mem_write<int32_t>(c, pval + (uint64_t)i * 4, v);
+    }
+    ret0(c, 1);
+}
+
+// BOOL wglGetPixelFormatAttribfvARB(HDC, int, int, UINT, const int*, FLOAT*)
+void shim_OPENGL32_wglGetPixelFormatAttribfvARB(X64Ctx* c) {
+    const uint32_t n = (uint32_t)arg3(c);
+    const uint64_t pval = arg5(c);
+    if (!pval || n == 0 || n > 64) { ret0(c, 0); return; }
+    for (uint32_t i = 0; i < n; ++i) mem_write<float>(c, pval + (uint64_t)i * 4, 1.0f);
+    ret0(c, 1);
+}
+
 void shim_OPENGL32_glGetString(X64Ctx* c) { mew_api_hit("glGetString");
     // 每个 pname 只分配一次：早先每次调用都 guest_alloc，长跑下来会持续泄漏 guest 堆。
     static uint64_t cache[6] = {0, 0, 0, 0, 0, 0};
@@ -3071,6 +3114,8 @@ RecompFn lookup_api(const char* name) {
         {"wglSwapIntervalEXT", shim_OPENGL32_wglSwapIntervalEXT},
         {"wglGetProcAddress", shim_OPENGL32_wglGetProcAddress},
         {"wglChoosePixelFormatARB", shim_OPENGL32_wglChoosePixelFormatARB},
+        {"wglGetPixelFormatAttribivARB", shim_OPENGL32_wglGetPixelFormatAttribivARB},
+        {"wglGetPixelFormatAttribfvARB", shim_OPENGL32_wglGetPixelFormatAttribfvARB},
         {"glGetString", shim_OPENGL32_glGetString},
         {"glGetIntegerv", shim_OPENGL32_glGetIntegerv},
         {"glGenTextures", shim_OPENGL32_glGenTextures},
