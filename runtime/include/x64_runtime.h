@@ -364,6 +364,38 @@ static inline bool mew_safe_mem() {
     return cached == 1;
 }
 
+// 命中未映射内存就停：run 46144294316 的 20 条 [SAFE] 全是「打一行、返回 0、继续跑」，
+// 谁是真凶看不出来。MEW_SAFE_MEM_ABORT=1 时打完第一现场就 _Exit(86)，
+// 用一个明确的退出码换来「第一条就是第一条」。
+static inline bool mew_safe_mem_abort() {
+    static int cached = -1;
+    if (cached < 0) { const char* v = std::getenv("MEW_SAFE_MEM_ABORT"); cached = (v && v[0] == '1') ? 1 : 0; }
+    return cached == 1;
+}
+
+// [watch] 预算从「所有地址共用 240」改成「每地址独立」，并可用 MEW_WATCH_N 调
+// （默认 240，0 = 不封顶）。共用预算时读侧会先打满 240，之后整段读侧全瞎 ——
+// run 46138348266 之前好几轮都是拿半截数据下的结论。
+static inline int mew_watch_budget() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = std::getenv("MEW_WATCH_N");
+        int n = e ? std::atoi(e) : 240;
+        cached = (n <= 0) ? 0 : n;
+    }
+    return cached;
+}
+
+static inline bool mew_watch_allow(uint64_t addr) {
+    // 永不析构：真线程下 ExitProcess -> std::exit 时静态对象若已析构，这里会崩
+    // （与 mew_api_hit 里那个坑同源）。
+    static std::unordered_map<uint64_t, int>* m = new std::unordered_map<uint64_t, int>();
+    const int cap = mew_watch_budget();
+    if (cap == 0) return true;
+    int& n = (*m)[addr];
+    return n++ < cap;
+}
+
 inline void record_missing_entry(uint64_t target_va, uint64_t caller_fn) {
     if (target_va >= 0x140001000ULL && target_va < 0x140e3f000ULL) {
         if (FILE* fp = std::fopen("discovered_entries.txt", "a")) {
@@ -856,18 +888,24 @@ inline T mem_read(X64Ctx* ctx, uint64_t guest_addr) {
             if (logged < 3) call_trace().dump("safe-mem");
             ++logged;
         }
+        if (mew_safe_mem_abort()) {
+            std::fprintf(stderr,
+                         "[SAFE-ABORT] unmapped read addr=0x%llx size=%zu in_fn=0x%llx pc=0x%llx -> _Exit(86)\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)cur_fn_va(), (unsigned long long)last_mem_pc());
+            std::fflush(stderr);
+            std::_Exit(86);
+        }
         return v;
     }
     std::memcpy(&v, reinterpret_cast<const void*>(guest_addr + ctx->mem_bias), sizeof(T));
-    if (mew_watch_hit(guest_addr, sizeof(T))) {
-        static int n = 0;
-        // 上限从 60 提到 240：加了 mask/_Vec 五个地址以后，60 条预算会在
-        // 初始化器第 3~4 次插入时就烧光，后面真正关键的"第 9 次"反而打不出来。
-        if (n++ < 240)
-            std::fprintf(stderr, "[watch] R addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
-                         (unsigned long long)guest_addr, sizeof(T),
-                         (unsigned long long)mew_bits(&v, sizeof(T)),
-                         (unsigned long long)cur_fn_va());
+    if (mew_watch_hit(guest_addr, sizeof(T)) && mew_watch_allow(guest_addr)) {
+        // 每地址独立预算（MEW_WATCH_N，默认 240）：以前是所有地址共用一个 static 计数，
+        // 读侧打满之后写侧还在、读侧全瞎。
+        std::fprintf(stderr, "[watch] R addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
+                     (unsigned long long)guest_addr, sizeof(T),
+                     (unsigned long long)mew_bits(&v, sizeof(T)),
+                     (unsigned long long)cur_fn_va());
     }
     return v;
 }
@@ -892,16 +930,22 @@ inline void mem_write(X64Ctx* ctx, uint64_t guest_addr, T val) {
             if (logged < 3) call_trace().dump("safe-mem-w");
             ++logged;
         }
+        if (mew_safe_mem_abort()) {
+            std::fprintf(stderr,
+                         "[SAFE-ABORT] unmapped write addr=0x%llx size=%zu in_fn=0x%llx pc=0x%llx -> _Exit(86)\n",
+                         (unsigned long long)guest_addr, sizeof(T),
+                         (unsigned long long)cur_fn_va(), (unsigned long long)last_mem_pc());
+            std::fflush(stderr);
+            std::_Exit(86);
+        }
         return;
     }
     std::memcpy(reinterpret_cast<void*>(guest_addr + ctx->mem_bias), &val, sizeof(T));
-    if (mew_watch_hit(guest_addr, sizeof(T))) {
-        static int n = 0;
-        if (n++ < 240)
-            std::fprintf(stderr, "[watch] W addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
-                         (unsigned long long)guest_addr, sizeof(T),
-                         (unsigned long long)mew_bits(&val, sizeof(T)),
-                         (unsigned long long)cur_fn_va());
+    if (mew_watch_hit(guest_addr, sizeof(T)) && mew_watch_allow(guest_addr)) {
+        std::fprintf(stderr, "[watch] W addr=0x%llx size=%zu val=0x%llx in_fn=0x%llx\n",
+                     (unsigned long long)guest_addr, sizeof(T),
+                     (unsigned long long)mew_bits(&val, sizeof(T)),
+                     (unsigned long long)cur_fn_va());
     }
 }
 
