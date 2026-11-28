@@ -3010,13 +3010,13 @@ void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
 void shim_GDI32_SwapBuffers(X64Ctx* c) { ret0(c, 1); }
 
 void shim_OPENGL32_wglCreateContext(X64Ctx* c) { mew_api_hit("wglCreateContext"); ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglCreateContextAttribsARB(X64Ctx* c) { ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglCreateContextAttribsARB(X64Ctx* c) { mew_api_hit("wglCreateContextAttribsARB"); ret0(c, kFakeHglrc); }
 void shim_OPENGL32_wglMakeCurrent(X64Ctx* c) { mew_api_hit("wglMakeCurrent"); ret0(c, 1); }
-void shim_OPENGL32_wglDeleteContext(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglGetCurrentContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglGetCurrentDC(X64Ctx* c) { ret0(c, kFakeHdc); }
-void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { ret0(c, 1); }
+void shim_OPENGL32_wglDeleteContext(X64Ctx* c) { mew_api_hit("wglDeleteContext"); ret0(c, 1); }
+void shim_OPENGL32_wglGetCurrentContext(X64Ctx* c) { mew_api_hit("wglGetCurrentContext"); ret0(c, kFakeHglrc); }
+void shim_OPENGL32_wglGetCurrentDC(X64Ctx* c) { mew_api_hit("wglGetCurrentDC"); ret0(c, kFakeHdc); }
+void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { mew_api_hit("wglSwapBuffers"); ret0(c, 1); }
+void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { mew_api_hit("wglSwapIntervalEXT"); ret0(c, 1); }
 void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) { mew_api_hit("wglGetProcAddress");
     const char* name = (const char*)guest_ptr_from_ctx(c, arg0(c));
     const uint64_t r = (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0;
@@ -3159,28 +3159,28 @@ void shim_OPENGL32_glGenTextures(X64Ctx* c) {
 }
 
 // 其余 GL 入口：绘制态一律 no-op（语义上是「设置成功」，不改任何宿主状态）
-void shim_OPENGL32_glBindTexture(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glBlendFunc(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glBindTexture(X64Ctx* c) { mew_api_hit("glBindTexture"); ret0(c, 0); }
+void shim_OPENGL32_glBlendFunc(X64Ctx* c) { mew_api_hit("glBlendFunc"); ret0(c, 0); }
 void shim_OPENGL32_glClear(X64Ctx* c) { mew_api_hit("glClear"); ret0(c, 0); }
-void shim_OPENGL32_glClearColor(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glColorMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glCopyTexSubImage2D(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDeleteTextures(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDepthMask(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glClearColor(X64Ctx* c) { mew_api_hit("glClearColor"); ret0(c, 0); }
+void shim_OPENGL32_glColorMask(X64Ctx* c) { mew_api_hit("glColorMask"); ret0(c, 0); }
+void shim_OPENGL32_glCopyTexSubImage2D(X64Ctx* c) { mew_api_hit("glCopyTexSubImage2D"); ret0(c, 0); }
+void shim_OPENGL32_glDeleteTextures(X64Ctx* c) { mew_api_hit("glDeleteTextures"); ret0(c, 0); }
+void shim_OPENGL32_glDepthMask(X64Ctx* c) { mew_api_hit("glDepthMask"); ret0(c, 0); }
 void shim_OPENGL32_glDisable(X64Ctx* c) { mew_api_hit("glDisable"); ret0(c, 0); }
 void shim_OPENGL32_glDrawArrays(X64Ctx* c) { mew_api_hit("glDrawArrays"); ret0(c, 0); }
 void shim_OPENGL32_glEnable(X64Ctx* c) { mew_api_hit("glEnable"); ret0(c, 0); }
-void shim_OPENGL32_glLineWidth(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPixelStorei(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPointSize(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPolygonMode(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glScissor(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilFunc(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilOp(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glTexImage2D(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glTexParameteri(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glViewport(X64Ctx* c) { ret0(c, 0); }
+void shim_OPENGL32_glLineWidth(X64Ctx* c) { mew_api_hit("glLineWidth"); ret0(c, 0); }
+void shim_OPENGL32_glPixelStorei(X64Ctx* c) { mew_api_hit("glPixelStorei"); ret0(c, 0); }
+void shim_OPENGL32_glPointSize(X64Ctx* c) { mew_api_hit("glPointSize"); ret0(c, 0); }
+void shim_OPENGL32_glPolygonMode(X64Ctx* c) { mew_api_hit("glPolygonMode"); ret0(c, 0); }
+void shim_OPENGL32_glScissor(X64Ctx* c) { mew_api_hit("glScissor"); ret0(c, 0); }
+void shim_OPENGL32_glStencilFunc(X64Ctx* c) { mew_api_hit("glStencilFunc"); ret0(c, 0); }
+void shim_OPENGL32_glStencilMask(X64Ctx* c) { mew_api_hit("glStencilMask"); ret0(c, 0); }
+void shim_OPENGL32_glStencilOp(X64Ctx* c) { mew_api_hit("glStencilOp"); ret0(c, 0); }
+void shim_OPENGL32_glTexImage2D(X64Ctx* c) { mew_api_hit("glTexImage2D"); ret0(c, 0); }
+void shim_OPENGL32_glTexParameteri(X64Ctx* c) { mew_api_hit("glTexParameteri"); ret0(c, 0); }
+void shim_OPENGL32_glViewport(X64Ctx* c) { mew_api_hit("glViewport"); ret0(c, 0); }
 
 // ---- 动态表登记的 159 个符号：定义散落在本文件各处，这里统一前置声明 ----
 void shim_GDI32_CreateCompatibleDC(X64Ctx*);
