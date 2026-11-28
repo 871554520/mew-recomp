@@ -3885,6 +3885,29 @@ void shim_KERNEL32_RaiseException(X64Ctx* c) {
     const uint64_t* params = nullptr;
     if (arg3(c)) params = reinterpret_cast<const uint64_t*>((uintptr_t)arg3(c));
     if (seh::raise_exception_dispatch(c, code, flags, nparams, params)) return;  // 已接管
+    // **没找到 handler 时绝对不能 ret0 让 guest 继续跑。**
+    // `_CxxThrowException` / `_Throw_C_error` 都是 [[noreturn]]，Windows 上没人接就
+    // 进 std::terminate。以前这里 ret0(c,0) 会让控制流退回调用点，于是
+    // `call _Throw_C_error` 之后那句 `int3` 被当成 nop 跳过，**顺流掉进下一块冷代码**——
+    // run 46137117363 实测：0x140a28537 `jne` → `mov ecx,5` → EDEADLK →
+    // `_Throw_C_error` 返回 → 0x140a28814 int3 → 0x140a28815 `mov [ffc],0x7ffffffe`
+    // → `mov ecx,6` → 又抛一个 EAGAIN。于是我们在日志里看到的「EAGAIN」根本不是
+    // `je [ffc]==0x7fffffff` 触发的，而是 EDEADLK 的副产物，害我们追了好几个小时的
+    // 「谁写 0x7fffffff」——而写侧 watch 是完整的（55/240），全 run 就没有这条写。
+    // MEW_EH_STRICT=1 时按真实语义终止（退出码 70），保证第一现场就是第一个异常。
+    static int eh_strict = -1;
+    if (eh_strict < 0) {
+        const char* v = std::getenv("MEW_EH_STRICT");
+        eh_strict = (v && v[0] == '1') ? 1 : 0;
+    }
+    if (eh_strict && seh::seh_dispatch_enabled()) {
+        std::fprintf(stderr,
+                     "[eh-strict] 异常未找到 handler，按 [[noreturn]] 语义终止 "
+                     "(code=0x%x flags=0x%x nparams=%u) —— 不再 ret0 让 guest 继续跑\n",
+                     code, flags, nparams);
+        std::fflush(stderr);
+        std::_Exit(70);
+    }
     ret0(c, 0);
 }
 
