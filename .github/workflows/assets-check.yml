@@ -16,12 +16,21 @@ jobs:
         env:
           MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
         run: |
-          URL=$(printf '%s' "${MEW_ASSET_URL_GPak:-}" | head -n1 | tr -d '\r')
+          # 先只打"形状"，不打内容：行数 + 每行长度 + 每行前 8 个字符（足够区分 scheme 和噪声，不泄露签名）
+          echo "[check] secret total bytes = ${#MEW_ASSET_URL_GPak}"
+          printf '%s' "${MEW_ASSET_URL_GPak:-}" | awk '{printf "[check] line %d: len=%d head=%s\n", NR, length($0), substr($0,1,8)}'
+
+          # 容错：优先取第一行；若不是 https，则逐行找第一个 https 行；再不行把各行拼起来找 https 片段
+          RAW="${MEW_ASSET_URL_GPak:-}"
+          URL=$(printf '%s' "$RAW" | head -n1 | tr -d '\r')
           URL=${URL#GET=}
-          case "$URL" in
-            https://*) echo "[check] url accepted, len=${#URL}" ;;
-            *) echo "[check] SECRET MISSING or first line is not an https URL (len=${#URL})"; exit 1 ;;
-          esac
+          if ! printf '%s' "$URL" | grep -q '^https://'; then
+            URL=$(printf '%s' "$RAW" | tr -d '\r' | grep -o 'https://[^[:space:]]*' | head -n1)
+          fi
+          if ! printf '%s' "$URL" | grep -q '^https://'; then
+            echo "[check] could not find an https URL anywhere in the secret"; exit 1
+          fi
+          echo "[check] url accepted, len=${#URL}" 
 
           echo "--- headers via ranged GET (expect 206 + Content-Range + Content-Length) ---"
           curl -s -D - -o /dev/null -r 0-0 "$URL" | tr -d '\r' | grep -Ei '^(HTTP/|content-length|content-range|accept-ranges|etag|last-modified)'
