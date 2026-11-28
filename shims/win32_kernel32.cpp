@@ -1752,6 +1752,31 @@ void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
 // pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
 // 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
 void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepConditionVariableSRW");
+    // [condstat] 空转分布统计（纯诊断，不改语义）。
+    // run 46169415454：600 秒里 41,000,000 次等待全部立刻返回 TRUE，但 [cond] 日志有 12 条上限，
+    // 只能看到前 12 条样本，分不清是同一个 cv 还是多个。这里按 (caller, cv, srw) 分桶累计，
+    // 每 10 万次把各桶打到 stderr —— 不用等进程退出，SIGKILL 也留得下证据。
+    {
+        struct CondStat { uint64_t caller, cv, srw, cnt; };
+        static CondStat st[8]{};
+        static int ns = 0;
+        static uint64_t total = 0;
+        const uint64_t caller = cur_fn_va();
+        const uint64_t cv = arg0(c), srw = arg1(c);
+        ++total;
+        int slot = -1;
+        for (int i = 0; i < ns; ++i)
+            if (st[i].caller == caller && st[i].cv == cv && st[i].srw == srw) { slot = i; break; }
+        if (slot < 0 && ns < 8) { slot = ns++; st[slot] = CondStat{caller, cv, srw, 0}; }
+        if (slot >= 0) ++st[slot].cnt;
+        if (total % 100000 == 0) {
+            std::fprintf(stderr, "[condstat] total=%llu distinct=%d\n", (unsigned long long)total, ns);
+            for (int i = 0; i < ns; ++i)
+                std::fprintf(stderr, "[condstat]   caller=0x%llx cv=0x%llx srw=0x%llx n=%llu\n",
+                             (unsigned long long)st[i].caller, (unsigned long long)st[i].cv,
+                             (unsigned long long)st[i].srw, (unsigned long long)st[i].cnt);
+        }
+    }
     // **单线程模拟：没有别的线程会来 Wake，真等就是死锁。**
     // run 46023439342 的卡死（0x140d1f7e4，rsp 30 分钟不动）就是这条：
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
