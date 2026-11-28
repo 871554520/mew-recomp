@@ -972,7 +972,7 @@ std::unordered_map<uint64_t, GuestThread*> g_threads;
 uint64_t g_next_thread_handle = 0x2001;
 
 // 等价的 init_guest_thread_ctx（垫片侧只有 mem_bias，没有 GuestImage）
-bool init_thread_ctx(X64Ctx* ctx, uint64_t mem_bias) {
+bool init_thread_ctx(X64Ctx* ctx, uint64_t mem_bias, const X64Ctx* parent) {
     constexpr size_t kStack = 4 * 1024 * 1024;
     void* stack = mmap(nullptr, kStack, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (stack == MAP_FAILED) return false;
@@ -986,6 +986,26 @@ bool init_thread_ctx(X64Ctx* ctx, uint64_t mem_bias) {
     ctx->gs_base = (uint64_t)((int64_t)(uintptr_t)teb - (int64_t)mem_bias);
     ctx->fs_base = ctx->gs_base;
     *reinterpret_cast<uint64_t*>(reinterpret_cast<char*>(teb) + 0x30) = ctx->gs_base;
+    // 伪 TEB 的两格必须从父线程继承，否则 worker 线程上 gs:[0x58]/gs:[0x60] 读 0。
+    // 实测（run 46145562592，4,848 行起 16 条 [SAFE]）：worker 线程入口
+    // 0x140d6f5d8 里
+    //     mov rax, gs:[0x60]        ; TEB.ProcessEnvironmentBlock → 0
+    //     mov rcx,[rax+0x20]        ; [SAFE] read addr=0x20 size=8
+    //     cmp dword [rcx+0x8],0     ; [SAFE] read addr=0x8  size=4
+    // 主线程的 PEB / TLS slots 是 mew_runner 的 setup_peb/setup_tls 建的，
+    // 新建线程没人建，所以这里从调用者（父线程）的 TEB 抄两份：
+    //   0x58 = ThreadLocalStoragePointer（模块 TLS 槽数组，进程级共享）
+    //   0x60 = ProcessEnvironmentBlock
+    if (parent && parent->gs_base) {
+        X64Ctx* pc = const_cast<X64Ctx*>(parent);
+        const uint64_t tls_slots = mem_read<uint64_t>(pc, parent->gs_base + 0x58);
+        const uint64_t peb       = mem_read<uint64_t>(pc, parent->gs_base + 0x60);
+        char* tp = reinterpret_cast<char*>(teb);
+        *reinterpret_cast<uint64_t*>(tp + 0x58) = tls_slots;
+        *reinterpret_cast<uint64_t*>(tp + 0x60) = peb;
+        std::fprintf(stderr, "[thread] 伪 TEB 继承 slots=0x%llx peb=0x%llx\n",
+                     (unsigned long long)tls_slots, (unsigned long long)peb);
+    }
     register_guest_range(ctx->gs_base, 4096);
     register_guest_range((uint64_t)((int64_t)(uintptr_t)stack - (int64_t)mem_bias), kStack);
     return true;
@@ -1106,7 +1126,7 @@ void shim_KERNEL32_CreateThread(X64Ctx* c) { mew_api_hit("CreateThread");
     const uint64_t tid_out = arg5(c);
     if (!entry) { ret0(c, 0); return; }
     GuestThread* t = new GuestThread();
-    if (!init_thread_ctx(&t->ctx, c->mem_bias)) { delete t; ret0(c, 0); return; }
+    if (!init_thread_ctx(&t->ctx, c->mem_bias, c)) { delete t; ret0(c, 0); return; }
     t->entry = entry;
     t->param = param;
     uint64_t h;
