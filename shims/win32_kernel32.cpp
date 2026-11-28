@@ -1921,13 +1921,35 @@ void shim_KERNEL32_FormatMessageA(X64Ctx* c) {
 // 指定 windows 让 SDL 直接选 Windows driver —— 三个 driver（windows/offscreen/
 // dummy）里只有它带 WGL，引擎要的是 OpenGL。
 // 其余变量保持「如实不存在」（引擎自己不读任何环境变量，前面已查证）。
+// 环境变量转发开关（run 46155264395 之后需要）。
+// 背景：垫片以前把除 SDL_VIDEO_DRIVER 以外的环境变量一律报「不存在」，所以 CI 里
+// 设 SDL_RENDER_DRIVER / SDL_LOGGING 根本进不到 guest，SDL 后端选择无法实验。
+// 现在只在 MEW_PASS_ENV 显式给出前缀表时才转发（例如 MEW_PASS_ENV=SDL_），
+// 默认空 = 一个都不透传，行为与旧版逐字一致，不会把宿主信息漏进 guest。
+static bool env_passthrough(const char* name) {
+    const char* list = std::getenv("MEW_PASS_ENV");
+    if (!list || !*list || !name || !*name) return false;
+    const size_t nl = std::strlen(name);
+    for (const char* p = list; *p; ) {
+        const char* comma = std::strchr(p, ',');
+        const size_t len = comma ? (size_t)(comma - p) : std::strlen(p);
+        if (len && len <= nl && std::strncmp(p, name, len) == 0) return true;
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return false;
+}
+
 void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) {
     const std::string name = guest_wstr(c, arg0(c));
     const uint64_t buf = arg1(c);
     const uint32_t cap = (uint32_t)arg2(c);
-    const char* val = mew_host_env(name);
-    if (!val && name == "SDL_VIDEODRIVER") val = "windows";
-    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";
+    const char* val = nullptr;
+    std::string env_storage;
+    if (env_passthrough(name.c_str())) {
+        if (const char* e = std::getenv(name.c_str())) { env_storage = e; val = env_storage.c_str(); }
+    }
+    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";  // 默认仍是 windows（引擎要 WGL）
     static int traced = 0;
     if (traced++ < 16)
         std::fprintf(stderr, "[shim] GetEnvironmentVariableW(\"%s\",cap=%u) -> %s\n",
@@ -1952,9 +1974,12 @@ void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) {
     }
     const uint64_t buf = arg1(c);
     const uint32_t cap = (uint32_t)arg2(c);
-    const char* val = mew_host_env(name);
-    if (!val && name == "SDL_VIDEODRIVER") val = "windows";
-    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";
+    const char* val = nullptr;
+    std::string env_storage;
+    if (env_passthrough(name.c_str())) {
+        if (const char* e = std::getenv(name.c_str())) { env_storage = e; val = env_storage.c_str(); }
+    }
+    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";  // 默认仍是 windows（引擎要 WGL）
     static int traced = 0;
     if (traced++ < 16)
         std::fprintf(stderr, "[shim] GetEnvironmentVariableA(\"%s\",cap=%u) -> %s\n",
@@ -3798,19 +3823,6 @@ namespace {
 uint64_t g_cmdline_a = 0;
 uint64_t g_cmdline_w = 0;
 uint64_t g_env_w = 0;
-
-// ---- 宿主 env 透传（SDL_* 前缀）----
-// 以前 GetEnvironmentStringsW 只返回 "PATH=C:\"，GetEnvironmentVariableA/W 只特判
-// SDL_VIDEO_DRIVER=windows —— 于是 CI 里设 SDL_RENDER_DRIVER 根本到不了 guest。
-// run 46155264395 实测全程只有 1 次 GetEnvironmentVariableA("SDL3_DYNAMIC_API")，
-// 说明 SDL3 主要靠 CRT 的环境块（GetEnvironmentStringsW 建 _environ）。两条路都喂上。
-static bool mew_env_is_sdl(const char* name) {
-    return name && std::strncmp(name, "SDL_", 4) == 0;
-}
-static const char* mew_host_env(const std::string& name) {
-    if (name.rfind("SDL_", 0) != 0) return nullptr;
-    return std::getenv(name.c_str());
-}
 }
 
 void shim_KERNEL32_GetCommandLineA(X64Ctx* c) {
@@ -3861,32 +3873,19 @@ void shim_SHELL32_CommandLineToArgvW(X64Ctx* c) {
 
 void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
     if (!g_env_w) {
-        std::vector<std::pair<std::string, std::string>> vars;
-        vars.emplace_back("PATH", "C:\\");
+        // 命中 MEW_PASS_ENV 前缀的宿主变量也拼进来（默认不拼，与旧版一致）
+        std::string blob = "PATH=C:\\";
+        blob.push_back('\0');
         extern char** environ;
-        for (char** e = environ; e && *e; ++e) {
-            const char* eq = std::strchr(*e, '=');
-            if (!eq) continue;
-            const std::string k(*e, (size_t)(eq - *e));
-            if (!mew_env_is_sdl(k.c_str())) continue;
-            vars.emplace_back(k, std::string(eq + 1));
-        }
-        size_t need = 2;  // 结尾双 NUL
-        for (const auto& kv : vars) need += kv.first.size() + 1 + kv.second.size() + 1;
-        g_env_w = guest_alloc(c, (need + 1) * 2);
+        for (char** e = environ; e && *e; ++e)
+            if (env_passthrough(*e)) { blob += *e; blob.push_back('\0'); }
+        blob.push_back('\0');
+        const size_t units = blob.size();
+        const size_t bytes = units * 2 < 256 ? 256 : units * 2;
+        g_env_w = guest_alloc(c, bytes);
         uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_env_w);
-        size_t i = 0;
-        for (const auto& kv : vars) {
-            for (char ch : kv.first) p[i++] = (uint16_t)(unsigned char)ch;
-            p[i++] = '=';
-            for (char ch : kv.second) p[i++] = (uint16_t)(unsigned char)ch;
-            p[i++] = 0;
-        }
-        p[i] = 0;  // 块结束（双 NUL 的第二个）
-        static int logged = 0;
-        if (logged++ < 3)
-            std::fprintf(stderr, "[shim] GetEnvironmentStringsW -> %zu 项（SDL_* %zu 条）\n",
-                         vars.size(), vars.size() - 1);
+        std::memset(p, 0, bytes);
+        for (size_t i = 0; i < units; ++i) p[i] = (uint16_t)(unsigned char)blob[i];
     }
     ret0(c, g_env_w);
 }
