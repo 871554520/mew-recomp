@@ -1985,7 +1985,14 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
         } else if (mn == "in") {
             // 端口读：没有真实端口空间，给 0；仍按目的宽度写入（artifact 里 32 个函数只缺这条）
             storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
+        } else if (mn == "int3") {
+            // int3 = 断点/致命陷阱。以前当 no-op，未捕获的 C++ 异常“返回”后控制流会
+            // 跌落进紧邻的冷块（D15/Q3 实测：0x140a2880a 的 int3 跌到 0x140a28815，
+            // 执行 EAGAIN 冷块并写坏 0x1412f7ffc，才是 #3 EAGAIN 的来源）。
+            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x\""
+                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\\n"
+                  "  return;\\n";
+        } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
         } else if (mn == "ldmxcsr") {
@@ -3364,7 +3371,14 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
         } else if (mn == "in") {
             // 端口读：没有真实端口空间，给 0；仍按目的宽度写入（artifact 里 32 个函数只缺这条）
             storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
-        } else if (mn == "nop" || mn == "int3" || mn == "endbr64" || mn == "pause" ||
+        } else if (mn == "int3") {
+            // int3 = 断点/致命陷阱。以前当 no-op，未捕获的 C++ 异常“返回”后控制流会
+            // 跌落进紧邻的冷块（D15/Q3 实测：0x140a2880a 的 int3 跌到 0x140a28815，
+            // 执行 EAGAIN 冷块并写坏 0x1412f7ffc，才是 #3 EAGAIN 的来源）。
+            e.out << "  { static int _int3_n = 0; if (_int3_n++ < 32) std::fprintf(stderr, \"[int3-trap] rip=0x\""
+                  << hexStr(rip) << "ULL fn=0x" << hexStr(va) << "ULL\\n\"); }\\n"
+                  "  return;\\n";
+        } else if (mn == "nop" || mn == "endbr64" || mn == "pause" ||
                    is_prefetch(mn) || is_noop_insn(mn)) {
             /* no-op */
         } else if (mn == "ldmxcsr") {
