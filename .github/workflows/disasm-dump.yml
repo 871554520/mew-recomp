@@ -7,6 +7,10 @@ on:
         description: '逗号分隔的 VA 列表（默认：abort 链）'
         required: false
         default: '0x140d64d48,0x140d79870,0x140d79600,0x140d79928,0x140d79cec,0x140d6ceb4,0x140d6ee34,0x140d6d140,0x140d6772c,0x140d70b10,0x140d70c00,0x140d7a3b4'
+      span:
+        description: '每个 VA 往后反汇编多少字节（默认 0x180；整函数给 0x1200 这种）'
+        required: false
+        default: '0x180'
 
 jobs:
   dump:
@@ -36,8 +40,11 @@ jobs:
           mkdir -p out
           : > out/disasm.txt
           VAS="${{ inputs.vas }}"
+          SPAN="${{ inputs.span }}"
+          if [ -z "$SPAN" ]; then SPAN=0x180; fi
+          echo "span per VA = $SPAN"
           for VA in $(echo "$VAS" | tr ',' ' '); do
-            END=$(python3 -c "print(hex(int('$VA',16)+0x180))")
+            END=$(python3 -c "print(hex(int('$VA',16)+int('$SPAN',16)))")
             echo "==================== $VA - $END ====================" >> out/disasm.txt
             objdump -d -M intel --no-show-raw-insn \
               --start-address=$VA --stop-address=$END Mewgenics.exe \
