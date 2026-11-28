@@ -587,12 +587,16 @@ void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
         mem_write<uint32_t>(c, out + 32, (uint32_t)(sz & 0xFFFFFFFFu));
     }
     static int traced = 0;
-    if (traced++ < 24)
+    if (traced++ < 24) {
+        // 同时打 **guest 原始路径** 和翻译后的宿主路径：`std::filesystem` 抛异常时我们
+        // 一直只看到翻译结果（连续三次都是 "./"），无法判断引擎到底问的是 C:\、C: 还是别的。
+        const std::string raw = guest_wstr(c, arg0(c));
         std::fprintf(stderr,
-                     "[shim] GetFileAttributesExW(\"%s\")=%s attr=0x%x size=%lld caller=0x%llx\n",
-                     path.c_str(), ok ? "TRUE" : "FALSE", attr,
+                     "[shim] GetFileAttributesExW(guest=\"%s\" host=\"%s\")=%s attr=0x%x size=%lld caller=0x%llx\n",
+                     raw.c_str(), path.c_str(), ok ? "TRUE" : "FALSE", attr,
                      ok ? (long long)st.st_size : -1LL,
                      (unsigned long long)cur_fn_va());
+    }
     ret0(c, ok ? 1u : 0u);
 }
 
@@ -1072,7 +1076,31 @@ void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
     }
     ret0(c, (uint32_t)-1);
 }
-void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) { ret0(c, 0); }
+void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) {
+    // GetCurrentDirectoryW(nBufferLength, lpBuffer)：返回写入的字符数（不含 NUL），
+    // **返回 0 就是失败**。以前这里直接 ret0(c, 0)，等于对所有人宣称"拿不到当前目录"。
+    // MSVC 的 std::filesystem::current_path / absolute 一旦拿到 0 就用 GetLastError()
+    // 造 error_code，上游 create_directories 于是抛
+    //   filesystem_error("create_directories: unknown error")
+    // —— 这是那条异常唯一还没有解释的一环（FormatMessageW 只被调过一次，且 id=0，
+    // 说明 MSVC 走的是 generic category，不是 Win32 错误码）。
+    // 宿主侧所有 guest 相对路径都落在进程 CWD 下，host_path_from_guest 也把 "C:\" 映射成
+    // "./"，所以这里统一回报根目录 "C:\"：与映射完全一致。
+    const uint32_t cap = (uint32_t)arg0(c);
+    const uint64_t buf = arg1(c);
+    static int traced = 0;
+    if (traced++ < 8)
+        std::fprintf(stderr, "[shim] GetCurrentDirectoryW(cap=%u) -> \"C:\\\\\" caller=0x%llx\n",
+                     cap, (unsigned long long)cur_fn_va());
+    if (cap < 4) { ret0(c, 4); return; }   // 缓冲区不足：返回所需长度（含 NUL），不写
+    if (buf) {
+        mem_write<uint16_t>(c, buf + 0, (uint16_t)'C');
+        mem_write<uint16_t>(c, buf + 2, (uint16_t)':');
+        mem_write<uint16_t>(c, buf + 4, (uint16_t)'\\');
+        mem_write<uint16_t>(c, buf + 6, (uint16_t)0);
+    }
+    ret0(c, 3);
+}
 void shim_KERNEL32_SetCurrentDirectoryW(X64Ctx* c) { ret0(c, 1); }
 // 逐级 mkdir（含中间目录）。
 // 为什么不能只调一次 ::mkdir：MSVC 的 create_directories 确实自己会递归，但它拆
@@ -1122,11 +1150,13 @@ void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
     if (built && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
         static int traced = 0;
         if (traced++ < 24)
-            std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") -> ok\n", path.c_str());
+            std::fprintf(stderr, "[shim] CreateDirectoryW(guest=\"%s\" host=\"%s\") -> ok\n",
+                         guest_wstr(c, arg0(c)).c_str(), path.c_str());
         ret0(c, 1);
         return;
     }
-    std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") 失败 errno=%d\n", path.c_str(), errno);
+    std::fprintf(stderr, "[shim] CreateDirectoryW(guest=\"%s\" host=\"%s\") 失败 errno=%d\n",
+                 guest_wstr(c, arg0(c)).c_str(), path.c_str(), errno);
     ret0(c, 0);
 }
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
