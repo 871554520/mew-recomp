@@ -1715,6 +1715,9 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
 //   guest rsp 永久低 0x20，返回后所有 [rsp+off] 局部变量整体错位。
 static uint32_t lookup_size_override(uint64_t va) {
     static const std::unordered_map<uint64_t, uint32_t> m = {
+        // 0x140a27ca0：5 段连续 CHAININFO（0x140a27ca0..0x140a27dd2 = 0x132），
+        // 即使 MEW_SPLIT_CHAIN 没开也整块翻，避免 D15 那种"冷块被当独立函数"的截断。
+        {0x140a27ca0ULL, 0x132},
         {0x1403862d0ULL, 0x1bb},
         // 0x140386180（算新桶数）末尾是 `jmp 0x1403862d0`，中间隔着一条 .pdata。
         // 只补 0x1403862d0 的话，这条 jmp 仍然是跨函数尾跳：
@@ -1997,15 +2000,15 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
             /* no-op */
         } else if (mn == "ldmxcsr") {
             // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
-            e.out << "  (void)mem_read<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "stmxcsr") {
             // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
-            e.out << "  mem_write<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x1F80u);\n";
+            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x1F80u);\n";
         } else if (mn == "fldcw") {
-            e.out << "  (void)mem_read<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+            e.out << "  (void)mem_read<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "fnstcw") {
             // 默认 x87 控制字：0x037F（64 位精度、所有异常屏蔽）
-            e.out << "  mem_write<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x037Fu);\n";
+            e.out << "  mem_write<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x037Fu);\n";
         } else if (mn == "rdsspq" || mn == "rdsspd") {
             // 影子栈指针：没有影子栈，给 0（调用方一般只做保存/比较）
             storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
@@ -3383,15 +3386,15 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             /* no-op */
         } else if (mn == "ldmxcsr") {
             // 只求把内存操作数读到（保留访存语义），MXCSR 状态本身不建模
-            e.out << "  (void)mem_read<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+            e.out << "  (void)mem_read<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "stmxcsr") {
             // 默认 MXCSR：round-to-nearest、所有异常屏蔽位 = 1 -> 0x1F80
-            e.out << "  mem_write<uint32_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x1F80u);\n";
+            e.out << "  mem_write<uint32_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x1F80u);\n";
         } else if (mn == "fldcw") {
-            e.out << "  (void)mem_read<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ");\n";
+            e.out << "  (void)mem_read<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ");\n";
         } else if (mn == "fnstcw") {
             // 默认 x87 控制字：0x037F（64 位精度、所有异常屏蔽）
-            e.out << "  mem_write<uint16_t>(ctx, " << valExpr(pe, insn, ops[0], next_rip, e) << ", 0x037Fu);\n";
+            e.out << "  mem_write<uint16_t>(ctx, " << addrExpr(pe, ops[0], next_rip, e) << ", 0x037Fu);\n";
         } else if (mn == "rdsspq" || mn == "rdsspd") {
             // 影子栈指针：没有影子栈，给 0（调用方一般只做保存/比较）
             storeExpr(pe, insn, ops[0], "0", next_rip, ops[0].size / 8, e);
@@ -3981,7 +3984,10 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
     std::unordered_map<uint32_t, uint32_t> own_end;   // .pdata 入口 -> 自己的 EndAddress
     for (const auto& en : ents) own_end[en.b] = en.e;
 
-    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> pieces;
+    // CHAININFO 可能是**多跳**的（实测 0x140a27ca0 家族：ccd->ca0，cd5->ccd，d5d->ccd，db2->ca0）。
+    // 旧实现只读 1 跳父指针，中间段的键对不上根段 -> 整个家族被 contiguous 判为不连续后丢弃
+    // （D15 的直接原因）。这里先收集「子段 -> 直接父段」，再循环追到真正的根段。
+    std::unordered_map<uint32_t, uint32_t> parent_of;
     for (const auto& en : ents) {
         const Section* us = pe.byRva(en.u);
         if (!us || en.u < us->va) continue;
@@ -3997,8 +4003,21 @@ static const std::unordered_map<uint64_t, uint32_t>& chain_family_spans(const Pe
         const size_t qoff = (size_t)qs->raw + (size_t)(qrva - qs->va);
         if (qoff + 12 > pe.data.size()) continue;
         uint32_t cb = 0;
-        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress = 首段
-        pieces[cb].push_back({en.b, en.e});
+        std::memcpy(&cb, pe.data.data() + qoff, 4);         // chain.BeginAddress = 上一段
+        if (cb != en.b) parent_of[en.b] = cb;
+    }
+
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> pieces;
+    for (const auto& en : ents) {
+        auto pit = parent_of.find(en.b);
+        if (pit == parent_of.end()) continue;
+        uint32_t root = pit->second;
+        for (int hops = 0; hops < 16; ++hops) {             // 最多 16 跳，防环
+            auto up = parent_of.find(root);
+            if (up == parent_of.end() || up->second == root) break;
+            root = up->second;
+        }
+        pieces[root].push_back({en.b, en.e});
     }
 
     for (auto& kv : pieces) {
