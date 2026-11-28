@@ -2959,6 +2959,9 @@ void shim_GDI32_CreateDCA(X64Ctx*);
 void shim_GDI32_CreateFontIndirectW(X64Ctx*);
 void shim_GDI32_DeleteDC(X64Ctx*);
 void shim_GDI32_DeleteObject(X64Ctx*);
+void shim_GDI32_CreateBitmap(X64Ctx*);
+void shim_GDI32_CreateCompatibleBitmap(X64Ctx*);
+void shim_GDI32_GetDIBits(X64Ctx*);
 void shim_GDI32_GetDeviceCaps(X64Ctx*);
 void shim_GDI32_GetTextExtentPoint32A(X64Ctx*);
 void shim_GDI32_GetTextMetricsW(X64Ctx*);
@@ -3533,6 +3536,12 @@ RecompFn lookup_api(const char* name) {
         {"WaitForSingleObjectEx", shim_KERNEL32_WaitForSingleObjectEx},
         {"WaitForThreadpoolWorkCallbacks", shim_KERNEL32_WaitForThreadpoolWorkCallbacks},
         {"WriteConsoleW", shim_KERNEL32_WriteConsoleW},
+        // run 46149048002 新暴露：SDL 的 Windows 版本判定 + GDI 位图
+        {"VerSetConditionMask", shim_KERNEL32_VerSetConditionMask},
+        {"VerifyVersionInfoW", shim_KERNEL32_VerifyVersionInfoW},
+        {"CreateBitmap", shim_GDI32_CreateBitmap},
+        {"CreateCompatibleBitmap", shim_GDI32_CreateCompatibleBitmap},
+        {"GetDIBits", shim_GDI32_GetDIBits},
         // WINMM 的定时器精度开关（run 46144294316 的 UNIMPL 表里 timeBeginPeriod 被调 1 次）
         {"timeBeginPeriod", shim_WINMM_timeBeginPeriod},
         {"timeEndPeriod", shim_WINMM_timeEndPeriod},
@@ -4123,6 +4132,66 @@ void shim_GDI32_CreateFontIndirectW(X64Ctx* c) { ret0(c, kFakeFont); }
 void shim_GDI32_SelectObject(X64Ctx* c) { ret0(c, kFakeFont); }   // 返回「旧对象」，非空即可
 void shim_GDI32_DeleteDC(X64Ctx* c) { ret0(c, 1); }
 void shim_GDI32_DeleteObject(X64Ctx* c) { ret0(c, 1); }
+
+// ---------------- 版本查询与 GDI 位图（run 46149048002 新暴露的 5 个缺项） ----------------
+// 这轮程序第一次走到 SDL 的「Windows 版本判定」和「GDI 位图」两条支路，UNIMPL 表里
+// distinct=5 total=12：VerSetConditionMask 6 / VerifyVersionInfoW 2 / CreateBitmap 1 /
+// CreateCompatibleBitmap 1 / GetDIBits 2。
+// 它们都不是可选探测，是**会让调用方拿错误信息继续跑**的那种，所以按语义给真值。
+
+// VER_SET_CONDITION(mask, type, cond)：type 的第 i 位置位 → 把 cond 的 3 位写进 mask 的第 i*3 位。
+void shim_KERNEL32_VerSetConditionMask(X64Ctx* c) {
+    uint64_t mask = arg0(c);
+    const uint32_t type = (uint32_t)arg1(c);
+    const uint8_t cond = (uint8_t)(arg2(c) & 7u);
+    for (int i = 0; i < 32; ++i) {
+        if (type & (1u << i)) {
+            const int shift = i * 3;
+            mask &= ~((uint64_t)7u << shift);
+            mask |= (uint64_t)cond << shift;
+        }
+    }
+    ret0(c, mask);
+}
+
+// 我们恒报 Windows 10（10.0.19041）。返回 FALSE 会让 SDL 退回「老系统」分支，
+// 少走 DPI / 输入 / 窗口特性，反而更远；返回 TRUE + ERROR_SUCCESS 最接近真机。
+void shim_KERNEL32_VerifyVersionInfoW(X64Ctx* c) {
+    mew_api_hit("VerifyVersionInfoW");
+    ret0(c, 1);
+}
+
+namespace {
+constexpr uint64_t kFakeBitmap = 0x7FFE0003B000ULL;   // 与 kFakeDC/kFakeFont 同一段假句柄
+}
+void shim_GDI32_CreateBitmap(X64Ctx* c) { mew_api_hit("CreateBitmap"); ret0(c, kFakeBitmap); }
+void shim_GDI32_CreateCompatibleBitmap(X64Ctx* c) { mew_api_hit("CreateCompatibleBitmap"); ret0(c, kFakeBitmap); }
+
+// GetDIBits(hdc, hbm, start, lines, bits, bmi, usage)：返回拷出的扫描行数。
+// bits 非空时把它按 bmi 的头算出的字节数清零（封顶 16 MB，防止上游给个天文数字把我们写飞）。
+void shim_GDI32_GetDIBits(X64Ctx* c) {
+    mew_api_hit("GetDIBits");
+    const uint32_t start = (uint32_t)arg2(c);
+    const uint32_t lines = (uint32_t)arg3(c);
+    const uint64_t bits  = arg4(c);
+    const uint64_t bmi   = arg5(c);
+    if (bits && bmi && guest_mapped(bmi, 40) && guest_mapped(bits, 1)) {
+        const int32_t w  = (int32_t)mem_read<uint32_t>(c, bmi + 4);
+        const int32_t h  = (int32_t)mem_read<uint32_t>(c, bmi + 8);
+        const uint16_t bc = mem_read<uint16_t>(c, bmi + 14);
+        const uint32_t szimg = mem_read<uint32_t>(c, bmi + 20);
+        uint64_t bytes = szimg;
+        if (!bytes && w > 0 && h > 0 && bc > 0) {
+            bytes = (uint64_t)((int64_t)w * (bc / 8 ? bc / 8 : 1));
+            bytes = (bytes + 3) & ~3ULL;
+            bytes *= (uint64_t)(h < 0 ? -h : h);
+        }
+        if (bytes > (16ULL << 20)) bytes = 16ULL << 20;
+        if (bytes && guest_mapped(bits, (size_t)bytes)) std::memset(guest_ptr_from_ctx(c, bits), 0, (size_t)bytes);
+    }
+    (void)start;
+    ret0(c, lines);
+}
 void shim_GDI32_GetDeviceCaps(X64Ctx* c) {
     const int idx = (int)arg1(c);
     int v = 0;
