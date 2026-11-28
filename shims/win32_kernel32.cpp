@@ -2962,6 +2962,8 @@ void shim_GDI32_DeleteObject(X64Ctx*);
 void shim_GDI32_CreateBitmap(X64Ctx*);
 void shim_GDI32_CreateCompatibleBitmap(X64Ctx*);
 void shim_GDI32_GetDIBits(X64Ctx*);
+void shim_KERNEL32_VerSetConditionMask(X64Ctx*);
+void shim_KERNEL32_VerifyVersionInfoW(X64Ctx*);
 void shim_GDI32_GetDeviceCaps(X64Ctx*);
 void shim_GDI32_GetTextExtentPoint32A(X64Ctx*);
 void shim_GDI32_GetTextMetricsW(X64Ctx*);
