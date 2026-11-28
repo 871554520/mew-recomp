@@ -4027,10 +4027,37 @@ void shim_STEAM_API64_SteamInternal_SteamAPI_Init(X64Ctx* c) {
     if (logged++ < 3) std::fprintf(stderr, "[shim] SteamInternal_SteamAPI_Init -> 0（没有 Steam）\n");
     ret0(c, 0);
 }
-void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx* c) {
-    static int logged = 0;
-    if (logged++ < 3) std::fprintf(stderr, "[shim] SteamInternal_ContextInit -> 0（没有上下文）\n");
-    ret0(c, 0);
+// 真实 steam_api64 里 SteamInternal_ContextInit(&data) 返回一个**上下文对象**，而调用方
+// （0x1409b5380，就是 step 25 探针直接调的那个「gpak loader」入口）紧接着四条指令、不判空：
+//   0x1409b541e  call [steam_api64!SteamInternal_ContextInit]
+//   0x1409b5424  mov  rcx,[rax]      ← rax=0 时读 0x0（size=8），就是它
+//   0x1409b5427  mov  rax,[rcx]
+//   0x1409b542e  call [rax+0x10]     ← 虚拟方法
+// run 46146544153（MEW_SAFE_MEM_ABORT=1）的第一现场逐字对上：
+//   [SAFE-ABORT] unmapped read addr=0x0 size=8 in_fn=0x1409b5380 pc=0x1409b540a
+//   runner rc=86，日志断在 4,305 行（对比不带 ABORT 的 11,320 行）
+// 以前这里返回 0 是「调用方必须自己判空」的假设，实测不成立 —— 它不判。
+// 所以造一条三级假链，让这个虚拟调用落到一个返回 0 的空桩上：
+//   ctx[0] = iface → iface[0] = vtable → vtable[0x00..0x38] = 空桩
+static void mew_steam_ctx_noop(X64Ctx* c) { ret0(c, 0); }
+
+void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx* c) { mew_api_hit("SteamInternal_ContextInit");
+    static uint64_t fake_ctx = 0;
+    if (!fake_ctx) {
+        const uint64_t base = g_guest_heap.alloc(0x200, true);
+        if (!base) { ret0(c, 0); return; }
+        const uint64_t kStubVa = 0x50000F000ULL;   // 落在 0x500000000..0x5000FFFFF 的垫片区
+        register_recomp_fn(kStubVa, mew_steam_ctx_noop);
+        const uint64_t iface = base + 0x80;
+        const uint64_t vtbl  = base + 0x100;
+        mem_write<uint64_t>(c, base,  iface);      // [ctx]   = iface
+        mem_write<uint64_t>(c, iface, vtbl);       // [iface] = vtable
+        for (int off = 0x00; off <= 0x38; off += 8) mem_write<uint64_t>(c, vtbl + (uint64_t)off, kStubVa);
+        fake_ctx = base;
+        std::fprintf(stderr, "[shim] SteamInternal_ContextInit -> 假上下文 0x%llx（vtable 空桩 0x%llx）\n",
+                     (unsigned long long)base, (unsigned long long)kStubVa);
+    }
+    ret0(c, fake_ctx);
 }
 
 // ---------------- GDI32 字体/文本度量（游戏 UI 布局用，不需要真渲染）----------------
