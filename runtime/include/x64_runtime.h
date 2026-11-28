@@ -786,7 +786,39 @@ inline void dispatch_indirect(uint64_t target_va, X64Ctx* ctx, bool is_call = fa
     record_missing_entry(target_va, cur_fn_va());
     static int miss_logged = 0;
     if (miss_logged++ < 3) call_trace().dump("dispatch miss");
-    if (mew_unimpl_continue()) return;  // 收集模式：记录后继续，便于观察后续路径
+    // 自旋熔断：同一个目标 miss 到上限就不再让它转下去。run 46151590541 实测
+    // 0x140bba300 与 0x140be0eb0 各被踩 110 万次（`[FATAL] ... hits=1100000`），
+    // 4 号 worker 就是在这一对儿上空转的。默认 200000，`MEW_MISS_SPIN_ABORT=0` 关掉。
+    static const uint64_t spin_cap = []() -> uint64_t {
+        const char* e = std::getenv("MEW_MISS_SPIN_ABORT");
+        if (e && e[0] == '0') return 0;
+        return 200000;
+    }();
+    if (spin_cap && hits == spin_cap) {
+        std::fprintf(stderr,
+                     "[FATAL] 同一目标 miss 达到上限 %llu（判定为自旋）target=0x%llx in_fn=0x%llx\n",
+                     (unsigned long long)spin_cap, (unsigned long long)target_va,
+                     (unsigned long long)cur_fn_va());
+        std::abort();
+    }
+    if (mew_unimpl_continue()) {
+        // 收集模式必须把这次"调用"当成**已经返回**来收尾：lifter 的 call 形态在调用前
+        // 已经 `ctx->rsp -= 8` 并把返回地址压进去了（见 lifter_core.cpp 的
+        // `call` 发射：`ctx->rsp -= 8; mem_write(...); dispatch_indirect(..., true)`）。
+        // 旧代码这里直接 return，那 8 字节就永久留在栈上 —— **每次 miss 泄漏 8 字节**。
+        // run 46151590541 的实测形状：4 号 worker（handle 0x2004 / entry 0x140d4e9cc，
+        // SDL/WASAPI 音频初始化）在 0x140bba300、0x140be0eb0 上交替自旋，rsp 从栈底
+        // 0x7fb6fce00000 一路跌到 0x7fb6fbfffff8（-14 MB，约 175 万次 push），最后
+        // `[CRASH] signal=11 fault=0x7fb6fbfffff8`；日志里 in_fn=0x140c79b00 的
+        // 19 条 [SAFE] unmapped write addr=0x7fb6fcdffXXX 全是这个泄漏写出来的假象，
+        // 不是新缺陷。补弹之后收集模式仍然继续观察后续路径，但栈不再错位。
+        if (ctx) {
+            ctx->rax = 0;
+            if (is_call) ctx->rsp += 8;
+        }
+        tracer_done(trace_this, target_va, ctx);
+        return;
+    }
     std::abort();
 }
 
