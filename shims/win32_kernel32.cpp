@@ -1622,8 +1622,61 @@ void shim_KERNEL32_FormatMessageA(X64Ctx* c) {
     std::memcpy(guest_ptr_from_ctx(c, out), text, n);
     ret0(c, (uint64_t)(n - 1));
 }
-void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 0); }
+// 环境变量：只提供 SDL3 的 hint 系统需要的那一个 —— SDL_VIDEO_DRIVER。
+// 为什么必须给：SDL_GetHint 最终走 SDL_getenv -> 这里；而每个 video driver 的
+// CreateDevice 第一步（0x140c7d320）就是「读 SDL_VIDEO_DRIVER，判断是不是自己」，
+// hint 不存在时它返回 0，调用方立刻 `test al,al; je 失败返回 0`。
+// 结果就是**所有** driver 都被拒、_this 永远为 0、SDL_CreateWindow 永远失败。
+// 指定 windows 让 SDL 直接选 Windows driver —— 三个 driver（windows/offscreen/
+// dummy）里只有它带 WGL，引擎要的是 OpenGL。
+// 其余变量保持「如实不存在」（引擎自己不读任何环境变量，前面已查证）。
+void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) {
+    const std::string name = guest_wstr(c, arg0(c));
+    const uint64_t buf = arg1(c);
+    const uint32_t cap = (uint32_t)arg2(c);
+    const char* val = nullptr;
+    if (name == "SDL_VIDEO_DRIVER") val = "windows";
+    static int traced = 0;
+    if (traced++ < 16)
+        std::fprintf(stderr, "[shim] GetEnvironmentVariableW(\"%s\",cap=%u) -> %s\n",
+                     name.c_str(), cap, val ? val : "<none>");
+    if (!val) { ret0(c, 0); return; }
+    const std::string v(val);
+    const size_t need = v.size() + 1;
+    if (buf && cap >= need && guest_mapped(buf, need * 2)) {
+        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, buf);
+        for (size_t i = 0; i < v.size(); ++i) p[i] = (uint16_t)(unsigned char)v[i];
+        p[v.size()] = 0;
+        ret0(c, (uint64_t)v.size());
+        return;
+    }
+    ret0(c, (uint64_t)need);
+}
+void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) {
+    std::string name;
+    if (arg0(c) && guest_mapped(arg0(c), 1)) {
+        const char* p = (const char*)guest_ptr_from_ctx(c, arg0(c));
+        for (size_t i = 0; i < 260 && p[i]; ++i) name.push_back(p[i]);
+    }
+    const uint64_t buf = arg1(c);
+    const uint32_t cap = (uint32_t)arg2(c);
+    const char* val = nullptr;
+    if (name == "SDL_VIDEO_DRIVER") val = "windows";
+    static int traced = 0;
+    if (traced++ < 16)
+        std::fprintf(stderr, "[shim] GetEnvironmentVariableA(\"%s\",cap=%u) -> %s\n",
+                     name.c_str(), cap, val ? val : "<none>");
+    if (!val) { ret0(c, 0); return; }
+    const std::string v(val);
+    const size_t need = v.size() + 1;
+    if (buf && cap >= need && guest_mapped(buf, need)) {
+        std::memcpy(guest_ptr_from_ctx(c, buf), v.c_str(), need);
+        ret0(c, (uint64_t)v.size());
+        return;
+    }
+    ret0(c, (uint64_t)need);
+}
+
 void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_KERNEL32_SetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 1); }
 
