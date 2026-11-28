@@ -2689,7 +2689,28 @@ void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { ret0(c, 1); }
 void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { ret0(c, 1); }
 void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) { mew_api_hit("wglGetProcAddress");
     const char* name = (const char*)guest_ptr_from_ctx(c, arg0(c));
-    ret0(c, (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0);
+    const uint64_t r = (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0;
+    // 纯观测，不改行为（返回值与解析路径一个字节都没动）：
+    // run 46118344430 实测 wglGetProcAddress 被调了 2861 次，而我们登记的 GL 入口只有 25 个
+    // —— 绝大多数名字拿到的都是 0。引擎的 GL 加载器一旦真去 call 其中某个空指针，崩法会
+    // 非常难看且极难定位（和现在这个 0x1c 读一样）。这里只把「解析失败」的名字去重打出来，
+    // 成功的打会光 2861 行淹没日志。下一轮就能拿到完整缺失清单，一次性补进表里。
+    if (!r && name && name[0]) {
+        static std::mutex m;
+        static std::vector<std::string> miss;
+        bool show = false;
+        {
+            std::lock_guard<std::mutex> lk(m);
+            bool dup = false;
+            for (size_t i = 0; i < miss.size(); ++i)
+                if (miss[i] == name) { dup = true; break; }
+            if (!dup && miss.size() < 400) { miss.push_back(name); show = true; }
+        }
+        if (show)
+            std::fprintf(stderr, "[glmiss] wglGetProcAddress(\"%s\") -> 0 caller=0x%llx\n",
+                         name, (unsigned long long)cur_fn_va());
+    }
+    ret0(c, r);
 }
 // BOOL wglChoosePixelFormatARB(HDC, const int*, const FLOAT*, UINT, int*, UINT*)
 void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
