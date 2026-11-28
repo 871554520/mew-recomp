@@ -1,0 +1,36 @@
+name: Assets check (range probes only, no full 5.1 GB download)
+
+# 目的：验证仓库 secret MEW_ASSET_URL_GPak 里的预签名直链可用。
+# 只发 3 个 Range 请求（几十字节），不下载 5.1 GB，所以 1 分钟内出结果。
+# 注意：预签名绑定 HTTP 方法，这里全部用 GET（-r 0-0 也能拿到响应头），不用 curl -sI。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Probe the presigned gpak URL
+        env:
+          MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
+        run: |
+          URL=$(printf '%s' "${MEW_ASSET_URL_GPak:-}" | head -n1 | tr -d '\r')
+          URL=${URL#GET=}
+          case "$URL" in
+            https://*) echo "[check] url accepted, len=${#URL}" ;;
+            *) echo "[check] SECRET MISSING or first line is not an https URL (len=${#URL})"; exit 1 ;;
+          esac
+
+          echo "--- headers via ranged GET (expect 206 + Content-Range + Content-Length) ---"
+          curl -s -D - -o /dev/null -r 0-0 "$URL" | tr -d '\r' | grep -Ei '^(HTTP/|content-length|content-range|accept-ranges|etag|last-modified)'
+
+          echo "--- first 16 bytes (expect 0b4e0000 1400 'audio/comb...') ---"
+          curl -s -r 0-15 "$URL" | xxd
+
+          echo "--- data area start, offset 824693 (expect 'SetName CombatSFX') ---"
+          curl -s -r 824693-824724 "$URL" | xxd
+
+          echo "--- last 8 bytes (expect PNG IEND: 49454e44 ae426082) ---"
+          curl -s -r 5134616308-5134616315 "$URL" | xxd
