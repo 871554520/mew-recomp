@@ -15,11 +15,19 @@ jobs:
       - name: Probe the presigned gpak URL
         env:
           MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
+          # 公有读直链（大肥鱼 2026-11-28 提供；桶本来就是公有读，匿名 GET 返回 206）。
+          # secret 存在且是 https URL 时优先用 secret，否则用这个。
+          MEW_ASSET_PUBLIC_URL: "https://dsh-1-1544009507.cos.ap-guangzhou.myqcloud.com/resources.gpak"
         run: |
           # 先只打"形状"，不打内容：行数 + 每行长度 + 每行前 8 个字符（足够区分 scheme 和噪声，不泄露签名）
           echo "[check] secret total bytes = ${#MEW_ASSET_URL_GPak}"
           printf '%s' "${MEW_ASSET_URL_GPak:-}" | awk '{printf "[check] line %d: len=%d head=%s\n", NR, length($0), substr($0,1,8)}'
 
+          # 公有直链兜底：secret 没设/不是 URL 时直接用它（非凭证，可公开）
+          if ! printf '%s' "${MEW_ASSET_URL_GPak:-}" | grep -q 'https://'; then
+            echo "[check] secret has no https URL -> using public URL"
+            MEW_ASSET_URL_GPak="${MEW_ASSET_PUBLIC_URL}"
+          fi
           # 容错：优先取第一行；若不是 https，则逐行找第一个 https 行；再不行把各行拼起来找 https 片段
           RAW="${MEW_ASSET_URL_GPak:-}"
           URL=$(printf '%s' "$RAW" | head -n1 | tr -d '\r')
