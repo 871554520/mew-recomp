@@ -57,6 +57,10 @@ void shim_KERNEL32_CreateEventW(X64Ctx*);
 void shim_KERNEL32_CreateFileW(X64Ctx*);
 void shim_KERNEL32_CreateFileA(X64Ctx*);
 void shim_KERNEL32_FindFirstFileExW(X64Ctx*);
+// FindFirstFileExW（定义在 455 行附近）要转调 FindFirstFileW，而后者定义在 1100 多行，
+// 所以这里必须先声明 —— 否则 -fsyntax-only 会报 was not declared in this scope
+// （踩过一次：只有 kApis 表那处（2400 多行）的声明，455 行的函数体看不到）。
+void shim_KERNEL32_FindFirstFileW(X64Ctx*);
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx*);
 void shim_KERNEL32_CreateThread(X64Ctx*);
 // steam_api64 三个（定义在文件末尾的强符号，覆盖 shims_auto.cpp 的弱占位）
