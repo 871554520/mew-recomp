@@ -4039,7 +4039,18 @@ void shim_STEAM_API64_SteamInternal_SteamAPI_Init(X64Ctx* c) {
 // 以前这里返回 0 是「调用方必须自己判空」的假设，实测不成立 —— 它不判。
 // 所以造一条三级假链，让这个虚拟调用落到一个返回 0 的空桩上：
 //   ctx[0] = iface → iface[0] = vtable → vtable[0x00..0x38] = 空桩
-static void mew_steam_ctx_noop(X64Ctx* c) { ret0(c, 0); }
+// 这个虚拟方法在 0x1409b542e 被调用，紧接着 0x1409b5431 就是 `mov rdx,[rax]` ——
+// 返回值必须是一个**可读的 guest 指针**。空桩返回 0 只能把第一现场往后挪 3 条指令
+// （`addr=0x0 size=8` 换个 in_fn 再来一次），所以这里返回一块零页。
+static uint64_t& mew_steam_ret_block() { static uint64_t v = 0; return v; }
+static void mew_steam_ctx_noop(X64Ctx* c) {
+    uint64_t& blk = mew_steam_ret_block();
+    if (!blk) {
+        blk = g_guest_heap.alloc(0x100, true);
+        if (!blk) { ret0(c, 0); return; }
+    }
+    ret0(c, blk);
+}
 
 void shim_STEAM_API64_SteamInternal_ContextInit(X64Ctx* c) { mew_api_hit("SteamInternal_ContextInit");
     static uint64_t fake_ctx = 0;
