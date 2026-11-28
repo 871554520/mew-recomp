@@ -508,6 +508,10 @@ jobs:
           grep -E '^\[fn\] 0x(1409b5380|1409b8bb0|1409b58b0|1409b6c00|1409b5ed0|140a10240|140745f60|140951060)' generated/runner.err | head -20 || true
           echo '--- glGetString 明细 ---'
           grep 'glGetString' generated/runner.err | head -8 || true
+          echo '--- UNIMPL FUNC TABLE（实际命中，批次排序的权威依据）---'
+          grep -A 45 'UNIMPL FUNC TABLE' generated/runner.err | head -50 || true
+          echo '--- UNIMPL API TABLE ---'
+          grep -A 25 'UNIMPL API TABLE' generated/runner.err | head -30 || true
           echo '--- stub_list.tsv（前 130 行，直接进 job log，免拉 artifact）---'
           head -130 generated/stage3/stub_list.tsv 2>/dev/null || true
           echo '--- 最后 5 行 ---'
