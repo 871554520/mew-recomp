@@ -1542,10 +1542,19 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     // 负责真正 signal 的 worker 线程没机会推进，于是谁也不动。
     // 前 1 万次保持零开销；之后每次退让 50µs，把空转压到每秒几千次。
     // 计数用 thread_local —— 不需要锁也不需要 atomic。
+    // 退让时长用环境变量控制，**默认 0 = 不退让**（保持 run 46090073899/adfd412 的
+    // 行为：那次 2.05 亿次空转但主线程照样推进到了 SDL_VideoInit）。
+    // 为什么改成可关：同一条路径上「退让」和「空转」可能是相反的，
+    // 2.05 亿次空转只用了 600s 里的一部分，加 50µs 退让后同样次数要上千秒，
+    // 反而会把 600s 预算耗光。这样一笔改动就能 A/B 两种配置，不用来回改代码。
+    static const long cv_sleep_us = [] {
+        const char* e = std::getenv("MEW_CV_SLEEP_US");
+        return e ? std::strtol(e, nullptr, 0) : 0L;
+    }();
     static thread_local uint64_t spin_hits = 0;
-    if (ret && ms == 0xFFFFFFFFu) {
+    if (ret && ms == 0xFFFFFFFFu && cv_sleep_us > 0) {
         ++spin_hits;
-        if (spin_hits > 10000 && real_threads()) usleep(50);
+        if (spin_hits > 10000 && real_threads()) usleep((useconds_t)cv_sleep_us);
     }
     ret0(c, ret);
 }
