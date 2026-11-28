@@ -2605,6 +2605,21 @@ uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
 }
 }  // namespace
 
+// ChoosePixelFormat 请求过的 PFD 原样留一份：SDL 的 legacy 路径是「先 Choose 再
+// Describe 复核」。我们以前 Describe 恒报 color=32/depth=24/stencil=8，而 run
+// 46117414301 实测它要的是 color=24/depth=16/stencil=0（第二次探测 depth=0），
+// 复核判不匹配 → 报 "No matching GL pixel format available"（每轮 2 次）。
+std::mutex g_pfd_mu;
+uint8_t g_last_pfd[40] = {0};
+bool g_has_last_pfd = false;
+
+void note_requested_pfd(X64Ctx* c, uint64_t pfd) {
+    if (!pfd || !guest_mapped(pfd, 40)) return;
+    std::lock_guard<std::mutex> lk(g_pfd_mu);
+    std::memcpy(g_last_pfd, guest_ptr_from_ctx(c, pfd), 40);
+    g_has_last_pfd = true;
+}
+
 void shim_GDI32_ChoosePixelFormat(X64Ctx* c) {
     mew_api_hit("ChoosePixelFormat");
     static int logged = 0;
@@ -2623,6 +2638,7 @@ void shim_GDI32_ChoosePixelFormat(X64Ctx* c) {
                      pfd ? (unsigned)mem_read<uint8_t>(c, pfd + 24) : 0u);
         std::fprintf(stderr, "\n");
     }
+    note_requested_pfd(c, pfd);
     ret0(c, (uint64_t)kFakePixelFormat);
 }
 void shim_GDI32_SetPixelFormat(X64Ctx* c) { mew_api_hit("SetPixelFormat"); ret0(c, 1); }
@@ -2637,14 +2653,27 @@ void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
                      (unsigned long long)arg0(c), (int)(uint32_t)arg1(c),
                      (unsigned)(uint32_t)arg2(c), (unsigned long long)p);
     if (p && guest_mapped(p, 40)) {
-        std::memset(guest_ptr_from_ctx(c, p), 0, 40);
-        mem_write<uint16_t>(c, p + 0, 40);          // nSize
-        mem_write<uint16_t>(c, p + 2, 1);           // nVersion
-        mem_write<uint32_t>(c, p + 4, 0x25);        // DRAW_TO_WINDOW|SUPPORT_OPENGL|DOUBLEBUFFER
-        mem_write<uint8_t>(c, p + 8, 0);            // PFD_TYPE_RGBA
-        mem_write<uint8_t>(c, p + 9, 32);           // cColorBits
-        mem_write<uint8_t>(c, p + 23, 24);          // cDepthBits
-        mem_write<uint8_t>(c, p + 24, 8);           // cStencilBits
+        uint8_t tmp[40] = {0};
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lk(g_pfd_mu);
+            have = g_has_last_pfd;
+            if (have) std::memcpy(tmp, g_last_pfd, 40);
+        }
+        if (!have) {
+            // 没 Choose 过：给一份保守的默认（老行为）
+            tmp[0] = 40; tmp[2] = 1;
+            tmp[4] = 0x25;
+            tmp[8] = 0;
+            tmp[9] = 32;
+            tmp[23] = 24;
+            tmp[24] = 8;
+        } else {
+            // 镜像请求：nSize/nVersion 按 Windows 语义硬填，dwFlags 保证含 GL 三位
+            tmp[0] = 40; tmp[2] = 1;
+            tmp[4] = (uint8_t)(tmp[4] | 0x25);
+        }
+        std::memcpy(guest_ptr_from_ctx(c, p), tmp, 40);
     }
     ret0(c, 1);
 }
