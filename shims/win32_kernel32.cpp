@@ -2608,9 +2608,21 @@ uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
 void shim_GDI32_ChoosePixelFormat(X64Ctx* c) {
     mew_api_hit("ChoosePixelFormat");
     static int logged = 0;
-    if (logged++ < 12)
-        std::fprintf(stderr, "[shim] ChoosePixelFormat(hdc=0x%llx pfd=0x%llx) -> %d\n",
-                     (unsigned long long)arg0(c), (unsigned long long)arg1(c), kFakePixelFormat);
+    const uint64_t pfd = arg1(c);
+    if (logged++ < 12) {
+        std::fprintf(stderr,
+                     "[shim] ChoosePixelFormat(hdc=0x%llx pfd=0x%llx) -> %d  "
+                     "req{nSize=%u nVersion=%u flags=0x%x type=%u color=%u depth=%u stencil=%u}",
+                     (unsigned long long)arg0(c), (unsigned long long)pfd, kFakePixelFormat,
+                     pfd ? (unsigned)(uint16_t)mem_read<uint16_t>(c, pfd + 0) : 0u,
+                     pfd ? (unsigned)(uint16_t)mem_read<uint16_t>(c, pfd + 2) : 0u,
+                     pfd ? (unsigned)mem_read<uint32_t>(c, pfd + 4) : 0u,
+                     pfd ? (unsigned)mem_read<uint8_t>(c, pfd + 8) : 0u,
+                     pfd ? (unsigned)mem_read<uint8_t>(c, pfd + 9) : 0u,
+                     pfd ? (unsigned)mem_read<uint8_t>(c, pfd + 23) : 0u,
+                     pfd ? (unsigned)mem_read<uint8_t>(c, pfd + 24) : 0u);
+        std::fprintf(stderr, "\n");
+    }
     ret0(c, (uint64_t)kFakePixelFormat);
 }
 void shim_GDI32_SetPixelFormat(X64Ctx* c) { mew_api_hit("SetPixelFormat"); ret0(c, 1); }
