@@ -632,6 +632,13 @@ void shim_KERNEL32_ReadFile(X64Ctx* c) { mew_api_hit("ReadFile");
     ret0(c, 1);
 }
 
+// ---- guest stdio 观测（只计数，零行为改动）----
+// 背景：GetStdHandle 早就把 0x1001/0x1002 真正绑到了宿主 stream，WriteFile 也真的会
+// fwrite + fflush，可 runner.err 里 guest 自己一个字节都没出现过（[game] 0 行）。
+// 到底是「CRT 根本没写」还是「写了但我们丢了」，光看日志分不开，这里加一组计数器。
+static uint64_t g_wr_stdout = 0, g_wr_stderr = 0, g_wr_file = 0, g_wr_nofile = 0;
+static int g_wr_traced = 0;
+
 void shim_KERNEL32_WriteFile(X64Ctx* c) {
     FILE* f = file_from_handle(arg0(c));
     uint64_t buf = arg1(c);
@@ -643,39 +650,32 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
     static uint64_t stdio_left = 4ull << 20;
     const uint64_t h = arg0(c);
     const bool is_std = (h == 0x1001 || h == 0x1002);
-    // run 46159179391 之后加的纯观测（不改行为）：guest 自己的输出到底有没有走到 WriteFile。
-    // 判据：0x1002 计数为 0 → guest 的 stderr 没经过这里（CRT 的 stdio 句柄不是我们发的
-    // 0x1002，或者它走 WriteConsoleW / WriteFile 到别的句柄）；计数 >0 但日志里没有可读文本
-    // → 是我们的转发路径有问题（句柄没绑上 FILE*，或者缓冲没刷）。
-    static uint64_t wf_std = 0, wf_other = 0;
-    static int wf_traced = 0;
-    if (is_std) ++wf_std; else ++wf_other;
-    // 每 200 次报一次累计：这一轮无论 WriteFile 被调 0 次、60 次还是几万次，
-    // 日志里都一定留得下一行可判读的「std / 其它」总数（_exit 会跳过 atexit，
-    // 不能指望轮末钩子）。
-    if (((wf_std + wf_other) % 200) == 0)
-        std::fprintf(stderr, "[shim] WriteFile 累计: std(0x1001|0x1002)=%llu other=%llu\n",
-                     (unsigned long long)wf_std, (unsigned long long)wf_other);
-    if (wf_traced < 60) {
-        ++wf_traced;
-        char head[129];
-        size_t hn = 0;
-        if (buf && want && guest_mapped(buf, want)) {
-            const size_t lim = want < 64 ? want : 64;
-            for (size_t i = 0; i < lim && hn + 3 < sizeof(head); ++i) {
-                static const char* hex = "0123456789abcdef";
-                const uint8_t v = mem_read<uint8_t>(c, buf + i);
-                head[hn++] = hex[v >> 4];
-                head[hn++] = hex[v & 15];
+    // ---- 观测：前 60 次 WriteFile 连内容和 caller 一起打 ----
+    // file=0 且 is_std 为真 => 句柄表里没有 FILE*，内容会被静默丢掉；
+    // is_std 为真而整轮一次都没打 => CRT 的 stderr 压根没走到 WriteFile（另一条上游问题）。
+    if (h == 0x1001) ++g_wr_stdout;
+    else if (h == 0x1002) ++g_wr_stderr;
+    else if (f) ++g_wr_file;
+    else ++g_wr_nofile;
+    if (g_wr_traced++ < 60) {
+        std::fprintf(stderr, "[wr] h=0x%llx want=%u file=%d caller=0x%llx\n",
+                     (unsigned long long)h, (unsigned)want, f ? 1 : 0,
+                     (unsigned long long)cur_fn_va());
+        if (is_std && f && buf && want && guest_mapped(buf, 1)) {
+            const unsigned n = want < 64u ? want : 64u;
+            // 探针不许让进程崩：整段 n 字节先判映射，再按字节 mem_read。
+            if (guest_mapped(buf, n)) {
+                std::fprintf(stderr, "[wr]   hex=");
+                for (unsigned i = 0; i < n; ++i)
+                    std::fprintf(stderr, "%02x", (unsigned)mem_read<uint8_t>(c, buf + i));
+                std::fprintf(stderr, " |");
+                for (unsigned i = 0; i < n; ++i) {
+                    const unsigned char ch = mem_read<uint8_t>(c, buf + i);
+                    std::fputc((ch >= 32 && ch < 127) ? (int)ch : '.', stderr);
+                }
+                std::fprintf(stderr, "|\n");
             }
         }
-        head[hn] = 0;
-        std::fprintf(stderr, "[shim] WriteFile(h=0x%llx, want=%u) file=%s head=%s\n",
-                     (unsigned long long)h, want, f ? "yes" : "NO-FILE*", head);
-    } else if (wf_traced == 60) {
-        ++wf_traced;
-        std::fprintf(stderr, "[shim] WriteFile 前 60 次明细到此为止（std=0x1001/0x1002 累计 %llu / 其它 %llu）\n",
-                     (unsigned long long)wf_std, (unsigned long long)wf_other);
     }
     if (is_std && stdio_left == 0) {
         if (got_ptr) mem_write<uint32_t>(c, got_ptr, 0);
@@ -692,9 +692,6 @@ void shim_KERNEL32_WriteFile(X64Ctx* c) {
             if (stdio_left == 0) std::fprintf(stderr, "[shim] guest stdio 预算 4 MB 用完，之后丢弃\n");
         }
     }
-    if (is_std && wf_traced <= 60)
-        std::fprintf(stderr, "[shim] WriteFile(h=0x%llx) -> took=%llu\n",
-                     (unsigned long long)h, (unsigned long long)got);
     if (got_ptr) mem_write<uint32_t>(c, got_ptr, (uint32_t)got);
     ret0(c, 1);
 }
@@ -4030,18 +4027,19 @@ void shim_KERNEL32_IsProcessorFeaturePresent(X64Ctx* c) {
 
 void shim_KERNEL32_GetStdHandle(X64Ctx* c) {
     uint32_t n = (uint32_t)arg0(c);
-    // 前 5 次带 caller 打出来：确认 CRT/SDL 拿到的 stderr 就是我们绑的 0x1002。
+    // 观测：CRT 初始化 stdio 时问的是哪个标准句柄、我们回了什么、谁在问。
     static int gsh_traced = 0;
-    const bool gsh_log = (gsh_traced++ < 5);
+    if (gsh_traced++ < 6)
+        std::fprintf(stderr, "[std] GetStdHandle(%d) caller=0x%llx\n",
+                     (int)n, (unsigned long long)cur_fn_va());
     // guest 的 stdout/stderr 以前只返回一个数字句柄、却没进句柄表，于是
     // WriteFile(0x1002,…) 查不到 FILE*，内容被**静默丢弃**。run 46155264395 里
     // SDL 自己的报错和游戏自己的日志就是这么消失的（runner.err 只有我们 fprintf 的行）。
     // 现在把三个标准句柄真正绑到宿主 std stream，guest 的 printf/stderr 直接落进 runner.err，
     // 这是我们第一次能看见 guest 自己说的话（SDL_LOGGING / 引擎日志都走这条路）。
-    if (n == (uint32_t)-10) { HandleTable::instance().set(0x1000, stdin);  if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-10) -> 0x1000 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1000); return; }
-    if (n == (uint32_t)-11) { HandleTable::instance().set(0x1001, stdout); if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-11) -> 0x1001 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1001); return; }
-    if (n == (uint32_t)-12) { HandleTable::instance().set(0x1002, stderr); if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(-12) -> 0x1002 caller=0x%llx\n", (unsigned long long)cur_fn_va()); ret0(c, 0x1002); return; }
-    if (gsh_log) std::fprintf(stderr, "[shim] GetStdHandle(%d) -> -1 caller=0x%llx\n", (int)n, (unsigned long long)cur_fn_va());
+    if (n == (uint32_t)-10) { HandleTable::instance().set(0x1000, stdin);  ret0(c, 0x1000); return; }
+    if (n == (uint32_t)-11) { HandleTable::instance().set(0x1001, stdout); ret0(c, 0x1001); return; }
+    if (n == (uint32_t)-12) { HandleTable::instance().set(0x1002, stderr); ret0(c, 0x1002); return; }
     ret0(c, (uint64_t)-1);
 }
 
@@ -4075,6 +4073,10 @@ void shim_KERNEL32_ExitProcess(X64Ctx* c) {
     //           ④ _exit 直接终止宿主进程，绕开所有静态析构。
     mew_api_counting().store(false, std::memory_order_relaxed);
     usleep(50000);
+    std::fprintf(stderr, "[wr] totals stdout=%llu stderr=%llu file=%llu nofile=%llu\n",
+                 (unsigned long long)g_wr_stdout, (unsigned long long)g_wr_stderr,
+                 (unsigned long long)g_wr_file, (unsigned long long)g_wr_nofile);
+    std::fflush(stderr);
     mew_unimpl_dump("exitprocess");
     std::fflush(stderr);
     _exit((int)(uint32_t)arg0(c));
