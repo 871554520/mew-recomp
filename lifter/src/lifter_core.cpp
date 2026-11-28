@@ -858,6 +858,90 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
                  "    ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << a_i << "].u64[1]; }\n";
         return true;
     }
+    // ==== 为 0x140d62550 补齐的一批 SSE/AVX（run 46090073899 实测该函数整函数被 stub，
+    //      UNIMPL FUNC distinct=1 total=24，missing=vcvtss2sd,vfnmadd132sd,vandpd,
+    //      vpmovsxdq,vshufps,vpcmpeqq,vorpd,vandnpd,vcvtsd2ss）====
+    // ---- VFN*132 形式：dest = -(dest * src2) + src1 ----
+    if (mn == "vfnmadd132sd" || mn == "vfnmadd132ss") {
+        const bool sd = (mn.back() == 'd');
+        const char* FT = sd ? "f64" : "f32";
+        const int s1 = xmmId(ops[1].reg.value);
+        const std::string op2 = is_xmm_reg(ops[2])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[2].reg.value)) + "]." + FT + "[0]")
+            : (sd ? ("g_f64(" + addrExpr(pe, ops[2], next_rip, e) + ")")
+                  : ("g_f32(" + addrExpr(pe, ops[2], next_rip, e) + ")"));
+        e.out << "  { double a_=ctx->xmm[" << dx << "]." << FT << "[0], b_=" << op2 << ";\n"
+                 "    double c_=ctx->xmm[" << s1 << "]." << FT << "[0];\n"
+                 "    ctx->xmm[" << dx << "]." << FT << "[0] = " << (sd ? "" : "(float)")
+              << "std::fma(-a_, b_, c_);\n"
+                 "    ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << s1 << "].u64[1]; }\n";
+        return true;
+    }
+    // ---- VEX 标量转换：只写低 lane，高 64 位来自 merge 源（ops[1]）----
+    if ((mn == "vcvtss2sd" || mn == "vcvtsd2ss") && insn.operand_count >= 3) {
+        const bool ss2sd = (mn == "vcvtss2sd");
+        const std::string src = is_xmm_reg(ops[2])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[2].reg.value)) + "]." +
+               (ss2sd ? "f32" : "f64") + "[0]")
+            : (ss2sd ? ("g_f32(" + addrExpr(pe, ops[2], next_rip, e) + ")")
+                     : ("g_f64(" + addrExpr(pe, ops[2], next_rip, e) + ")"));
+        const int merge = xmmId(ops[1].reg.value);
+        if (ss2sd) e.out << "  ctx->xmm[" << dx << "].f64[0] = (double)" << src << ";\n";
+        else       e.out << "  ctx->xmm[" << dx << "].f32[0] = (float)" << src << ";\n";
+        e.out << "  ctx->xmm[" << dx << "].u64[1] = ctx->xmm[" << merge << "].u64[1];\n";
+        return true;
+    }
+    // ---- VEX 位运算（3 操作数）：vandpd / vorpd / vandnpd ----
+    if ((mn == "vandpd" || mn == "vorpd" || mn == "vandnpd") && insn.operand_count >= 3) {
+        for (int lane = 0; lane < 2; ++lane) {
+            const std::string a = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) +
+                                  "].u64[" + std::to_string(lane) + "]";
+            const std::string b = is_xmm_reg(ops[2])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[2].reg.value)) + "].u64[" + std::to_string(lane) + "]")
+                : ("g_u64(" + addrExpr(pe, ops[2], next_rip, e) + (lane ? " + 8ULL)" : ")"));
+            e.out << "  ctx->xmm[" << dx << "].u64[" << lane << "] = ";
+            if (mn == "vandnpd")     e.out << "(~" << a << ") & " << b;
+            else if (mn == "vandpd") e.out << a << " & " << b;
+            else                     e.out << a << " | " << b;
+            e.out << ";\n";
+        }
+        return true;
+    }
+    // ---- VPMOVSXDQ：低 2 个 dword 符号扩展成 2 个 qword ----
+    if (mn == "vpmovsxdq") {
+        std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<2;++i) ctx->xmm[" << dx
+              << "].u64[i] = (uint64_t)(int64_t)(int32_t)s_.u32[i]; }\n";
+        return true;
+    }
+    // ---- VPcmpeqq：逐 qword 相等 → 全 1/全 0（MSVC 用它做 double == 0 的比较）----
+    if (mn == "vpcmpeqq" && insn.operand_count >= 3) {
+        for (int lane = 0; lane < 2; ++lane) {
+            const std::string a = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) +
+                                  "].u64[" + std::to_string(lane) + "]";
+            const std::string b = is_xmm_reg(ops[2])
+                ? ("ctx->xmm[" + std::to_string(xmmId(ops[2].reg.value)) + "].u64[" + std::to_string(lane) + "]")
+                : ("g_u64(" + addrExpr(pe, ops[2], next_rip, e) + (lane ? " + 8ULL)" : ")"));
+            e.out << "  ctx->xmm[" << dx << "].u64[" << lane << "] = ((" << a << ") == (" << b
+                  << ")) ? ~0ULL : 0ULL;\n";
+        }
+        return true;
+    }
+    // ---- VSHUFPS：4 操作数（dest, src1, src2, imm），立即数在 ops[3] ----
+    if (mn == "vshufps" && insn.operand_count >= 4) {
+        const unsigned imm = (unsigned)ops[3].imm.value.u;
+        const int s1 = xmmId(ops[1].reg.value);
+        const int s2 = xmmId(ops[2].reg.value);
+        e.out << "  { uint32_t t[4];\n";
+        for (int i = 0; i < 4; ++i) {
+            const int sel = (int)((imm >> (i * 2)) & 3u);
+            const int s = (i < 2) ? s1 : s2;
+            e.out << "    t[" << i << "] = ctx->xmm[" << s << "].u32[" << sel << "];\n";
+        }
+        e.out << "    for (int i=0;i<4;++i) ctx->xmm[" << dx << "].u32[i] = t[i]; }\n";
+        return true;
+    }
     // ---- movhpd / movlpd：只动一个 64 位半区（stub_list: movhpd 10 个函数）----
     if (mn == "movhpd" || mn == "movlpd") {
         const bool high = (mn == "movhpd");
