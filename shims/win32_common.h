@@ -83,6 +83,13 @@ public:
         auto it = map_.find(h);
         return it == map_.end() ? nullptr : it->second;
     }
+    // 固定句柄绑定：标准句柄（0x1000/0x1001/0x1002）需要固定编号而不是 auto-number，
+    // 否则 guest 拿到的 0x1002 在表里查不到 FILE*，WriteFile 会静默丢内容。
+    void set(uint64_t h, void* p) {
+        std::lock_guard<std::mutex> lk(mu_);
+        map_[h] = p;
+        if (h >= next_) next_ = h + 1;
+    }
     bool erase(uint64_t h) {
         std::lock_guard<std::mutex> lk(mu_);
         return map_.erase(h) != 0;
