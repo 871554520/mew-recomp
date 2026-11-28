@@ -1143,6 +1143,33 @@ bool is_guest_worker_thread() {
     return false;
 }
 
+// 结束当前 guest 线程的**唯一正确原语**。
+// 背景（run 46159179391）：ExitThread / FreeLibraryAndExitThread 都是
+// __declspec(noreturn)，垫片让它们「返回」以后，客代码必然掉进 MSVC 在 noreturn
+// 调用点后面铺的 int3，运行时回退两帧落回线程入口，接着走进 CRT 的 exit(0)，
+// 于是**一个 worker 线程正常结束就把整个进程收掉了**——主线程根本没机会走到
+// initGraphics。这里必须真的终止线程。
+// 不能直接 pthread_exit：GuestThread 的 finished/exit_code 本来是 guest_thread_main
+// 的职责，跳过它们会让 WaitForSingleObject(该句柄) 永远等不到。
+[[noreturn]] void guest_thread_finish(uint32_t code) {
+    GuestThread* self = nullptr;
+    {
+        const pthread_t me = pthread_self();
+        std::lock_guard<std::mutex> lk(g_thread_mu);
+        for (const auto& kv : g_threads) {
+            if (kv.second && kv.second->started && pthread_equal(kv.second->tid, me)) {
+                self = kv.second;
+                break;
+            }
+        }
+    }
+    if (self) {
+        self->exit_code = code;
+        self->finished = true;
+    }
+    pthread_exit(nullptr);
+}
+
 // ---- 事件：真 condvar，让跨线程信号真的能叫醒等待方 ----
 struct GuestEvent {
     std::mutex mu;
@@ -1586,12 +1613,29 @@ static bool mew_flet_exit() {
 void shim_KERNEL32_FreeLibraryAndExitThread(X64Ctx* c) { mew_api_hit("FreeLibraryAndExitThread");
     const uint32_t code = (uint32_t)arg1(c);
     const bool do_exit = mew_flet_exit();
+    const bool wrk = is_guest_worker_thread();
+    const bool rt = real_threads();
     std::fprintf(stderr, "[shim] FreeLibraryAndExitThread(h=0x%llx code=%u) -> %s\n",
                  (unsigned long long)arg0(c), code, do_exit ? "exit" : "return（默认，保持旧行为）");
+    // [thr] 一行判据（前 20 次）：谁在调、是不是 guest worker、真线程开没开、走了哪条路。
+    // 这三个入口都是 __declspec(noreturn)，ret0 就是违约，客代码必然掉进 MSVC 铺的 int3；
+    // 所以只要日志里出现 ret0(违约)，就一定会配一对 [int3-trap]/[rsp-repair]。
+    static int thr_logged = 0;
+    if (thr_logged++ < 20)
+        std::fprintf(stderr, "[thr] FreeLibraryAndExitThread caller=0x%llx worker=%d real_threads=%d -> %s\n",
+                     (unsigned long long)cur_fn_va(), wrk ? 1 : 0, rt ? 1 : 0,
+                     !do_exit ? "ret0(违约)" : ((rt && wrk) ? "pthread_exit" : "std::exit"));
     std::fflush(stderr);
     if (!do_exit) { ret0(c, 0); return; }
-    if (real_threads() && is_guest_worker_thread())
-        pthread_exit(reinterpret_cast<void*>((uintptr_t)code));
+    if (real_threads() && is_guest_worker_thread()) {
+        // 分支必须打出来：否则「env 没生效」和「谓词为假」在日志里长得一模一样。
+        std::fprintf(stderr, "[shim] FreeLibraryAndExitThread -> guest_thread_finish(%u) [worker=1]\n", code);
+        std::fflush(stderr);
+        guest_thread_finish(code);
+    }
+    std::fprintf(stderr, "[shim] FreeLibraryAndExitThread -> std::exit(%u) [worker=0 real_threads=%d]\n",
+                 code, real_threads() ? 1 : 0);
+    std::fflush(stderr);
     std::exit((int)code);
 }
 
@@ -2114,10 +2158,26 @@ void shim_KERNEL32_GetConsoleOutputCP(X64Ctx* c) { (void)c; ret0(c, 65001); }
 void shim_KERNEL32_InitializeCriticalSectionEx(X64Ctx* c) { shim_KERNEL32_InitializeCriticalSectionAndSpinCount(c); }
 void shim_KERNEL32_ExitThread(X64Ctx* c) {
     std::fprintf(stderr, "[shim] ExitThread(%u)\n", (unsigned)arg0(c));
+    {
+        static int thr_logged = 0;
+        const bool wrk = is_guest_worker_thread();
+        const bool rt = real_threads();
+        if (thr_logged++ < 20)
+            std::fprintf(stderr, "[thr] ExitThread caller=0x%llx worker=%d real_threads=%d -> %s\n",
+                         (unsigned long long)cur_fn_va(), wrk ? 1 : 0, rt ? 1 : 0,
+                         (rt && wrk) ? "pthread_exit" : "std::exit");
+        std::fflush(stderr);
+    }
     // 真线程模式下只有「在 worker 线程里调用」才 pthread_exit；
     // 主线程上仍是老行为（把整个进程带走），避免改变既有路径。
-    if (real_threads() && is_guest_worker_thread())
-        pthread_exit(reinterpret_cast<void*>((uintptr_t)(uint32_t)arg0(c)));
+    if (real_threads() && is_guest_worker_thread()) {
+        std::fprintf(stderr, "[shim] ExitThread -> guest_thread_finish(%u) [worker=1]\n", (unsigned)arg0(c));
+        std::fflush(stderr);
+        guest_thread_finish((uint32_t)arg0(c));
+    }
+    std::fprintf(stderr, "[shim] ExitThread -> std::exit(%u) [worker=0 real_threads=%d]\n",
+                 (unsigned)arg0(c), real_threads() ? 1 : 0);
+    std::fflush(stderr);
     std::exit((int)arg0(c));
 }
 void shim_KERNEL32_AddVectoredExceptionHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
