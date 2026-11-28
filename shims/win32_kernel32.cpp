@@ -3902,13 +3902,10 @@ void shim_KERNEL32_FlsGetValue(X64Ctx* c) {
 void shim_KERNEL32_FlsSetValue(X64Ctx* c) {
     uint32_t i = (uint32_t)arg0(c);
     static int logged = 0;
-    if (logged++ < 20)
-        std::fprintf(stderr, "[shim] FlsSetValue(%u, 0x%llx) caller=0x%llx\n", i,
-                     (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
-    // \u53ea\u6709\u663e\u5f0f\u6253\u5f00 MEW_API_TRACE_ALL=1 \u624d\u9010 API \u6253\u5370\u3002
-    // run 46169415454 \u8bc1\u636e\uff1a\u8fd9\u91cc\u65e0\u6761\u4ef6\u7f6e true\uff0cCRT \u4e00\u8c03 FlsSetValue
-    // \u5c31\u6c38\u4e45\u6253\u5f00\uff0c600 \u79d2\u5199\u51fa 5.04 GB / 82,023,955 \u884c
     // \uff0841M \u8fdb + 41M \u51fa\uff0c\u6bcf\u79d2\u7ea6 6.8 \u4e07\u6b21 API\uff09\uff0c\u628a\u5224\u8bfb\u5168\u6df9\u4e86\u3002
+    // 只有显式打开 MEW_API_TRACE_ALL=1 才逐 API 打印。
+    // run 46169415454 的证据：这里原来无条件置 true，CRT 一调 FlsSetValue 就永久打开，
+    // 600 秒写出 5.04 GB / 82,023,955 行（41M 进 + 41M 出，每秒约 6.8 万次 API），把判读全淹了。
     static const bool api_trace_all = []() {
         const char* e = std::getenv("MEW_API_TRACE_ALL");
         return e && e[0] == '1';
