@@ -393,6 +393,118 @@ inline void pshufb_mem(X64Ctx* c, int d, int s1, uint64_t addr, int bytes) {
     wr_reg(c, d, bytes, o);
 }
 
+// ---- 批次4：VEX 交错 / 置换 / 掩码存取 ----
+// 为什么只做这 5 条：run 282 的 stub_list 逐函数看，ucrt 的 AVX2 叶子函数簇
+// 0x140d1a760..0x140d1b930 十行里，vpmaskmovd 单独出现在 6 行、其中 3 行（a760/a8b0/aad0）
+// 只差它一条；vpermq 独占 b760/b930 两行，vpermd 独占 b850 一行，
+// vpunpcklwd / vpunpcklqdq 各再补一行。五条助记符 = 8 行解锁，是当前性价比最高的一组。
+// 仍然全部按字节读写，128/256 位通用；VEX 128 位写的高半清零由 wr_reg 统一负责。
+
+// vpunpcklwd / vpunpckldq / vpunpcklqdq：每个 128 位 lane 内取两源的「低半」按元素交错。
+// unit 是元素字节数（1/2/4/8），每个 lane 交错 8/unit 个元素，正好填满 16 字节。
+inline void i_punpckl(X64Ctx* c, int d, int s1, int s2, int bytes, int unit) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, s1, bytes, a);
+    rd_reg(c, s2, bytes, b);
+    for (int lane = 0; lane < bytes; lane += 16) {
+        const int n = 8 / unit;
+        for (int k = 0; k < n; ++k) {
+            std::memcpy(o + lane + k * 2 * unit,        a + lane + k * unit, (size_t)unit);
+            std::memcpy(o + lane + k * 2 * unit + unit, b + lane + k * unit, (size_t)unit);
+        }
+    }
+    wr_reg(c, d, bytes, o);
+}
+inline void i_punpckl_mem(X64Ctx* c, int d, int s1, uint64_t addr, int bytes, int unit) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, s1, bytes, a);
+    read_mem(c, addr, bytes, b);
+    for (int lane = 0; lane < bytes; lane += 16) {
+        const int n = 8 / unit;
+        for (int k = 0; k < n; ++k) {
+            std::memcpy(o + lane + k * 2 * unit,        a + lane + k * unit, (size_t)unit);
+            std::memcpy(o + lane + k * 2 * unit + unit, b + lane + k * unit, (size_t)unit);
+        }
+    }
+    wr_reg(c, d, bytes, o);
+}
+
+// vpermq：imm8 里每个 qword 占 2 位（AVX2 256 位）；128 位形态（AVX512VL）只占 1 位。
+inline void i_permq(X64Ctx* c, int d, int s, int imm, int bytes) {
+    uint8_t a[32], o[32];
+    rd_reg(c, s, bytes, a);
+    const int n = bytes / 8;
+    const int bits = (n == 4) ? 2 : 1;
+    const int mask = n - 1;
+    for (int i = 0; i < n; ++i) {
+        const int idx = (imm >> (bits * i)) & mask;
+        std::memcpy(o + i * 8, a + idx * 8, 8);
+    }
+    wr_reg(c, d, bytes, o);
+}
+inline void i_permq_mem(X64Ctx* c, int d, uint64_t addr, int imm, int bytes) {
+    uint8_t a[32], o[32];
+    read_mem(c, addr, bytes, a);
+    const int n = bytes / 8;
+    const int bits = (n == 4) ? 2 : 1;
+    const int mask = n - 1;
+    for (int i = 0; i < n; ++i) {
+        const int idx = (imm >> (bits * i)) & mask;
+        std::memcpy(o + i * 8, a + idx * 8, 8);
+    }
+    wr_reg(c, d, bytes, o);
+}
+
+// vpermd：索引在第一个源（VEX.vvvv），数据在第二个源。
+// SDM 只取索引的低 3 位（128 位形态取低 2 位），高位不影响结果。
+inline void i_permd(X64Ctx* c, int d, int idxreg, int datareg, int bytes) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, idxreg, bytes, a);
+    rd_reg(c, datareg, bytes, b);
+    const int n = bytes / 4;
+    const int mask = n - 1;
+    for (int i = 0; i < n; ++i) {
+        const int k = (int)(a[i * 4] & 0xFF) & mask;
+        std::memcpy(o + i * 4, b + k * 4, 4);
+    }
+    wr_reg(c, d, bytes, o);
+}
+inline void i_permd_mem(X64Ctx* c, int d, int idxreg, uint64_t addr, int bytes) {
+    uint8_t a[32], b[32], o[32];
+    rd_reg(c, idxreg, bytes, a);
+    read_mem(c, addr, bytes, b);
+    const int n = bytes / 4;
+    const int mask = n - 1;
+    for (int i = 0; i < n; ++i) {
+        const int k = (int)(a[i * 4] & 0xFF) & mask;
+        std::memcpy(o + i * 4, b + k * 4, 4);
+    }
+    wr_reg(c, d, bytes, o);
+}
+
+// vpmaskmovd / vpmaskmovq：掩码元素的最高位（不是最低位）决定该 lane 搬不搬。
+// load 形态未选中的 lane 写 0；store 形态未选中的内存字节必须保持原样，
+// 所以要先把目标区间回读进来再按 lane 覆写，不能整段覆盖。
+inline bool mask_bit(const uint8_t* m, int i, int unit) { return (m[i + unit - 1] & 0x80) != 0; }
+inline void i_maskmov_load(X64Ctx* c, int d, int maskreg, uint64_t addr, int bytes, int unit) {
+    uint8_t m[32], v[32], o[32];
+    rd_reg(c, maskreg, bytes, m);
+    read_mem(c, addr, bytes, v);
+    std::memset(o, 0, sizeof(o));
+    for (int i = 0; i + unit <= bytes; i += unit)
+        if (mask_bit(m, i, unit)) std::memcpy(o + i, v + i, (size_t)unit);
+    wr_reg(c, d, bytes, o);
+}
+inline void i_maskmov_store(X64Ctx* c, int maskreg, int srcreg, uint64_t addr, int bytes, int unit) {
+    uint8_t m[32], v[32], cur[32];
+    rd_reg(c, maskreg, bytes, m);
+    rd_reg(c, srcreg, bytes, v);
+    read_mem(c, addr, bytes, cur);
+    for (int i = 0; i + unit <= bytes; i += unit)
+        if (mask_bit(m, i, unit)) std::memcpy(cur + i, v + i, (size_t)unit);
+    write_mem(c, addr, bytes, cur);
+}
+
 inline void zeroupper(X64Ctx* c) { zero_all_hi(c); }
 
 }  // namespace avx
