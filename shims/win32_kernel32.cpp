@@ -735,17 +735,20 @@ void shim_KERNEL32_InitializeCriticalSection(X64Ctx* c) {
 // Windows 的 CRITICAL_SECTION 是可重入的。pthread 的 RECURSIVE 属性在部分构建里
 // 没生效（实测同一 cs=0x1413bb298 二次进入直接堵死），所以这里自己记深度：
 // 只在 0->1 时真正 lock，1->0 时 unlock，中间的重入只加计数。
-std::mutex g_cs_mu;
-std::unordered_map<uint64_t, int> g_cs_depth;
+//
+// ★ 深度必须是**每线程一份**：Windows 的 CRITICAL_SECTION 归属是「当前线程」，
+// pthread_mutex 是非递归的。以前 g_cs_depth 是进程级全局，真线程模式下线程 B
+// 进入 A 已持有的同一个 cs 时看到 d 变成 2 → **根本不 lock 就进了临界区**，
+// 互斥彻底失效。run 46145562592 里 worker 线程在 0x140d77340 把 0x1413bb7f0
+// 那张 128 项分块表读成 0（正常路径不可能为 0：进搜索分支前刚用 jne 判过
+// table[ebx] != 0，且 r8 == ebx），最可能就是这种「假互斥」造成的竞态。
+// 改成 thread_local 后：B 自己的计数是 0->1，会真的去 lock。
+thread_local std::unordered_map<uint64_t, int> g_cs_depth;
 
 void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
     uint64_t cs = arg0(c);
     uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
-    int d = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_cs_mu);
-        d = ++g_cs_depth[cs];
-    }
+    int d = ++g_cs_depth[cs];   // thread_local：只看本线程的重入深度
     static int logged = 0;
     if (logged++ < 40)
         std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
@@ -759,11 +762,8 @@ void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
     uint64_t cs = arg0(c);
     uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
     int d = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_cs_mu);
-        auto it = g_cs_depth.find(cs);
-        if (it != g_cs_depth.end() && it->second > 0) d = --it->second;
-    }
+    auto it = g_cs_depth.find(cs);
+    if (it != g_cs_depth.end() && it->second > 0) d = --it->second;
     static int logged = 0;
     if (logged++ < 40)
         std::fprintf(stderr, "[shim] LeaveCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
