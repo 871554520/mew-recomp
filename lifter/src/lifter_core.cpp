@@ -410,7 +410,7 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
     // 的 `[UNIMPL FUNC] 0x140d1a1b0 missing=pcmpestrm,ptest` + std::out_of_range）。
     // 实测站点：`66 0f 3a 60 36 0c` = pcmpestrm xmm6,[rsi],0x0c（无符号字节 / equal-ordered /
     // 正极性 / **mask 输出**），即「在 16 字节块里找 needle」。
-    if (mn == "ptest" || mn == "pcmpestrm" || mn == "pcmpestri") {
+    if (mn == "ptest" || mn == "pcmpestrm" || mn == "pcmpestri" || mn == "pcmpistri") {
         // 每个实例都包在**自己的花括号**里：同一个函数里可能有 4 条 ptest，
         // 平铺声明临时变量会「重复定义」直接编不过（生成代码里这是硬错误）。
         const std::string t = (mn == "ptest") ? "t_pt_" : "t_pce_";
@@ -1219,6 +1219,32 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         std::string src = sseRead128(pe, ops[1], next_rip, e);
         e.out << "  { XmmReg s_ = " << src << "; for (int i=0;i<4;++i) ctx->xmm[" << dx
               << "].u32[i] = ctx->xmm[" << dx << "].u32[i] * s_.u32[i]; }\n";
+        return true;
+    }
+    // ---- pinsrw / pinsrd / pinsrb：只改 dst 的一个 lane（imm8 选槽，源可以是 xmm/GPR/内存）----
+    if (mn == "pinsrw" || mn == "pinsrd" || mn == "pinsrb") {
+        const unsigned imm = (unsigned)ops[2].imm.value.u;
+        std::string src;
+        if (is_xmm_reg(ops[1])) {
+            const std::string x = "ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "]";
+            src = (mn == "pinsrw") ? ("(uint16_t)" + x + ".u16[0]")
+                : (mn == "pinsrd") ? ("(uint32_t)" + x + ".u32[0]")
+                                   : ("(uint8_t)" + x + ".u8[0]");
+        } else if (is_gpr_reg(ops[1])) {
+            const std::string g = "read_reg(ctx," + std::to_string(gprId(ops[1].reg.value)) + ",4)";
+            src = (mn == "pinsrw") ? ("(uint16_t)" + g)
+                : (mn == "pinsrd") ? ("(uint32_t)" + g)
+                                   : ("(uint8_t)" + g);
+        } else {
+            const std::string a = addrExpr(pe, ops[1], next_rip, e);
+            src = (mn == "pinsrw") ? ("mem_read<uint16_t>(ctx, " + a + ")")
+                : (mn == "pinsrd") ? ("mem_read<uint32_t>(ctx, " + a + ")")
+                                   : ("(uint8_t)mem_read<uint8_t>(ctx, " + a + ")");
+        }
+        const int slot = (int)(imm & ((mn == "pinsrw") ? 7u : (mn == "pinsrd") ? 3u : 15u));
+        e.out << "  ctx->xmm[" << dx << "]."
+              << ((mn == "pinsrw") ? "u16[" : (mn == "pinsrd") ? "u32[" : "u8[")
+              << slot << "] = " << src << ";\n";
         return true;
     }
     // ---- pmulhw / pmulhuw：16 位相乘取高半（signed / unsigned）----
