@@ -93,22 +93,27 @@ jobs:
           curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
           ls -l Mewgenics.exe
 
-      - name: Prepare assets (GPAK header ready, data holes)
+      - name: Prepare assets (real gpak if URL provided, else header + holes)
+        env:
+          # 用户把真包直链存成仓库 secret 后，这一步自动改走下真包；没设就仍是稀疏回退。
+          # 之所以用 secret 而不是硬编码：URL 可能是预签名凭证，不该进仓库也不该进日志。
+          MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
         run: |
-          # resources.gpak 布局（大肥鱼按字节实测 + 本地独立复算一致）：
-          #   [count: u32]                              = 19,979
-          #   [namelen: u16][name: utf8][size: u32] × n  ← 目录表 824,693 B，在**文件开头**
-          #   [data]                                     ← offset 824,693 起，按记录顺序紧密排列
-          #   Σsize = 5,133,791,623，文件总长 = 5,134,616,316
-          # 仓库里只放目录表（assets/gpak-dir.bin，纯名字+长度，**不含任何资产字节**），
-          # 这里 truncate 出一个长度完全正确的稀疏文件：目录表是真的，数据区是 0。
-          # 这样游戏 CreateFileW / GetFileSize 看到 5,134,616,316 B，loader 能解出全部 19,979 条；
-          # 真正读资源内容会拿到 0 —— 那是下一步（真包直链）才需要的。
-          truncate -s 5134616316 resources.gpak
-          dd if=assets/gpak-dir.bin of=resources.gpak conv=notrunc bs=4096
-          ls -l resources.gpak
+          if [ -n "${MEW_ASSET_URL_GPak:-}" ]; then
+            echo "[assets] real resources.gpak from provided URL"
+            curl -fL -C - --retry 5 --retry-delay 3 --retry-connrefused \
+                 -o resources.gpak "$MEW_ASSET_URL_GPak"
+            ls -l resources.gpak
+            python3 -c "import os;n=os.path.getsize('resources.gpak');print('[assets] bytes =',n,'expected 5134616316','OK' if n==5134616316 else 'MISMATCH')"
+            sha256sum resources.gpak | cut -c1-32 || true
+          else
+            echo "[assets] no MEW_ASSET_URL_GPak -> sparse fallback: directory table + zero-filled data"
+            truncate -s 5134616316 resources.gpak
+            dd if=assets/gpak-dir.bin of=resources.gpak conv=notrunc bs=4096
+            ls -l resources.gpak
+          fi
           python3 -c "import struct;f=open('resources.gpak','rb');print('gpak count =',struct.unpack('<I',f.read(4))[0]);f.seek(824693);print('first obj head =',f.read(32))"
-
+          mkdir -p swfs
       - name: Build lifter
         run: |
           mkdir -p generated
