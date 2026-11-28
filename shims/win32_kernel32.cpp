@@ -2605,12 +2605,25 @@ uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
 }
 }  // namespace
 
-void shim_GDI32_ChoosePixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
+void shim_GDI32_ChoosePixelFormat(X64Ctx* c) {
+    mew_api_hit("ChoosePixelFormat");
+    static int logged = 0;
+    if (logged++ < 12)
+        std::fprintf(stderr, "[shim] ChoosePixelFormat(hdc=0x%llx pfd=0x%llx) -> %d\n",
+                     (unsigned long long)arg0(c), (unsigned long long)arg1(c), kFakePixelFormat);
+    ret0(c, (uint64_t)kFakePixelFormat);
+}
 void shim_GDI32_SetPixelFormat(X64Ctx* c) { mew_api_hit("SetPixelFormat"); ret0(c, 1); }
 void shim_GDI32_GetPixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
 // BOOL DescribePixelFormat(HDC, int, UINT nBytes, LPPIXELFORMATDESCRIPTOR)
 void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
     const uint64_t p = arg3(c);
+    mew_api_hit("DescribePixelFormat");
+    static int logged = 0;
+    if (logged++ < 12)
+        std::fprintf(stderr, "[shim] DescribePixelFormat(hdc=0x%llx fmt=%d bytes=%u) buf=0x%llx\n",
+                     (unsigned long long)arg0(c), (int)(uint32_t)arg1(c),
+                     (unsigned)(uint32_t)arg2(c), (unsigned long long)p);
     if (p && guest_mapped(p, 40)) {
         std::memset(guest_ptr_from_ctx(c, p), 0, 40);
         mem_write<uint16_t>(c, p + 0, 40);          // nSize
@@ -2639,8 +2652,15 @@ void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) { mew_api_hit("wglGetProcAddress
 }
 // BOOL wglChoosePixelFormatARB(HDC, const int*, const FLOAT*, UINT, int*, UINT*)
 void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
+    mew_api_hit("wglChoosePixelFormatARB");
     const uint64_t formats = arg4(c);
     const uint64_t nout = arg5(c);
+    static int logged = 0;
+    if (logged++ < 12)
+        std::fprintf(stderr, "[shim] wglChoosePixelFormatARB(hdc=0x%llx attribs=0x%llx n=%u out=0x%llx nout=0x%llx)\n",
+                     (unsigned long long)arg0(c), (unsigned long long)arg1(c),
+                     (unsigned)(uint32_t)arg2(c), (unsigned long long)formats,
+                     (unsigned long long)nout);
     if (formats && guest_mapped(formats, 4)) mem_write<int32_t>(c, formats, kFakePixelFormat);
     if (nout) mem_write<uint32_t>(c, nout, 1);
     ret0(c, 1);
