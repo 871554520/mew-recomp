@@ -1221,6 +1221,90 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
               << "].u32[i] = ctx->xmm[" << dx << "].u32[i] * s_.u32[i]; }\n";
         return true;
     }
+    // ---- pmulhw / pmulhuw：16 位相乘取高半（signed / unsigned）----
+    if (mn == "pmulhw" || mn == "pmulhuw") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<8;++i) {\n";
+        if (mn == "pmulhw")
+            e.out << "      int32_t p_ = (int32_t)(int16_t)d_.u16[i] * (int32_t)(int16_t)s_.u16[i];\n";
+        else
+            e.out << "      uint32_t p_ = (uint32_t)d_.u16[i] * (uint32_t)s_.u16[i];\n";
+        e.out << "      ctx->xmm[" << dx << "].u16[i] = (uint16_t)(((uint32_t)p_) >> 16); } }\n";
+        return true;
+    }
+    // ---- pandn：dest = (~dest) & src（整数版，和 andnps 同义）----
+    if (mn == "pandn") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<2;++i) ctx->xmm[" << dx << "].u64[i] = (~ctx->xmm[" << dx
+              << "].u64[i]) & s_.u64[i]; }\n";
+        return true;
+    }
+    // ---- pcmpeqq / pcmpgtq：逐 qword 相等 / 有符号大于，全 1 或全 0 ----
+    if (mn == "pcmpeqq" || mn == "pcmpgtq") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<2;++i) {\n";
+        if (mn == "pcmpeqq")
+            e.out << "      ctx->xmm[" << dx << "].u64[i] = (d_.u64[i] == s_.u64[i]) ? ~0ULL : 0ULL;\n";
+        else
+            e.out << "      ctx->xmm[" << dx << "].u64[i] = ((int64_t)d_.u64[i] > (int64_t)s_.u64[i]) ? ~0ULL : 0ULL;\n";
+        e.out << "    } }\n";
+        return true;
+    }
+    // ---- packsswb：两组 8 个 word 饱和到 int8（dst 低半在前、src 低半在后）----
+    if (mn == "packsswb") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    for (int i=0;i<8;++i) {\n"
+                 "      int32_t v0_=(int32_t)(int16_t)d_.u16[i];\n"
+                 "      int32_t v1_=(int32_t)(int16_t)s_.u16[i];\n"
+                 "      ctx->xmm[" << dx << "].u8[i]   = (uint8_t)(int8_t)(v0_>127?127:(v0_<-128?-128:v0_));\n"
+                 "      ctx->xmm[" << dx << "].u8[i+8] = (uint8_t)(int8_t)(v1_>127?127:(v1_<-128?-128:v1_));\n"
+                 "    } }\n";
+        return true;
+    }
+    // ---- pmovzx*/pmovsx*：取源低半并零扩展/符号扩展，高位清零 ----
+    if (mn == "pmovzxbd" || mn == "pmovzxbw" || mn == "pmovzxdq" ||
+        mn == "pmovsxbw" || mn == "pmovsxwd" || mn == "pmovsxdq") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg d_ = ctx->xmm[" << dx << "]; XmmReg s_ = " << src << ";\n"
+                 "    ctx->xmm[" << dx << "].u64[0] = 0ULL; ctx->xmm[" << dx << "].u64[1] = 0ULL;\n";
+        if (mn == "pmovzxbw" || mn == "pmovsxbw") {
+            const bool sg = (mn == "pmovsxbw");
+            for (int i = 0; i < 8; ++i)
+                e.out << "    ctx->xmm[" << dx << "].u16[" << i << "] = (uint16_t)"
+                      << (sg ? "(int16_t)(int8_t)" : "(uint16_t)(uint8_t)") << "s_.u8[" << i << "];\n";
+        } else if (mn == "pmovzxbd") {
+            for (int i = 0; i < 4; ++i)
+                e.out << "    ctx->xmm[" << dx << "].u32[" << i << "] = (uint32_t)(uint8_t)s_.u8[" << i << "];\n";
+        } else if (mn == "pmovsxwd") {
+            for (int i = 0; i < 4; ++i)
+                e.out << "    ctx->xmm[" << dx << "].u32[" << i << "] = (uint32_t)(int32_t)(int16_t)s_.u16[" << i << "];\n";
+        } else {   // pmovzxdq / pmovsxdq
+            const bool sg = (mn == "pmovsxdq");
+            for (int i = 0; i < 2; ++i)
+                e.out << "    ctx->xmm[" << dx << "].u64[" << i << "] = (uint64_t)"
+                      << (sg ? "(int64_t)(int32_t)" : "(uint64_t)(uint32_t)") << "s_.u32[" << i << "];\n";
+        }
+        e.out << "  }\n";
+        return true;
+    }
+    // ---- rsqrtss / rcpps：标量开方倒数 / 打包倒数（近似指令，精度够用即可）----
+    if (mn == "rsqrtss") {
+        const std::string src = is_xmm_reg(ops[1])
+            ? ("ctx->xmm[" + std::to_string(xmmId(ops[1].reg.value)) + "].f32[0]")
+            : ("g_f32(" + addrExpr(pe, ops[1], next_rip, e) + ")");
+        e.out << "  ctx->xmm[" << dx << "].f32[0] = 1.0f / std::sqrt(" << src << ");\n";
+        return true;
+    }
+    if (mn == "rcpps") {
+        const std::string src = sseRead128(pe, ops[1], next_rip, e);
+        e.out << "  { XmmReg s_ = " << src << "; for (int i=0;i<4;++i) ctx->xmm[" << dx
+              << "].f32[i] = 1.0f / s_.f32[i]; }\n";
+        return true;
+    }
     // ---- cmpps/cmpss/cmppd/cmpsd：imm8 是谓词（0..7 legacy：eq/lt/le/unord/neq/nlt/nle/ord）----
     // 结果写掩码：单精度 lane 写 0xFFFFFFFF，双精度 lane 写全 1。
     // stub_list 里 cmpps 14 + cmpss 11 个函数只缺这条。
