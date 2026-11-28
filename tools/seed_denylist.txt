@@ -1,0 +1,28 @@
+# 误收种子拒绝表（作用于 mine_hidden_entries.py 生成的 generated/extra_seeds.txt）
+#
+# 用途：某些地址是「挖掘启发式」的假阳性。一旦进 --seeds，lifter 会把一个正常函数
+# 从中间劈成两个，循环回边 / 跳转目标就落进没翻译的洞里，运行期表现为
+#   [FATAL] Unmapped indirect target: 0x... in_fn=0x...
+# CI 在 "Mine hidden entries" 之后按本表逐行剔除（见 .github/workflows/stage3.yml）。
+#
+# 加入条件（必须能复核，别只写结论）：
+#   1) 该地址落在某个真实函数的**中间**（线性反汇编能一路走过去，不是入口）；
+#   2) 该地址进 seeds 后，运行期日志出现 in_fn=该地址 或「回边目标 unmapped」；
+#   3) 剔除后同一轮不再出现该 [FATAL]。
+#
+# 格式：每行一个 0x 前缀十六进制 VA；`#` 开头整行注释。
+#
+# --- 条目 ---
+# 0x1409bcf98：`b8 cd cc cc cc`（mov eax,0xCCCCCCCD，无符号除 10 的魔数）后面
+#   恰好 3 个 cc（0x1409bcf95..0x1409bcf97），紧跟的 0x1409bcf98 是 8 对齐、
+#   又不在任何 .pdata 区间里（0x1409bcf80 是叶子函数，没有 unwind 记录），
+#   于是被「>=3 个 cc 后面 8 对齐 ⇒ 隐藏入口」规则误收。
+#   后果：0x1409bcf80（数字转字符串）被从 `mul r8d` 处劈开，循环回边 0x1409bcf90
+#   无人翻译；收集模式把 rax 置 0，调用点 `sub r8,rax` 算出整栈长度 → bad_alloc。
+#   证据：run 46161030026（head d5346b2cf）
+#     [FATAL] Unmapped indirect target: 0x1409bcf90 (nearest_lo=0x1409bcf80 delta=16) in_fn=0x1409bcf98 hits=1
+#     [rsp-repair] target=0x1409bcf80 caller=0x1409b9970 delta=0 -> 8
+#     [heap] alloc(140006414876103) refused (cursor=2161255728 pool=2560MB) -> NULL
+#     [cxx-eh] #1 type=.?AVbad_alloc@std@@ what="bad allocation"
+#     [shim] ExitProcess(3)   (runner.err 第 182,949 行)
+0x1409bcf98
