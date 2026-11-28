@@ -8,8 +8,6 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <condition_variable>
-#include <chrono>
 #include <unordered_set>
 #include <unordered_map>
 #include <malloc.h>
@@ -17,8 +15,6 @@
 #include <cctype>
 #include <pthread.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -27,9 +23,6 @@
 #include "seh_x64.h"
 
 // ---- 前向声明：动态加载表可能在定义之前引用 ----
-// wglGetProcAddress 要用；**必须放在全局作用域**——放进匿名命名空间会与
-// 文件后段的定义构成两个候选，gcc 报 "call of overloaded ... is ambiguous"。
-uint64_t shim_KERNEL32_LookupSynthetic(const char* name);
 void shim_KERNEL32_FlsAlloc(X64Ctx*);
 void shim_KERNEL32_FlsFree(X64Ctx*);
 void shim_KERNEL32_FlsGetValue(X64Ctx*);
@@ -57,10 +50,6 @@ void shim_KERNEL32_CreateEventW(X64Ctx*);
 void shim_KERNEL32_CreateFileW(X64Ctx*);
 void shim_KERNEL32_CreateFileA(X64Ctx*);
 void shim_KERNEL32_FindFirstFileExW(X64Ctx*);
-// FindFirstFileExW（定义在 455 行附近）要转调 FindFirstFileW，而后者定义在 1100 多行，
-// 所以这里必须先声明 —— 否则 -fsyntax-only 会报 was not declared in this scope
-// （踩过一次：只有 kApis 表那处（2400 多行）的声明，455 行的函数体看不到）。
-void shim_KERNEL32_FindFirstFileW(X64Ctx*);
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx*);
 void shim_KERNEL32_CreateThread(X64Ctx*);
 // steam_api64 三个（定义在文件末尾的强符号，覆盖 shims_auto.cpp 的弱占位）
@@ -282,15 +271,8 @@ void shim_KERNEL32_HeapAlloc(X64Ctx* c) {
     uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x8u) != 0);  // HEAP_ZERO_MEMORY=0x8
     // 返回 0 时把 caller 也打出来：这类请求通常是「路径解析器拿到坏指针后算出的天文数字」，
     // 栈上那一层的 caller 才是要查的对象。
-    // 节流：HeapAlloc 是热路径，以前**每次调用都打**，run 46055985114 里
-    // 0x140d1f7e4 的循环分配了几百万次 → runner.err 涨到 1.88 GB，artifact 没法读。
-    // 前 2000 次全打（初始化现场够用），之后每 10 万次补一行计数，NULL 一律要打。
-    static uint64_t logged = 0;
-    ++logged;
-    if (!g || logged <= 2000 || (logged % 100000) == 0)
-        std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx caller=0x%llx%s [n=%llu]\n",
-                     n, flags, (unsigned long long)g, (unsigned long long)cur_fn_va(),
-                     g ? "" : " (NULL: refused)", (unsigned long long)logged);
+    std::fprintf(stderr, "[shim] HeapAlloc(%zu, flags=0x%x)=0x%llx caller=0x%llx%s\n", n, flags,
+                 (unsigned long long)g, (unsigned long long)cur_fn_va(), g ? "" : " (NULL: refused)");
     ret0(c, g);
 }
 
@@ -425,7 +407,7 @@ void shim_KERNEL32_FreeEnvironmentStringsW(X64Ctx* c) {
 }
 
 // ---------------- 文件 ----------------
-void shim_KERNEL32_CreateFileW(X64Ctx* c) { mew_api_hit("CreateFileW");
+void shim_KERNEL32_CreateFileW(X64Ctx* c) {
     std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
     uint32_t access = (uint32_t)arg1(c);
     const char* mode = (access & 0x40000000u) ? "wb+" : ((access & 0x80000000u) ? "rb" : "rb");
@@ -454,58 +436,28 @@ void shim_KERNEL32_CreateFileA(X64Ctx* c) {
 
 // FindFirstFileExW：现代枚举入口，游戏完全可能只用它。先让它出声，
 // 并把调用环打出来（前 3 次），这样「游戏是否开始找资源」有据可查。
-// FindFirstFileExW 只是 FindFirstFileW 的带 flag 版本；infoLevel 我们一律按
-// FindExInfoStandard 处理（dir/path 直接 stat 就有），所以共用同一套枚举。
-void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) { shim_KERNEL32_FindFirstFileW(c); }
+void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) {
+    const std::string pattern = host_path_from_guest(c, arg0(c));
+    std::fprintf(stderr, "[shim] FindFirstFileExW(\"%s\", info=0x%llx) -> INVALID (stub) caller=0x%llx\n",
+                 pattern.c_str(), (unsigned long long)arg1(c), (unsigned long long)cur_fn_va());
+    static int traced = 0;
+    if (traced++ < 3) call_trace().dump("FindFirstFileExW stub");
+    ret0(c, (uint64_t)-1);
+}
 
 // GetFileAttributesExW：拿不到时返回 FALSE 并置 last error。
 // 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
     const std::string path = find_case_insensitive(host_path_from_guest(c, arg0(c)));
-    const uint64_t out = arg2(c);   // lpFileInformation（第 3 个参数 = r8）
-    // 以前这里只 fopen 判"能不能打开"，**一个字节都没往 lpFileInformation 写**。
-    // MSVC 的 std::filesystem::create_directories 建完目录后正是用
-    // GetFileAttributesExW（不是 GetFileAttributesW）复核：它读 dwFileAttributes，
-    // 拿到 0 就认为「既不是目录也不是文件」，直接抛
-    //   filesystem_error("create_directories: unknown error")
-    // run 上实测就是 `[shim] GetFileAttributesExW("./")=TRUE` 却仍然抛异常 ——
-    // 返回 TRUE 但结构是空的，等于什么都没说。
-    struct stat st;
-    const bool ok = !path.empty() && ::stat(path.c_str(), &st) == 0;
-    const uint32_t attr = ok ? (S_ISDIR(st.st_mode) ? 0x10u : 0x80u) : 0u;
-    if (ok && out) {
-        // WIN32_FILE_ATTRIBUTE_DATA（36 字节，x64）
-        //   +0  dwFileAttributes      DWORD
-        //   +4  ftCreationTime        FILETIME (2 x DWORD)
-        //   +12 ftLastAccessTime      FILETIME
-        //   +20 ftLastWriteTime       FILETIME
-        //   +28 nFileSizeHigh         DWORD
-        //   +32 nFileSizeLow          DWORD
-        // FILETIME 是「1601-01-01 起的 100ns 数」，和 unix time 差 11644473600 秒。
-        const uint64_t ft = ((uint64_t)st.st_mtime + 11644473600ULL) * 10000000ULL;
-        const uint64_t at = ((uint64_t)st.st_atime + 11644473600ULL) * 10000000ULL;
-        const uint64_t sz = (uint64_t)st.st_size;
-        mem_write<uint32_t>(c, out + 0,  attr);
-        mem_write<uint32_t>(c, out + 4,  (uint32_t)(ft & 0xFFFFFFFFu));
-        mem_write<uint32_t>(c, out + 8,  (uint32_t)(ft >> 32));
-        mem_write<uint32_t>(c, out + 12, (uint32_t)(at & 0xFFFFFFFFu));
-        mem_write<uint32_t>(c, out + 16, (uint32_t)(at >> 32));
-        mem_write<uint32_t>(c, out + 20, (uint32_t)(ft & 0xFFFFFFFFu));
-        mem_write<uint32_t>(c, out + 24, (uint32_t)(ft >> 32));
-        mem_write<uint32_t>(c, out + 28, (uint32_t)(sz >> 32));
-        mem_write<uint32_t>(c, out + 32, (uint32_t)(sz & 0xFFFFFFFFu));
-    }
-    static int traced = 0;
-    if (traced++ < 24)
-        std::fprintf(stderr,
-                     "[shim] GetFileAttributesExW(\"%s\")=%s attr=0x%x size=%lld caller=0x%llx\n",
-                     path.c_str(), ok ? "TRUE" : "FALSE", attr,
-                     ok ? (long long)st.st_size : -1LL,
-                     (unsigned long long)cur_fn_va());
+    FILE* f = std::fopen(path.c_str(), "rb");
+    const bool ok = f != nullptr;
+    if (f) std::fclose(f);
+    std::fprintf(stderr, "[shim] GetFileAttributesExW(\"%s\")=%s caller=0x%llx\n",
+                 path.c_str(), ok ? "TRUE" : "FALSE", (unsigned long long)cur_fn_va());
     ret0(c, ok ? 1u : 0u);
 }
 
-void shim_KERNEL32_ReadFile(X64Ctx* c) { mew_api_hit("ReadFile");
+void shim_KERNEL32_ReadFile(X64Ctx* c) {
     FILE* f = file_from_handle(arg0(c));
     uint64_t buf = arg1(c);
     uint32_t want = (uint32_t)arg2(c);
@@ -729,7 +681,7 @@ void shim_USER32_MessageBoxW(X64Ctx* c) {
     std::fprintf(stderr, "[shim] MessageBoxW: %s\n", guest_wstr(c, arg1(c)).c_str());
     ret0(c, 1);
 }
-void shim_USER32_GetSystemMetrics(X64Ctx* c) { mew_api_hit("GetSystemMetrics"); ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
+void shim_USER32_GetSystemMetrics(X64Ctx* c) { ret0(c, (uint32_t)arg0(c) == 0 ? 1920 : 1080); }
 void shim_USER32_GetDesktopWindow(X64Ctx* c) { ret0(c, 1); }
 
 // ---------------- CRT / 时间补充 ----------------
@@ -762,200 +714,14 @@ void shim_KERNEL32_TryEnterCriticalSection(X64Ctx* c) {
     shim_KERNEL32_EnterCriticalSection(c);
     ret0(c, 1);
 }
-// ---------------- 真线程 / 真事件（MEW_REAL_THREADS=1 开启） ----------------
-// 背景（run 46061908947 的实测）：主线程在 0x140d1f7e4 上对镜像内 cv(0x1412f80a0)
-// 反复 INFINITE 等待，而另一条路径在堆上的 cv(0x509355c0) 上反复唤醒 504 次——
-// 两个对象永远不会相遇。根因是 CreateThread 一直是假句柄（ret0 0x1002），
-// 没有任何 worker 线程能去满足那个等待。
-// 这里按「每线程一份 X64Ctx」实现：4 MB 独立栈 + 4 KB 伪 TEB（gs:[0x30]=Self），
-// 线程体 push 哨兵 0 后 dispatch_indirect(lpStartAddress)。
-// 默认关闭（MEW_REAL_THREADS 未设时行为与以前完全一致），便于灰度与回归对照。
-namespace {
-bool real_threads() {
-    static bool on = [] {
-        const char* e = std::getenv("MEW_REAL_THREADS");
-        return e && e[0] == '1';
-    }();
-    return on;
-}
-
-struct GuestThread {
-    X64Ctx   ctx{};
-    uint64_t entry = 0, param = 0;
-    pthread_t tid{};
-    bool     started = false, finished = false, joined = false;
-    uint32_t exit_code = 0;
-};
-
-std::mutex g_thread_mu;
-std::unordered_map<uint64_t, GuestThread*> g_threads;
-uint64_t g_next_thread_handle = 0x2001;
-
-// 等价的 init_guest_thread_ctx（垫片侧只有 mem_bias，没有 GuestImage）
-bool init_thread_ctx(X64Ctx* ctx, uint64_t mem_bias) {
-    constexpr size_t kStack = 4 * 1024 * 1024;
-    void* stack = mmap(nullptr, kStack, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (stack == MAP_FAILED) return false;
-    void* teb = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (teb == MAP_FAILED) return false;
-    std::memset(ctx, 0, sizeof(*ctx));
-    std::memset(teb, 0, 4096);
-    ctx->mem_bias = mem_bias;
-    const uint64_t host_top = ((uint64_t)(uintptr_t)stack + kStack - 0x100) & ~0xFULL;
-    ctx->rsp = (uint64_t)((int64_t)host_top - (int64_t)mem_bias);
-    ctx->gs_base = (uint64_t)((int64_t)(uintptr_t)teb - (int64_t)mem_bias);
-    ctx->fs_base = ctx->gs_base;
-    *reinterpret_cast<uint64_t*>(reinterpret_cast<char*>(teb) + 0x30) = ctx->gs_base;
-    register_guest_range(ctx->gs_base, 4096);
-    register_guest_range((uint64_t)((int64_t)(uintptr_t)stack - (int64_t)mem_bias), kStack);
-    return true;
-}
-
-void* guest_thread_main(void* arg) {
-    GuestThread* t = static_cast<GuestThread*>(arg);
-    cur_ctx_ptr() = &t->ctx;
-    cur_fn_va() = t->entry;
-    // 压哨兵：被调函数的 ret 会弹到 0，lifter 于是直接返回宿主
-    t->ctx.rsp -= 8;
-    mem_write<uint64_t>(&t->ctx, t->ctx.rsp, 0);
-    t->ctx.rcx = t->param;   // lpParameter
-    dispatch_indirect(t->entry, &t->ctx);
-    t->exit_code = (uint32_t)t->ctx.rax;
-    std::lock_guard<std::mutex> lk(g_thread_mu);
-    t->finished = true;
-    return nullptr;
-}
-
-GuestThread* find_thread(uint64_t h) {
-    std::lock_guard<std::mutex> lk(g_thread_mu);
-    auto it = g_threads.find(h);
-    return it == g_threads.end() ? nullptr : it->second;
-}
-
-bool is_guest_worker_thread() {
-    const pthread_t self = pthread_self();
-    std::lock_guard<std::mutex> lk(g_thread_mu);
-    for (const auto& kv : g_threads)
-        if (kv.second && kv.second->started && pthread_equal(kv.second->tid, self)) return true;
-    return false;
-}
-
-// ---- 事件：真 condvar，让跨线程信号真的能叫醒等待方 ----
-struct GuestEvent {
-    std::mutex mu;
-    std::condition_variable cv;
-    bool manual = false;
-    bool signaled = false;
-};
-std::mutex g_event_mu;
-std::unordered_map<uint64_t, GuestEvent*> g_events;
-uint64_t g_next_event_handle = 0x1001;
-
-GuestEvent* find_event(uint64_t h) {
-    std::lock_guard<std::mutex> lk(g_event_mu);
-    auto it = g_events.find(h);
-    return it == g_events.end() ? nullptr : it->second;
-}
-}  // namespace
-
-void shim_KERNEL32_CreateEventW(X64Ctx* c) { mew_api_hit("CreateEventW");
-    if (!real_threads()) { ret0(c, 0x1001); return; }
-    GuestEvent* e = new GuestEvent();
-    e->manual = arg1(c) != 0;              // bManualReset
-    e->signaled = arg2(c) != 0;            // bInitialState
-    uint64_t h;
-    {
-        std::lock_guard<std::mutex> lk(g_event_mu);
-        h = g_next_event_handle++;
-        g_events[h] = e;
-    }
-    ret0(c, h);
-}
-void shim_KERNEL32_CreateEventA(X64Ctx* c) { shim_KERNEL32_CreateEventW(c); }
-
-void shim_KERNEL32_SetEvent(X64Ctx* c) {
-    if (real_threads()) {
-        if (GuestEvent* e = find_event(arg0(c))) {
-            std::lock_guard<std::mutex> lk(e->mu);
-            e->signaled = true;
-            e->cv.notify_all();
-        }
-    }
-    ret0(c, 1);
-}
-void shim_KERNEL32_ResetEvent(X64Ctx* c) {
-    if (real_threads()) {
-        if (GuestEvent* e = find_event(arg0(c))) {
-            std::lock_guard<std::mutex> lk(e->mu);
-            e->signaled = false;
-        }
-    }
-    ret0(c, 1);
-}
-
-void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) { mew_api_hit("WaitForSingleObject");
-    if (!real_threads()) { ret0(c, 0); return; }
-    const uint64_t h = arg0(c);
-    const uint32_t ms = (uint32_t)arg1(c);
-    if (GuestThread* t = find_thread(h)) {          // 线程句柄 -> join
-        if (t->started) {
-            pthread_join(t->tid, nullptr);
-            t->joined = true;
-            t->finished = true;
-        }
-        ret0(c, 0);                                  // WAIT_OBJECT_0
-        return;
-    }
-    if (GuestEvent* e = find_event(h)) {             // 事件句柄 -> 等信号
-        std::unique_lock<std::mutex> lk(e->mu);
-        if (ms == 0xFFFFFFFFu) e->cv.wait(lk, [&] { return e->signaled; });
-        else e->cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return e->signaled; });
-        const bool was = e->signaled;
-        if (was && !e->manual) e->signaled = false;  // auto-reset
-        ret0(c, was ? 0u : 258u);                    // WAIT_OBJECT_0 / WAIT_TIMEOUT
-        return;
-    }
-    ret0(c, 0);
-}
+void shim_KERNEL32_CreateEventW(X64Ctx* c) { ret0(c, 0x1001); }
+void shim_KERNEL32_CreateEventA(X64Ctx* c) { ret0(c, 0x1001); }
+void shim_KERNEL32_SetEvent(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_ResetEvent(X64Ctx* c) { ret0(c, 1); }
+void shim_KERNEL32_WaitForSingleObject(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_WaitForMultipleObjects(X64Ctx* c) { ret0(c, 0); }
-
-void shim_KERNEL32_CreateThread(X64Ctx* c) { mew_api_hit("CreateThread");
-    if (!real_threads()) { ret0(c, 0x1002); return; }
-    const uint64_t entry = arg2(c);                  // lpStartAddress
-    const uint64_t param = arg3(c);                  // lpParameter
-    const uint64_t tid_out = arg5(c);
-    if (!entry) { ret0(c, 0); return; }
-    GuestThread* t = new GuestThread();
-    if (!init_thread_ctx(&t->ctx, c->mem_bias)) { delete t; ret0(c, 0); return; }
-    t->entry = entry;
-    t->param = param;
-    uint64_t h;
-    {
-        std::lock_guard<std::mutex> lk(g_thread_mu);
-        h = g_next_thread_handle++;
-        g_threads[h] = t;
-    }
-    if (pthread_create(&t->tid, nullptr, guest_thread_main, t) != 0) {
-        std::lock_guard<std::mutex> lk(g_thread_mu);
-        g_threads.erase(h);
-        delete t;
-        ret0(c, 0);
-        return;
-    }
-    t->started = true;
-    std::fprintf(stderr, "[thread] CreateThread entry=0x%llx param=0x%llx handle=0x%llx\n",
-                 (unsigned long long)entry, (unsigned long long)param, (unsigned long long)h);
-    if (tid_out) mem_write<uint32_t>(c, tid_out, (uint32_t)h);
-    ret0(c, h);
-}
-void shim_KERNEL32_GetExitCodeThread(X64Ctx* c) {
-    uint32_t code = 0;
-    if (real_threads()) {
-        if (GuestThread* t = find_thread(arg0(c))) code = t->exit_code;
-    }
-    if (arg1(c)) mem_write<uint32_t>(c, arg1(c), code);
-    ret0(c, 1);
-}
+void shim_KERNEL32_CreateThread(X64Ctx* c) { ret0(c, 0x1002); }
+void shim_KERNEL32_GetExitCodeThread(X64Ctx* c) { if (arg1(c)) mem_write<uint32_t>(c, arg1(c), 0); ret0(c, 1); }
 void shim_KERNEL32_SetThreadPriority(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_SwitchToThread(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetCurrentThread(X64Ctx* c) { ret0(c, 1); }
@@ -964,235 +730,36 @@ void shim_KERNEL32_CreateMutexW(X64Ctx* c) { ret0(c, 0x1003); }
 void shim_KERNEL32_ReleaseMutex(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_SetEndOfFile(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetFileAttributesW(X64Ctx* c) {
-    mew_api_hit("GetFileAttributesW");
-    const std::string path = host_path_from_guest(c, arg0(c));
-    struct stat st;
-    if (!path.empty() && ::stat(path.c_str(), &st) == 0) {
-        // 目录必须报 FILE_ATTRIBUTE_DIRECTORY(0x10)：以前只用 fopen 判「能不能打开」，
-        // 目录会被报成 MISSING，于是 create_directories 永远认为目录建不出来。
-        const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
-        // 封顶：create_directories 会反复查同一路径，逐条打会把 runner.err 冲爆
-        // （上一轮真线程轮才 635 KB，这里放开就没边了）。24 条足够看出第一段行为。
-        static int traced = 0;
-        if (traced++ < 24)
-            std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=0x%x\n", path.c_str(), attr);
-        ret0(c, attr);
-        return;
-    }
-    ret0(c, (uint32_t)-1);
+    std::string path = host_path_from_guest(c, arg0(c));
+    FILE* f = std::fopen(path.c_str(), "rb");
+    std::fprintf(stderr, "[shim] GetFileAttributesW(\"%s\")=%s\n", path.c_str(), f ? "FILE" : "MISSING");
+    if (f) std::fclose(f);
+    ret0(c, f ? 0x80 : (uint32_t)-1);
 }
 void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_SetCurrentDirectoryW(X64Ctx* c) { ret0(c, 1); }
-// 逐级 mkdir（含中间目录）。
-// 为什么不能只调一次 ::mkdir：MSVC 的 create_directories 确实自己会递归，但它拆
-// 路径用的是 **Windows 语义**，而我们 host_path_from_guest 把 "C:\Users\x\AppData
-// \Roaming\Mewgenics" 压成了相对路径 "Users/x/AppData/Roaming/Mewgenics"（去盘符
-// + 去前导斜杠 + 挂到 MEW_DATA_DIR 下，而 workflow 里 MEW_DATA_DIR 根本没设，默认
-// "."）。于是第一层 "Users" 在宿主上并不存在，单次 mkdir 直接 ENOENT —— 修好的
-// 垫片又会以同样的 filesystem_error 回到原点。这里自己把中间层补出来。
-// 返回 true 只代表「每一级都建成功或已存在」，最终仍由调用方 stat 复核是不是目录。
-static bool mew_mkpath(const std::string& path) {
-    const bool abs = !path.empty() && path[0] == '/';
-    std::string cur = abs ? "/" : "";
-    size_t i = abs ? 1 : 0;
-    for (;;) {
-        const size_t nxt = path.find('/', i);
-        const std::string seg =
-            path.substr(i, nxt == std::string::npos ? std::string::npos : nxt - i);
-        if (!seg.empty() && seg != ".") {
-            if (seg == "..") {
-                // 不建也不跳：host_path_from_guest 只剥前导点，正常情况下不会产生
-                // ".."；真出现时按字面拼进去交给 mkdir 判失败，比静默走偏安全。
-            } else {
-                if (!cur.empty() && cur.back() != '/') cur += '/';
-                cur += seg;
-                if (::mkdir(cur.c_str(), 0777) != 0 && errno != EEXIST) return false;
-            }
-        }
-        if (nxt == std::string::npos) break;
-        i = nxt + 1;
-    }
-    return !cur.empty();
-}
-
-void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) {
-    mew_api_hit("CreateDirectoryW");
-    const std::string path = host_path_from_guest(c, arg0(c));
-    if (path.empty()) { ret0(c, 0); return; }
-    // 必须真的落盘：std::filesystem::create_directories 建完会**再查一遍**是否
-    // 存在，如果这里只返回 1 而不创建，第二次查询仍是「不存在」，MSVC 就抛
-    //   filesystem_error("create_directories: unknown error")
-    // 实测 run 46079343652 的 [cxx-eh] #2，throw_pc=0x14023e254，
-    // handler=0x140d4014c —— 那就是引擎在建存档/配置目录时炸掉的。
-    const bool built = mew_mkpath(path);
-    // 建完必须**再 stat 复核一次是不是目录**：mkdir 返回 EEXIST 也可能是同名文件，
-    // 那种情况下 create_directories 仍然会判失败，我们这里就得如实报 0。
-    struct stat st;
-    if (built && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-        static int traced = 0;
-        if (traced++ < 24)
-            std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") -> ok\n", path.c_str());
-        ret0(c, 1);
-        return;
-    }
-    std::fprintf(stderr, "[shim] CreateDirectoryW(\"%s\") 失败 errno=%d\n", path.c_str(), errno);
-    ret0(c, 0);
-}
+void shim_KERNEL32_CreateDirectoryW(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_DeleteFileW(X64Ctx* c) { ret0(c, 1); }
-namespace {
-// ---- 目录枚举（FindFirstFileW / FindNextFileW / FindClose）----
-// 为什么必须真实现：这三个以前是「返回 INVALID / FALSE」的静默桩，
-// 引擎扫 saves/、找 *.gpak、列 audio/music/*.ogg 全都会拿到空列表，
-// 然后在上游报一个和真实原因毫无关系的错（和 GetFileAttributesExW 同一个病：
-// 返回值说"失败"，但从来没让它成功过）。
-struct FindState {
-    DIR* dir = nullptr;
-    std::string dirpath;
-    std::string pattern;
-};
-
-// Windows 通配匹配：大小写不敏感，支持 * 和 ?
-static bool win_wild_match(const char* pat, const char* name) {
-    while (*pat) {
-        if (*pat == '*') {
-            ++pat;
-            if (!*pat) return true;
-            for (const char* s = name;; ++s) {
-                if (win_wild_match(pat, s)) return true;
-                if (!*s) return false;
-            }
-        } else if (*pat == '?') {
-            if (!*name) return false;
-            ++pat; ++name;
-        } else {
-            if (!*name) return false;
-            if (std::tolower((unsigned char)*pat) != std::tolower((unsigned char)*name)) return false;
-            ++pat; ++name;
-        }
-    }
-    return *name == 0;
-}
-
-// 填 WIN32_FIND_DATAW（x64 布局，592 字节）
-//   +0   dwFileAttributes      DWORD
-//   +4   ftCreationTime        FILETIME
-//   +12  ftLastAccessTime      FILETIME
-//   +20  ftLastWriteTime       FILETIME
-//   +28  nFileSizeHigh         DWORD
-//   +32  nFileSizeLow          DWORD
-//   +36  dwReserved0           DWORD
-//   +40  dwReserved1           DWORD
-//   +44  cFileName             WCHAR[260]
-//   +564 cAlternateFileName    WCHAR[14]
-static void fill_find_data(X64Ctx* c, uint64_t out, const std::string& name, const struct stat& st) {
-    if (!out) return;
-    const uint32_t attr = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
-    const uint64_t ft = ((uint64_t)st.st_mtime + 11644473600ULL) * 10000000ULL;
-    const uint64_t at = ((uint64_t)st.st_atime + 11644473600ULL) * 10000000ULL;
-    const uint64_t sz = (uint64_t)st.st_size;
-    mem_write<uint32_t>(c, out + 0,  attr);
-    mem_write<uint32_t>(c, out + 4,  (uint32_t)(ft & 0xFFFFFFFFu));
-    mem_write<uint32_t>(c, out + 8,  (uint32_t)(ft >> 32));
-    mem_write<uint32_t>(c, out + 12, (uint32_t)(at & 0xFFFFFFFFu));
-    mem_write<uint32_t>(c, out + 16, (uint32_t)(at >> 32));
-    mem_write<uint32_t>(c, out + 20, (uint32_t)(ft & 0xFFFFFFFFu));
-    mem_write<uint32_t>(c, out + 24, (uint32_t)(ft >> 32));
-    mem_write<uint32_t>(c, out + 28, (uint32_t)(sz >> 32));
-    mem_write<uint32_t>(c, out + 32, (uint32_t)(sz & 0xFFFFFFFFu));
-    mem_write<uint32_t>(c, out + 36, 0);   // dwReserved0（重解析点/符号链接标志）
-    mem_write<uint32_t>(c, out + 40, 0);   // dwReserved1
-    if (guest_mapped(out + 44, 520)) {
-        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, out + 44);
-        std::memset(p, 0, 520);
-        size_t i = 0;
-        for (; i < 259 && i < name.size(); ++i) p[i] = (uint16_t)(unsigned char)name[i];
-        p[i] = 0;
-    }
-    if (guest_mapped(out + 564, 28))
-        std::memset(guest_ptr_from_ctx(c, out + 564), 0, 28);   // 8.3 名留空
-}
-
-// 从当前游标继续找下一个匹配项；成功则填 out 并返回 true
-static bool find_take_next(X64Ctx* c, FindState* fs, uint64_t out) {
-    if (!fs || !fs->dir || !out) return false;
-    for (;;) {
-        struct dirent* de = ::readdir(fs->dir);
-        if (!de) return false;
-        const std::string nm = de->d_name;
-        if (nm == "." || nm == "..") continue;           // Windows 不返回这两个
-        if (!win_wild_match(fs->pattern.c_str(), nm.c_str())) continue;
-        const std::string full = fs->dirpath + "/" + nm;
-        struct stat st;
-        if (::stat(full.c_str(), &st) != 0) continue;
-        fill_find_data(c, out, nm, st);
-        return true;
-    }
-}
-}  // namespace
-
 void shim_KERNEL32_FindFirstFileW(X64Ctx* c) {
-    const std::string full = host_path_from_guest(c, arg0(c));
-    const uint64_t out = arg1(c);
-    // 拆成「目录 + 通配模式」，最后一个 '/' 处切开
-    std::string dir = ".";
-    std::string pat = "*";
-    const size_t slash = full.find_last_of('/');
-    if (slash != std::string::npos) {
-        dir = full.substr(0, slash);
-        pat = full.substr(slash + 1);
-        if (dir.empty()) dir = "/";
-    } else if (!full.empty()) {
-        pat = full;   // 没有目录部分，例如 "*.gpak"
-    }
-    if (pat.empty()) pat = "*";
-    DIR* d = ::opendir(dir.c_str());
+    // 这原本是个静默返回 INVALID_HANDLE_VALUE 的桩：如果游戏是靠目录枚举
+    // 去找 *.gpak / 资源目录，它会在这里静默失败，日志里连一条痕迹都没有，
+    // 于是「阶段 5 没进展」看起来像「还没走到文件 IO」。
+    // 先让它出声（pattern 与调用环），再决定要不要真实现枚举。
+    const std::string pattern = host_path_from_guest(c, arg0(c));
+    if (!pattern.empty())
+        std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> INVALID (stub) caller=0x%llx\n",
+                     pattern.c_str(), (unsigned long long)cur_fn_va());
     static int traced = 0;
-    if (!d) {
-        const int e = errno;
-        if (traced++ < 16)
-            std::fprintf(stderr,
-                         "[shim] FindFirstFileW(\"%s\") dir=\"%s\" pat=\"%s\" -> INVALID (opendir errno=%d)\n",
-                         full.c_str(), dir.c_str(), pat.c_str(), e);
-        ret0(c, (uint64_t)-1);
-        return;
-    }
-    FindState* fs = new FindState();
-    fs->dir = d;
-    fs->dirpath = dir;
-    fs->pattern = pat;
-    if (!find_take_next(c, fs, out)) {
-        ::closedir(d);
-        delete fs;
-        if (traced++ < 16)
-            std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> INVALID (\"%s\" 里没有匹配 \"%s\")\n",
-                         full.c_str(), dir.c_str(), pat.c_str());
-        ret0(c, (uint64_t)-1);
-        return;
-    }
-    const uint64_t h = HandleTable::instance().add(fs);
-    if (traced++ < 16)
-        std::fprintf(stderr, "[shim] FindFirstFileW(\"%s\") -> h=0x%llx caller=0x%llx\n",
-                     full.c_str(), (unsigned long long)h, (unsigned long long)cur_fn_va());
-    ret0(c, h);
+    if (traced++ < 3) call_trace().dump("FindFirstFileW stub");
+    ret0(c, (uint64_t)-1);
 }
 
 void shim_KERNEL32_FindNextFileW(X64Ctx* c) {
-    FindState* fs = (FindState*)(uintptr_t)HandleTable::instance().get(arg0(c));
-    const uint64_t out = arg1(c);
-    const bool ok = find_take_next(c, fs, out);
-    ret0(c, ok ? 1u : 0u);
+    std::fprintf(stderr, "[shim] FindNextFileW(h=0x%llx) -> FALSE (stub) caller=0x%llx\n",
+                 (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
+    ret0(c, 0);
 }
-void shim_KERNEL32_FindClose(X64Ctx* c) {
-    const uint64_t h = arg0(c);
-    FindState* fs = (FindState*)(uintptr_t)HandleTable::instance().get(h);
-    if (fs) {
-        if (fs->dir) ::closedir(fs->dir);
-        fs->dir = nullptr;
-        delete fs;
-        HandleTable::instance().erase(h);
-    }
-    ret0(c, 1);
-}
+void shim_KERNEL32_FindClose(X64Ctx* c) { ret0(c, 1); }
 void shim_KERNEL32_GetFileSize(X64Ctx* c) {
     FILE* f = file_from_handle(arg0(c));
     long cur = f ? ftell(f) : 0; long size = 0;
@@ -1251,6 +818,19 @@ CvSlot* cv_for(uint64_t addr, bool create) {
 }
 }  // namespace
 
+// InitializeSRWLock / InitializeConditionVariable：Windows 语义是「把对象写成初始状态」。
+// 这两位以前没有实现，CRT/SDL 的 GetProcAddress("InitializeSRWLock") 拿到 0，
+// 后面调用空指针 -> run 46084959550 的 SIGSEGV(fault=-1)。
+// 我们的锁在首次 srw_for / cv_for 时懒创建，这里直接建好并返回。
+void shim_KERNEL32_InitializeSRWLock(X64Ctx* c) {
+    (void)srw_for(arg0(c), true);
+    ret0(c, 0);
+}
+void shim_KERNEL32_InitializeConditionVariable(X64Ctx* c) {
+    (void)cv_for(arg0(c), true);
+    ret0(c, 0);
+}
+
 void shim_KERNEL32_AcquireSRWLockExclusive(X64Ctx* c) {
     SrwSlot* s = srw_for(arg0(c), true);
     if (s) pthread_rwlock_wrlock(&s->rw);
@@ -1294,7 +874,7 @@ void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
 // SleepConditionVariableSRW：释放 srw → 等条件 → 重新加锁。
 // pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
 // 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
-void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepConditionVariableSRW");
+void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) {
     // **单线程模拟：没有别的线程会来 Wake，真等就是死锁。**
     // run 46023439342 的卡死（0x140d1f7e4，rsp 30 分钟不动）就是这条：
     // 原来这里走 pthread_cond_wait(INFINITE)，没人 signal，永远不返回。
@@ -1306,48 +886,21 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     // （run 46047307348 的 [cxx-eh] #1）。单线程模拟下没人会 signal，正确做法是
     // 「假装已被唤醒」——返回 TRUE，让等待方继续走，而不是抛异常把 main 打死。
     const uint64_t ret = (ms == 0xFFFFFFFFu) ? 1ull : 0ull;
-    // 带上 caller：run 46055985114 里 485 次 wake 都是同一个 cv(0x509355c0)，
-    // 只有 caller 能区分「SDL 事件队列在转」还是「引擎自己的 job 池在等不存在的线程」。
-    // 参数顺序修正（run 46065844562 的日志误读）：SleepConditionVariableSRW(cv, srw, ms, flags)
-    // 的第一个参数是 rcx=cv、第二个是 rdx=srw。这里一直把 arg1(rdx) 当 cv 打印，
-    // 于是「0x1412f80a0 没人唤醒」是假象——0x1412f80a0 是 SRW 锁，真 cv 是 rcx 那个。
-    // 实测对照：wait 的 rcx=0x1413c62e8，而 _Cnd_signal 打的 wake cv=0x1413c62e8 —— 同一个对象，
-    // 所以那条「两个 cv 永不配对」的结论作废。
-    static int wait_logged = 0;
-    if (wait_logged++ < 20)
-        std::fprintf(stderr, "[cond] wait cv=0x%llx srw=0x%llx ms=%u -> %s(%llu) caller=0x%llx\n",
-                     (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
-                     ret ? "signaled" : "timeout",
-                     (unsigned long long)ret, (unsigned long long)cur_fn_va());
+    std::fprintf(stderr, "[shim] SleepConditionVariableSRW(srw=0x%llx cv=0x%llx ms=%u) -> %s(%llu)\n",
+                 (unsigned long long)arg0(c), (unsigned long long)arg1(c), ms,
+                 ret ? "signaled" : "timeout", (unsigned long long)ret);
     (void)cv_for; (void)srw_for;
     ret0(c, ret);
 }
-// 语义修正（run 46055985114 的实测）：x64 下 WakeConditionVariable /
-// WakeAllConditionVariable 返回 **BOOL**（非 0 = 成功）。以前这里 ret0(c, 0)，
-// 等于每次都告诉调用方「唤醒失败」——建窗到弹窗那 1365 条调用里有 485 条
-// WakeAllConditionVariable（35%），就是被这个 0 引着反复重试。
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_signal(&cv->cv);
-    static int logged = 0;
-    if (logged++ < 20)
-        std::fprintf(stderr, "[cond] wake cv=0x%llx caller=0x%llx\n",
-                     (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
-    ret0(c, 1);
+    ret0(c, 0);
 }
-void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) { mew_api_hit("WakeAllConditionVariable");
+void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
     if (cv) pthread_cond_broadcast(&cv->cv);
-    static int logged = 0;
-    if (logged++ < 20) {
-        std::fprintf(stderr, "[cond] wakeall cv=0x%llx caller=0x%llx\n",
-                     (unsigned long long)arg0(c), (unsigned long long)cur_fn_va());
-        // run 46061908947 实测：WakeAll 504 次、SleepConditionVariableSRW 只有 1 次，
-        // 说明是「没有等待者还反复唤醒」的空转。caller 落在 thunk 区（0x140bdd9c0）
-        // 不可靠，所以前 3 次把调用环尾巴打出来，看真正的函数链。
-        if (logged <= 3) call_trace().dump_tail(8);
-    }
-    ret0(c, 1);   // BOOL：非 0 = 成功（见上）
+    ret0(c, 0);
 }
 
 // InitOnce：0=未完成 1=已完成；INIT_ONCE_INIT_FAILED(0x4) 允许后续重试
@@ -1456,86 +1009,8 @@ void shim_KERNEL32_MulDiv(X64Ctx* c) {
     ret0(c, (uint64_t)(int64_t)v);
 }
 void shim_KERNEL32_AreFileApisANSI(X64Ctx* c) { (void)c; ret0(c, 1); }
-// FormatMessageW/A：以前一律返回 0（"如实失败"），结果 SDL 的错误消息全是空串。
-// 链路是：SDL 的 SetError(0x140c15800) 先 GetLastError() 拿码，再 FormatMessageW 取文本；
-// 我们返回 0 -> 文本为空 -> SDL_GetError() 返回空串 ->
-//   TaskDialog 的内容只剩前缀 `content="Could not create window: "`，
-// 后半截（真正的失败原因）永久丢失。这条空串挡住了好几轮诊断，必须先打通。
-//
-// 注意 GetLastError 本身仍恒返回 0（ERROR_SUCCESS），所以这里能给出的是
-// "no error" 一类文本 —— 那本身就是结论：**失败的 API 没有设过错误码**，
-// 说明失败发生在我们自己的垫片里（它们不设 LastError），不是 Windows 语义的失败。
-static const char* mew_format_windows_error(uint32_t id) {
-    switch (id) {
-        case 0:    return "no error (GetLastError()=0)";
-        case 2:    return "The system cannot find the file specified.";
-        case 3:    return "The system cannot find the path specified.";
-        case 5:    return "Access is denied.";
-        case 6:    return "The handle is invalid.";
-        case 8:    return "Not enough memory resources are available.";
-        case 14:   return "The system cannot find the drive specified.";
-        case 87:   return "The parameter is incorrect.";
-        case 126:  return "The specified module could not be found.";
-        case 127:  return "The specified procedure could not be found.";
-        case 1400: return "Invalid window handle.";
-        case 1407: return "Cannot find window class.";
-        case 1418: return "This hook procedure can only be set globally.";
-        default:   break;
-    }
-    return nullptr;
-}
-
-void shim_KERNEL32_FormatMessageW(X64Ctx* c) {
-    // FormatMessageW(dwFlags, lpSource, dwMessageId, dwLanguageId, lpBuffer, nSize, Arguments)
-    const uint32_t flags = (uint32_t)arg0(c);
-    const uint32_t msgid = (uint32_t)arg2(c);
-    const uint64_t out   = arg4(c);   // 第 5 参：lpBuffer（栈上）
-    const uint32_t cap   = (uint32_t)arg5(c);
-    const bool allocate  = (flags & 0x100u) != 0;   // FORMAT_MESSAGE_ALLOCATE_BUFFER
-    static int traced = 0;
-    if (traced++ < 24)
-        std::fprintf(stderr,
-                     "[shim] FormatMessageW(flags=0x%x id=%u cap=%u alloc=%d) caller=0x%llx\n",
-                     flags, msgid, cap, (int)allocate, (unsigned long long)cur_fn_va());
-
-    // 组一条文本：已知码用系统原文，未知码给 "Unknown error (N)"，
-    // 这样 SDL_GetError() 至少能带出错误码，不再是空串。
-    char text[128];
-    const char* known = mew_format_windows_error(msgid);
-    if (known) std::snprintf(text, sizeof(text), "%s", known);
-    else       std::snprintf(text, sizeof(text), "Unknown error (%u)", msgid);
-    const size_t units = std::strlen(text) + 1;
-
-    if (allocate) {
-        // lpBuffer 是 `WCHAR**`：分配一块 guest 内存，把指针写回 *lpBuffer
-        const uint64_t buf = guest_alloc(c, units * 2);
-        if (!buf) { ret0(c, 0); return; }
-        uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, buf);
-        for (size_t i = 0; i < units; ++i) p[i] = (uint16_t)(unsigned char)text[i];
-        if (out) mem_write<uint64_t>(c, out, buf);
-        ret0(c, (uint64_t)(units - 1));
-        return;
-    }
-    if (!out || cap < units) { ret0(c, 0); return; }
-    uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, out);
-    for (size_t i = 0; i < units; ++i) p[i] = (uint16_t)(unsigned char)text[i];
-    ret0(c, (uint64_t)(units - 1));   // 返回写入的字符数，不含 NUL
-}
-
-void shim_KERNEL32_FormatMessageA(X64Ctx* c) {
-    // ANSI 版：语义同上，只是按 char 写。
-    const uint32_t msgid = (uint32_t)arg2(c);
-    const uint64_t out   = arg4(c);
-    const uint32_t cap   = (uint32_t)arg5(c);
-    char text[128];
-    const char* known = mew_format_windows_error(msgid);
-    if (known) std::snprintf(text, sizeof(text), "%s", known);
-    else       std::snprintf(text, sizeof(text), "Unknown error (%u)", msgid);
-    const size_t n = std::strlen(text) + 1;
-    if (!out || cap < n) { ret0(c, 0); return; }
-    std::memcpy(guest_ptr_from_ctx(c, out), text, n);
-    ret0(c, (uint64_t)(n - 1));
-}
+void shim_KERNEL32_FormatMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }   // 如实失败
+void shim_KERNEL32_FormatMessageA(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx* c) { (void)c; ret0(c, 1); }
@@ -1554,10 +1029,6 @@ void shim_KERNEL32_GetConsoleOutputCP(X64Ctx* c) { (void)c; ret0(c, 65001); }
 void shim_KERNEL32_InitializeCriticalSectionEx(X64Ctx* c) { shim_KERNEL32_InitializeCriticalSectionAndSpinCount(c); }
 void shim_KERNEL32_ExitThread(X64Ctx* c) {
     std::fprintf(stderr, "[shim] ExitThread(%u)\n", (unsigned)arg0(c));
-    // 真线程模式下只有「在 worker 线程里调用」才 pthread_exit；
-    // 主线程上仍是老行为（把整个进程带走），避免改变既有路径。
-    if (real_threads() && is_guest_worker_thread())
-        pthread_exit(reinterpret_cast<void*>((uintptr_t)(uint32_t)arg0(c)));
     std::exit((int)arg0(c));
 }
 void shim_KERNEL32_AddVectoredExceptionHandler(X64Ctx* c) { (void)c; ret0(c, 1); }
@@ -1801,33 +1272,31 @@ void fill_rect(X64Ctx* c, uint64_t dst, int l, int t, int r, int b) {
 }
 }  // namespace
 
-void shim_USER32_CreateWindowExW(X64Ctx* c) { mew_api_hit("CreateWindowExW");
+void shim_USER32_CreateWindowExW(X64Ctx* c) {
     const int w = (int)arg6(c), h = (int)arg7(c);
     if (w > 0) win().w = w;
     if (h > 0) win().h = h;
     win().title = (const char*)guest_ptr_from_ctx(c, arg2(c));
-    // 带 caller：建窗失败时能立刻区分「SDL 在 WIN_CreateWindow 里建的」还是
-    // 「引擎自己走动态表建的」（前者 caller 在 0x140c8xxxx 的 SDL 区，后者在 0x1409bxxxx）。
-    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx caller=0x%llx\n",
+    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx\n",
                  win().w, win().h, win().title ? win().title : "(n/a)",
-                 (unsigned long long)kFakeHwnd, (unsigned long long)cur_fn_va());
+                 (unsigned long long)kFakeHwnd);
     ret0(c, kFakeHwnd);
 }
 void shim_USER32_CreateWindowExA(X64Ctx* c) { shim_USER32_CreateWindowExW(c); }
 void shim_USER32_RegisterClassW(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_RegisterClassExW(X64Ctx* c) { mew_api_hit("RegisterClassExW"); (void)c; ret0(c, 1); }
+void shim_USER32_RegisterClassExW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_RegisterClassA(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_DestroyWindow(X64Ctx* c) { mew_api_hit("DestroyWindow"); (void)c; ret0(c, 1); }
+void shim_USER32_DestroyWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_IsWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
-void shim_USER32_ShowWindow(X64Ctx* c) { mew_api_hit("ShowWindow"); (void)c; ret0(c, 1); }
-void shim_USER32_SetWindowPos(X64Ctx* c) { mew_api_hit("SetWindowPos");
+void shim_USER32_ShowWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowPos(X64Ctx* c) {
     // (hwnd, hWndInsertAfter, x, y, cx, cy, flags)：cx=第 5 个=arg4，cy=第 6 个=arg5
     const int cx = (int)arg4(c), cy = (int)arg5(c);
     if (cx > 0) win().w = cx;
     if (cy > 0) win().h = cy;
     ret0(c, 1);
 }
-void shim_USER32_GetClientRect(X64Ctx* c) { mew_api_hit("GetClientRect");
+void shim_USER32_GetClientRect(X64Ctx* c) {
     fill_rect(c, arg1(c), 0, 0, win().w, win().h);
     ret0(c, 1);
 }
@@ -1835,8 +1304,8 @@ void shim_USER32_GetWindowRect(X64Ctx* c) {
     fill_rect(c, arg1(c), 0, 0, win().w, win().h);
     ret0(c, 1);
 }
-void shim_USER32_GetDC(X64Ctx* c) { mew_api_hit("GetDC"); (void)c; ret0(c, kFakeHdc); }
-void shim_USER32_ReleaseDC(X64Ctx* c) { mew_api_hit("ReleaseDC"); (void)c; ret0(c, 1); }
+void shim_USER32_GetDC(X64Ctx* c) { (void)c; ret0(c, kFakeHdc); }
+void shim_USER32_ReleaseDC(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_GetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_GetActiveWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_SetForegroundWindow(X64Ctx* c) { (void)c; ret0(c, 1); }
@@ -1857,13 +1326,13 @@ void shim_USER32_GetWindowThreadProcessId(X64Ctx* c) {
 void shim_USER32_GetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetWindowTextA(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetWindowTextLengthW(X64Ctx* c) { (void)c; ret0(c, 0); }
-void shim_USER32_SetWindowTextW(X64Ctx* c) { mew_api_hit("SetWindowTextW"); (void)c; ret0(c, 1); }
+void shim_USER32_SetWindowTextW(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_ScreenToClient(X64Ctx* c) { (void)c; ret0(c, 1); }   // 恒等变换
 void shim_USER32_ClientToScreen(X64Ctx* c) { (void)c; ret0(c, 1); }
 
 // ---- 消息循环：有界 ----
 // PeekMessageW/GetMessageW 每调用一次推进一「帧」，跑满 MEW_MAX_FRAMES 后投 WM_QUIT
-void shim_USER32_PeekMessageW(X64Ctx* c) { mew_api_hit("PeekMessageW");
+void shim_USER32_PeekMessageW(X64Ctx* c) {
     if (win().frames < max_frames()) {
         win().frames++;
         fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
@@ -1880,7 +1349,7 @@ void shim_USER32_PeekMessageW(X64Ctx* c) { mew_api_hit("PeekMessageW");
     }
     ret0(c, 0);
 }
-void shim_USER32_GetMessageW(X64Ctx* c) { mew_api_hit("GetMessageW");
+void shim_USER32_GetMessageW(X64Ctx* c) {
     if (win().frames < max_frames()) {
         win().frames++;
         fill_msg(c, arg0(c), (win().frames % 16 == 0) ? WM_TIMER_ : WM_PAINT_);
@@ -1897,7 +1366,7 @@ void shim_USER32_GetMessageW(X64Ctx* c) { mew_api_hit("GetMessageW");
     }
     ret0(c, 0);   // GetMessageW 返回 0 = 收到 WM_QUIT，引擎退出主循环
 }
-void shim_USER32_DispatchMessageW(X64Ctx* c) { mew_api_hit("DispatchMessageW"); (void)c; ret0(c, 0); }
+void shim_USER32_DispatchMessageW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_TranslateMessage(X64Ctx* c) { (void)c; ret0(c, 1); }
 void shim_USER32_DefWindowProcW(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_DefWindowProcA(X64Ctx* c) { (void)c; ret0(c, 0); }
@@ -1919,97 +1388,6 @@ void shim_USER32_MessageBoxA(X64Ctx* c) {
         std::fprintf(stderr, "[shim] MessageBoxA: %s\n",
                      (const char*)guest_ptr_from_ctx(c, arg1(c)));
     ret0(c, 1);
-}
-
-// ---------------- COMCTL32：任务对话框（诊断用） ----------------
-// SDL3 的 SDL_ShowSimpleMessageBox 在 Windows 上**优先**用 TaskDialogIndirect
-// （comctl32 v6，动态 GetProcAddress 取），取不到才回落到自绘的旧消息框
-// （WIN_ShowOldMessageBox：CreateCompatibleDC + 512KB 位图 + 模态循环）。
-// 这个名字以前不在 lookup_api 里，于是 GetProcAddress 返回 0，SDL 走旧路径——
-// run 46047307348 里连续三次 `LoadLibraryW(comctl32) -> GetProcAddress=0
-// -> CreateCompatibleDC -> HeapAlloc(524319) -> SleepConditionVariableSRW(INFINITE)
-// -> ExitProcess(3)`，就是三次「想弹错误框但弹不出来」，正文一条都没进日志。
-//
-// 这里给它一个真垫片：把 TASKDIALOGCONFIG 的标题/正文打出来，然后按「点了第一个按钮」
-// 立刻返回 S_OK。SDL 因此走 SUCCEEDED 分支，不再进旧消息框、也不再阻塞。
-//
-// 布局注意（这条是硬事实，别按自然对齐写）：Windows SDK 的 commctrl.h 里
-// TASKDIALOGCONFIG 被 `#include <pshpack1.h>` 包着（mingw-w64 的 commctrl.h
-// 5168 行 pshpack1 -> 5262 行结构体 -> 5298 行 poppack），SDL3 自己也写了
-// `#pragma pack(push, 1)`。所以 x64 下 cbSize = 0xA0（不是自然对齐的 0xB0），
-// 字段偏移是：+0x1C pszWindowTitle / +0x2C pszMainInstruction / +0x34 pszContent
-// / +0x3C cButtons / +0x64 pszExpandedInformation / +0x84 pszFooter。
-// 0x20/0x30/0x38 是自然对齐的偏移，读出来是指针的高半截 + 图标资源 ID，全是垃圾。
-// 这里按 cbSize 选布局，并对每个指针做 guest_mapped 校验、取不到就换另一种布局再试。
-void shim_COMCTL32_TaskDialogIndirect(X64Ctx* c) {
-    // run 46051381022：rcx 指向的是 UTF-16 "ERROR"，不是 TASKDIALOGCONFIG
-    // （cbSize 读出来 0x520045 = 'E','R'），说明真正 config 不在 rcx。
-    // 所以这里不再假设第一个参数：把 rcx/rdx/r8/r9 四个候选都看一遍，
-    // 谁的前 4 字节是 0xA0（pshpack1）或 0xB0（自然对齐）就当 config；
-    // 同时把每个候选的前 0x40 字节十六进制打出来，一轮定型。
-    const uint64_t cand[4] = { c->rcx, c->rdx, c->r8, c->r9 };
-    const char* names[4] = { "rcx", "rdx", "r8", "r9" };
-    int best = -1;
-    uint64_t cfg = 0;
-    uint32_t cb = 0;
-    bool packed = true;
-    for (int i = 0; i < 4; ++i) {
-        if (!cand[i] || !guest_mapped(cand[i], 4)) continue;
-        const uint32_t v = mem_read<uint32_t>(c, cand[i]);
-        if (v == 0xA0 || v == 0xB0) { best = i; cfg = cand[i]; cb = v; packed = (v == 0xA0); break; }
-    }
-    for (int i = 0; i < 4; ++i) {
-        if (!cand[i] || !guest_mapped(cand[i], 0x40)) {
-            std::fprintf(stderr, "[shim] TaskDialogIndirect cand %s=0x%llx <unmapped>\n",
-                         names[i], (unsigned long long)cand[i]);
-            continue;
-        }
-        std::fprintf(stderr, "[shim] TaskDialogIndirect cand %s=0x%llx:", names[i],
-                     (unsigned long long)cand[i]);
-        for (int k = 0; k < 0x40; k += 8)
-            std::fprintf(stderr, " %016llx",
-                         (unsigned long long)mem_read<uint64_t>(c, cand[i] + (uint64_t)k));
-        std::fprintf(stderr, "\n");
-    }
-    if (best < 0) {
-        // 四个都不像 config：仍然按 rcx 走一遍（可能它真是个小 cbSize 变体）
-        cfg = cand[0];
-        if (cfg && guest_mapped(cfg, 4)) cb = mem_read<uint32_t>(c, cfg);
-        std::fprintf(stderr, "[shim] TaskDialogIndirect 未找到 cbSize=0xA0/0xB0 的候选，退回 rcx\n");
-    }
-    auto rd = [&](uint64_t off) -> uint64_t {
-        if (!cfg || !guest_mapped(cfg + off, 8)) return 0;
-        return mem_read<uint64_t>(c, cfg + off);
-    };
-    auto pick = [&](uint64_t poff, uint64_t noff) -> uint64_t {
-        uint64_t v = packed ? rd(poff) : rd(noff);
-        if (v && guest_mapped(v, 2)) return v;
-        uint64_t w = packed ? rd(noff) : rd(poff);
-        if (w && guest_mapped(w, 2)) return w;
-        return 0;
-    };
-    const uint64_t title = pick(0x1C, 0x20);
-    const uint64_t instr = pick(0x2C, 0x30);
-    const uint64_t content = pick(0x34, 0x38);
-    const uint64_t expanded = pick(0x64, 0x70);
-    const uint64_t footer = pick(0x84, 0x90);
-    uint32_t cbuttons = 0;
-    if (cfg && guest_mapped(cfg + (packed ? 0x3C : 0x40), 4))
-        cbuttons = mem_read<uint32_t>(c, cfg + (packed ? 0x3C : 0x40));
-    std::fprintf(stderr,
-                 "[shim] TaskDialogIndirect picked=%s cbSize=0x%x packed=%d buttons=%u"
-                 " title=\"%s\" content=\"%s\" main=\"%s\" expanded=\"%s\" footer=\"%s\"\n",
-                 (best >= 0 ? names[best] : "rcx(fallback)"), cb, (int)packed, cbuttons,
-                 title ? guest_wstr(c, title).c_str() : "",
-                 content ? guest_wstr(c, content).c_str() : "",
-                 instr ? guest_wstr(c, instr).c_str() : "",
-                 expanded ? guest_wstr(c, expanded).c_str() : "",
-                 footer ? guest_wstr(c, footer).c_str() : "");
-    // IDBUTTONINDEX0(=100)：SDL3 用 nButton-100 反查是第几个按钮。
-    if (arg1(c)) mem_write<int32_t>(c, arg1(c), 100);
-    if (arg2(c)) mem_write<int32_t>(c, arg2(c), 0);
-    if (arg3(c)) mem_write<int32_t>(c, arg3(c), 0);
-    ret0(c, 0);   // S_OK
 }
 
 // ---- 输入：一律「没有按键」 ----
@@ -2058,81 +1436,8 @@ void shim_USER32_LockWorkStation(X64Ctx* c) { (void)c; ret0(c, 1); }
 
 // ---- 显示 / 系统参数 ----
 void shim_USER32_ChangeDisplaySettingsExW(X64Ctx* c) { (void)c; ret0(c, 0); }  // DISP_CHANGE_SUCCESSFUL
-// ---- 显示枚举：必须报告「有一个 1920x1080 的主显示器」 ----
-// 以前 EnumDisplayMonitors / EnumDisplayDevicesW 都直接 ret0，等于「这台机器没有任何显示器」。
-// SDL3 的 WIN_InitModes 虽然恒返回 true（WIN_AddDisplays 找不到显示器也不报错），
-// 但后续 SDL_GetPrimaryDisplay/SDL_GetDisplayBounds 会一路 "Invalid display index"，
-// 引擎摆放窗口时就会失败——这条线不能再留空。
-// 结构偏移按 mingw-w64 wingdi.h：
-//   DEVMODEW: dmSize@68(220) dmFields@72 dmBitsPerPel@168 dmPelsWidth@172
-//             dmPelsHeight@176 dmDisplayFrequency@184，sizeof=220
-//   DISPLAY_DEVICEW: cb@0 DeviceName[32]@4 DeviceString[128]@68 StateFlags@324，sizeof=840
-namespace {
-constexpr uint64_t kFakeMonitor = 0x30001;
-// 逐字符写 UTF-16LE（只处理 ASCII，够表示设备名）
-void put_wascii(X64Ctx* c, uint64_t dst, const char* s, size_t units) {
-    size_t i = 0;
-    for (; s[i] && i + 1 < units; ++i)
-        mem_write<uint16_t>(c, dst + i * 2, (uint16_t)(unsigned char)s[i]);
-    if (i < units) mem_write<uint16_t>(c, dst + i * 2, 0);
-}
-}  // namespace
-
-void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) {
-    const uint32_t idx = (uint32_t)arg1(c);
-    const uint64_t out = arg2(c);
-    if (idx != 0 || !out || !guest_mapped(out, 840)) { ret0(c, 0); return; }
-    std::memset(guest_ptr_from_ctx(c, out), 0, 840);
-    mem_write<uint32_t>(c, out + 0, 840);
-    put_wascii(c, out + 4, "\\\\.\\DISPLAY1", 32);
-    put_wascii(c, out + 68, "Fake Display", 128);
-    mem_write<uint32_t>(c, out + 324, 0x1 | 0x4);   // ATTACHED_TO_DESKTOP | PRIMARY_DEVICE
-    put_wascii(c, out + 328, "MONITOR\\FAKE1", 128);
-    put_wascii(c, out + 584, "\\Registry\\Machine\\System\\Fake", 128);
-    ret0(c, 1);
-}
-
-// BOOL EnumDisplayMonitors(HDC, LPCRECT, MONITORENUMPROC, LPARAM)
-// 合成一次回调：回调是 guest 函数，调用方式与 runner 里 TLS 回调一致——
-// 先在栈上压一个 0 作返回哨兵（lift 出来的 ret 就是 rsp+=8; return），再 dispatch。
-void shim_USER32_EnumDisplayMonitors(X64Ctx* c) { mew_api_hit("EnumDisplayMonitors");
-    const uint64_t cb = arg2(c);
-    const uint64_t data = arg3(c);
-    if (!cb) { ret0(c, 0); return; }
-    static uint64_t rect_va = 0;
-    if (!rect_va) rect_va = guest_alloc(c, 16);
-    if (!rect_va) { ret0(c, 0); return; }
-    fill_rect(c, rect_va, 0, 0, win().w, win().h);
-    const uint64_t saved_rsp = c->rsp;
-    c->rsp -= 8;
-    mem_write<uint64_t>(c, c->rsp, 0);   // 返回哨兵：回到宿主
-    c->rcx = kFakeMonitor;
-    c->rdx = kFakeHdc;
-    c->r8 = rect_va;
-    c->r9 = data;
-    dispatch_indirect(cb, c);
-    c->rsp = saved_rsp;
-    ret0(c, 1);
-}
-
-// BOOL EnumDisplaySettingsW(LPCWSTR, DWORD, DEVMODEW*)
-void shim_USER32_EnumDisplaySettingsW(X64Ctx* c) {
-    const uint32_t mode = (uint32_t)arg1(c);
-    const uint64_t dm = arg2(c);
-    if (!dm || !guest_mapped(dm, 220)) { ret0(c, 0); return; }
-    // ENUM_CURRENT_SETTINGS = 0xFFFFFFFF，ENUM_REGISTRY_SETTINGS = 0xFFFFFFFE；
-    // 只报一个模式，其余索引一律失败（SDL 靠这个判断枚举结束）。
-    if (mode != 0xFFFFFFFFu && mode != 0xFFFFFFFEu) { ret0(c, 0); return; }
-    std::memset(guest_ptr_from_ctx(c, dm), 0, 220);
-    mem_write<uint16_t>(c, dm + 68, 220);                                   // dmSize
-    mem_write<uint32_t>(c, dm + 72, 0x005C0000u);                           // BITS_PER_PEL|PELS_WIDTH|PELS_HEIGHT|DISPLAY_FREQUENCY
-    mem_write<uint32_t>(c, dm + 168, 32);                                   // dmBitsPerPel
-    mem_write<uint32_t>(c, dm + 172, (uint32_t)win().w);                     // dmPelsWidth
-    mem_write<uint32_t>(c, dm + 176, (uint32_t)win().h);                     // dmPelsHeight
-    mem_write<uint32_t>(c, dm + 184, 60);                                   // dmDisplayFrequency
-    ret0(c, 1);
-}
-void shim_USER32_EnumDisplaySettingsExW(X64Ctx* c) { shim_USER32_EnumDisplaySettingsW(c); }
+void shim_USER32_EnumDisplayDevicesW(X64Ctx* c) { (void)c; ret0(c, 0); }
+void shim_USER32_EnumDisplayMonitors(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_MonitorFromWindow(X64Ctx* c) { (void)c; ret0(c, kFakeHwnd); }
 void shim_USER32_GetMonitorInfoW(X64Ctx* c) {
     const uint64_t p = arg1(c);
@@ -2174,429 +1479,6 @@ void shim_USER32_EnumClipboardFormats(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_IsClipboardFormatAvailable(X64Ctx* c) { (void)c; ret0(c, 0); }
 void shim_USER32_GetClipboardSequenceNumber(X64Ctx* c) { (void)c; ret0(c, 0); }
 
-// ---------------- 动态表剩余高频：绘制 / 输入 / 图标 / 注册表 / COM ----------------
-// 这 30 个在引擎动态表里出现、我们此前**完全没有实现**（走 UNIMPL 弱占位，
-// 一律 ret0 = 0）。对 Reg* 这类「0 = ERROR_SUCCESS」的 API 而言，返回 0 且不回填
-// 出参比直接失败更糟（调用方会拿着未初始化的 hKey/value 继续跑），所以这里给真语义。
-void shim_USER32_BeginPaint(X64Ctx* c) {                 // HDC BeginPaint(HWND, LPPAINTSTRUCT)
-    const uint64_t ps = arg1(c);
-    // PAINTSTRUCT(x64)：hdc@0(8) fErase@8(4) rcPaint@12(16) fRestore@28(4)
-    //                    fIncUpdate@32(4) rgbReserved@36(32)  -> sizeof 68，按 8 对齐 72
-    // 早先这里把 fErase 写到了 +32（那是 fIncUpdate），代码复查时纠正。
-    if (ps && guest_mapped(ps, 72)) {
-        std::memset(guest_ptr_from_ctx(c, ps), 0, 72);
-        mem_write<uint64_t>(c, ps + 0, kFakeHdc);        // hdc
-        mem_write<uint32_t>(c, ps + 8, 1);               // fErase = TRUE
-    }
-    ret0(c, kFakeHdc);
-}
-void shim_USER32_EndPaint(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetUpdateRect(X64Ctx* c) {              // BOOL(HWND, LPRECT, BOOL)
-    if (arg1(c)) fill_rect(c, arg1(c), 0, 0, 0, 0);
-    ret0(c, 0);
-}
-void shim_USER32_InvalidateRect(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_ValidateRect(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_FillRect(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetFocus(X64Ctx* c) { ret0(c, kFakeHwnd); }
-void shim_USER32_SetFocus(X64Ctx* c) { ret0(c, kFakeHwnd); }
-void shim_USER32_GetCursorPos(X64Ctx* c) {
-    const uint64_t p = arg0(c);
-    if (p && guest_mapped(p, 8)) { mem_write<int32_t>(c, p, 0); mem_write<int32_t>(c, p + 4, 0); }
-    ret0(c, 1);
-}
-void shim_USER32_SetTimer(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_KillTimer(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetQueueStatus(X64Ctx* c) { ret0(c, 0); }
-void shim_USER32_RegisterRawInputDevices(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetRawInputData(X64Ctx* c) { ret0(c, 0); }
-void shim_USER32_GetRawInputBuffer(X64Ctx* c) { ret0(c, 0); }
-void shim_USER32_LoadIconW(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_CreateIconIndirect(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_DestroyIcon(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_DestroyCursor(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_TrackMouseEvent(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetClassInfoExW(X64Ctx* c) { ret0(c, 0); }   // 0 = 类未注册（SDL 会去注册）
-void shim_USER32_UnregisterClassW(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_UnregisterClassA(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_RegisterClassExA(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_GetPropW(X64Ctx* c) { ret0(c, 0); }
-void shim_USER32_SetPropW(X64Ctx* c) { ret0(c, 1); }
-void shim_USER32_RemovePropW(X64Ctx* c) { ret0(c, 1); }
-// MapVirtualKeyW(uCode, uMapType)：run 46061908947 里被调了 836 次且完全未实现
-// （弱占位一律返回 0）。SDL/引擎在枚举键盘布局时会反复问，全 0 会让它一直扫。
-// 这里按 Win32 语义给最小可用映射：
-//   0=MAPVK_VK_TO_VSC  1=MAPVK_VSC_TO_VK  2=MAPVK_VK_TO_CHAR
-//   3=MAPVK_VSC_TO_VK_EX  4=MAPVK_VK_TO_VSC_EX
-void shim_USER32_MapVirtualKeyW(X64Ctx* c) { mew_api_hit("MapVirtualKeyW");
-    const uint32_t code = (uint32_t)arg0(c);
-    const uint32_t type = (uint32_t)arg1(c);
-    uint32_t out = 0;
-    switch (type) {
-        case 0:   // VK -> VSC
-        case 4:   // VK -> VSC_EX
-            if (code >= 'A' && code <= 'Z') out = 0x1E + (code - 'A');
-            else if (code >= '0' && code <= '9') out = 0x02 + (code - '0');
-            else if (code == 0x20) out = 0x39;   // space
-            else if (code >= 0x70 && code <= 0x87) out = 0x3B + (code - 0x70);  // F1..F24
-            break;
-        case 1:   // VSC -> VK
-        case 3:   // VSC -> VK_EX
-            if (code >= 0x1E && code <= 0x26) out = 'A' + (code - 0x1E);
-            else if (code >= 0x02 && code <= 0x0B) out = '0' + (code - 0x02);
-            else if (code == 0x39) out = 0x20;
-            break;
-        case 2:   // VK -> CHAR
-            if (code >= 0x30 && code <= 0x5A) out = code;   // 数字与大写字母按 ASCII 回
-            else if (code == 0x20) out = ' ';
-            break;
-        default:
-            break;
-    }
-    ret0(c, out);
-}
-void shim_USER32_MapVirtualKeyA(X64Ctx* c) { shim_USER32_MapVirtualKeyW(c); }
-void shim_USER32_GetDoubleClickTime(X64Ctx* c) { ret0(c, 500); }
-void shim_USER32_MonitorFromPoint(X64Ctx* c) { ret0(c, 0x30001); }
-void shim_USER32_SetRectEmpty(X64Ctx* c) {
-    const uint64_t p = arg0(c);
-    if (p) fill_rect(c, p, 0, 0, 0, 0);
-    ret0(c, 1);
-}
-// 注册表：0 是 ERROR_SUCCESS，所以必须回真错误码，别让调用方拿着未初始化的 hKey 继续跑
-void shim_ADVAPI32_RegOpenKeyExW(X64Ctx* c) {
-    if (arg4(c)) mem_write<uint64_t>(c, arg4(c), 0);
-    ret0(c, 2);   // ERROR_FILE_NOT_FOUND
-}
-void shim_ADVAPI32_RegQueryValueExW(X64Ctx* c) { ret0(c, 2); }
-void shim_ADVAPI32_RegCloseKey(X64Ctx* c) { ret0(c, 0); }
-// COM：S_OK；单线程模拟下不需要真初始化
-void shim_OLE32_CoInitializeEx(X64Ctx* c) { ret0(c, 0); }
-void shim_OLE32_OleInitialize(X64Ctx* c) { ret0(c, 0); }
-void shim_OLE32_CoUninitialize(X64Ctx* c) { ret0(c, 0); }
-void shim_OLE32_OleUninitialize(X64Ctx* c) { ret0(c, 0); }
-
-// ---------------- GDI32 像素格式 + OPENGL32 / wgl：假 GL 3.3 上下文 ----------------
-// 依据（run 46055985114 之后）：
-//   * 引擎的动态表里有 ChoosePixelFormat/SetPixelFormat/DescribePixelFormat/
-//     GetPixelFormat/SwapBuffers 这 5 个名字，我们**一个都没实现**；
-//   * 同一张表里还有 27 个 gl*/wgl* 名字（glGetString/glGetIntegerv/glGenTextures/
-//     glTexImage2D/glViewport/wglGetProcAddress/wglGetCurrentDC…），也全没实现；
-//   * ApplicationBase::initGraphics 里写着 "This game requires OpenGL 3.2 or higher"，
-//     所以窗口建起来之后 GL 就是下一关。
-// 这一批按「最小可信」实现：上下文/像素格式一律成功，glGetString 报 3.3，
-// glGenTextures 给真句柄，其余绘制类一律 no-op（不崩、不阻塞，够跑初始化）。
-namespace {
-constexpr uint64_t kFakeHglrc = 0x30001;
-constexpr int32_t  kFakePixelFormat = 1;
-uint32_t g_gl_tex_id = 0;
-
-const char* gl_string_for(uint32_t name) {
-    switch (name) {
-        case 0x1F00: return "MewRecomp";                 // GL_VENDOR
-        case 0x1F01: return "MewRecomp FakeGL";          // GL_RENDERER
-        case 0x1F02: return "3.3.0 MewRecomp";           // GL_VERSION
-        case 0x1F03: return "";                          // GL_EXTENSIONS
-        case 0x8B8C: return "3.30";                      // GL_SHADING_LANGUAGE_VERSION
-        default: return "";
-    }
-}
-
-// 把 ASCII 写进一块新分配的 guest 内存并返回其地址（glGetString 用，调用次数很少）
-uint64_t gl_new_cstr(X64Ctx* c, const char* s) {
-    const size_t n = std::strlen(s) + 1;
-    const uint64_t va = guest_alloc(c, n);
-    if (!va) return 0;
-    for (size_t i = 0; i < n; ++i) mem_write<uint8_t>(c, va + (uint64_t)i, (uint8_t)s[i]);
-    return va;
-}
-}  // namespace
-
-void shim_GDI32_ChoosePixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
-void shim_GDI32_SetPixelFormat(X64Ctx* c) { mew_api_hit("SetPixelFormat"); ret0(c, 1); }
-void shim_GDI32_GetPixelFormat(X64Ctx* c) { ret0(c, (uint64_t)kFakePixelFormat); }
-// BOOL DescribePixelFormat(HDC, int, UINT nBytes, LPPIXELFORMATDESCRIPTOR)
-void shim_GDI32_DescribePixelFormat(X64Ctx* c) {
-    const uint64_t p = arg3(c);
-    if (p && guest_mapped(p, 40)) {
-        std::memset(guest_ptr_from_ctx(c, p), 0, 40);
-        mem_write<uint16_t>(c, p + 0, 40);          // nSize
-        mem_write<uint16_t>(c, p + 2, 1);           // nVersion
-        mem_write<uint32_t>(c, p + 4, 0x25);        // DRAW_TO_WINDOW|SUPPORT_OPENGL|DOUBLEBUFFER
-        mem_write<uint8_t>(c, p + 8, 0);            // PFD_TYPE_RGBA
-        mem_write<uint8_t>(c, p + 9, 32);           // cColorBits
-        mem_write<uint8_t>(c, p + 23, 24);          // cDepthBits
-        mem_write<uint8_t>(c, p + 24, 8);           // cStencilBits
-    }
-    ret0(c, 1);
-}
-void shim_GDI32_SwapBuffers(X64Ctx* c) { ret0(c, 1); }
-
-void shim_OPENGL32_wglCreateContext(X64Ctx* c) { mew_api_hit("wglCreateContext"); ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglCreateContextAttribsARB(X64Ctx* c) { ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglMakeCurrent(X64Ctx* c) { mew_api_hit("wglMakeCurrent"); ret0(c, 1); }
-void shim_OPENGL32_wglDeleteContext(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglGetCurrentContext(X64Ctx* c) { ret0(c, kFakeHglrc); }
-void shim_OPENGL32_wglGetCurrentDC(X64Ctx* c) { ret0(c, kFakeHdc); }
-void shim_OPENGL32_wglSwapBuffers(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglSwapIntervalEXT(X64Ctx* c) { ret0(c, 1); }
-void shim_OPENGL32_wglGetProcAddress(X64Ctx* c) { mew_api_hit("wglGetProcAddress");
-    const char* name = (const char*)guest_ptr_from_ctx(c, arg0(c));
-    ret0(c, (name && name[0]) ? shim_KERNEL32_LookupSynthetic(name) : 0);
-}
-// BOOL wglChoosePixelFormatARB(HDC, const int*, const FLOAT*, UINT, int*, UINT*)
-void shim_OPENGL32_wglChoosePixelFormatARB(X64Ctx* c) {
-    const uint64_t formats = arg4(c);
-    const uint64_t nout = arg5(c);
-    if (formats && guest_mapped(formats, 4)) mem_write<int32_t>(c, formats, kFakePixelFormat);
-    if (nout) mem_write<uint32_t>(c, nout, 1);
-    ret0(c, 1);
-}
-
-void shim_OPENGL32_glGetString(X64Ctx* c) { mew_api_hit("glGetString");
-    // 每个 pname 只分配一次：早先每次调用都 guest_alloc，长跑下来会持续泄漏 guest 堆。
-    static uint64_t cache[6] = {0, 0, 0, 0, 0, 0};
-    const uint32_t nm = (uint32_t)arg0(c);
-    int ix = 5;
-    switch (nm) {
-        case 0x1F00: ix = 0; break;   // GL_VENDOR
-        case 0x1F01: ix = 1; break;   // GL_RENDERER
-        case 0x1F02: ix = 2; break;   // GL_VERSION
-        case 0x1F03: ix = 3; break;   // GL_EXTENSIONS
-        case 0x8B8C: ix = 4; break;   // GL_SHADING_LANGUAGE_VERSION
-        default: ix = 5; break;
-    }
-    if (!cache[ix]) cache[ix] = gl_new_cstr(c, gl_string_for(nm));
-    // 把 pname 和返回内容打出来：initGraphics 里的 "This game requires OpenGL 3.2
-    // or higher" 就在这里判，GL_EXTENSIONS 现在返回空串，引擎只要 strstr 查扩展
-    // 就会失败——到底是查版本还是查扩展，看这几行就知道。
-    static int logged = 0;
-    if (logged++ < 24)
-        std::fprintf(stderr, "[shim] glGetString(0x%04x) -> \"%s\" caller=0x%llx\n",
-                     nm, gl_string_for(nm), (unsigned long long)cur_fn_va());
-    ret0(c, cache[ix]);
-}
-void shim_OPENGL32_glGetIntegerv(X64Ctx* c) { mew_api_hit("glGetIntegerv");
-    const uint32_t pname = (uint32_t)arg0(c);
-    const uint64_t out = arg1(c);
-    if (!out) { ret0(c, 0); return; }
-    int32_t v = 0;
-    switch (pname) {
-        case 0x0D33: v = 16384; break;   // GL_MAX_TEXTURE_SIZE
-        case 0x8872: v = 16; break;      // GL_MAX_TEXTURE_IMAGE_UNITS
-        case 0x8B4D: v = 32; break;      // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
-        case 0x8869: v = 16; break;      // GL_MAX_VERTEX_ATTRIBS
-        case 0x8DFB: v = 1024; break;    // GL_MAX_VERTEX_UNIFORM_VECTORS
-        case 0x8DFD: v = 1024; break;    // GL_MAX_FRAGMENT_UNIFORM_VECTORS
-        case 0x8DFC: v = 32; break;      // GL_MAX_VARYING_VECTORS
-        case 0x0BA2: {                   // GL_VIEWPORT -> 4 ints
-            mem_write<int32_t>(c, out + 0, 0);
-            mem_write<int32_t>(c, out + 4, 0);
-            mem_write<int32_t>(c, out + 8, win().w);
-            mem_write<int32_t>(c, out + 12, win().h);
-            ret0(c, 0);
-            return;
-        }
-        default: v = 0; break;
-    }
-    mem_write<int32_t>(c, out, v);
-    ret0(c, 0);
-}
-void shim_OPENGL32_glGenTextures(X64Ctx* c) {
-    const int32_t n = (int32_t)arg0(c);
-    const uint64_t out = arg1(c);
-    if (out) for (int32_t i = 0; i < n && i < 64; ++i)
-        mem_write<uint32_t>(c, out + (uint64_t)i * 4, ++g_gl_tex_id);
-    ret0(c, 0);
-}
-
-// 其余 GL 入口：绘制态一律 no-op（语义上是「设置成功」，不改任何宿主状态）
-void shim_OPENGL32_glBindTexture(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glBlendFunc(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glClear(X64Ctx* c) { mew_api_hit("glClear"); ret0(c, 0); }
-void shim_OPENGL32_glClearColor(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glColorMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glCopyTexSubImage2D(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDeleteTextures(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDepthMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glDisable(X64Ctx* c) { mew_api_hit("glDisable"); ret0(c, 0); }
-void shim_OPENGL32_glDrawArrays(X64Ctx* c) { mew_api_hit("glDrawArrays"); ret0(c, 0); }
-void shim_OPENGL32_glEnable(X64Ctx* c) { mew_api_hit("glEnable"); ret0(c, 0); }
-void shim_OPENGL32_glLineWidth(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPixelStorei(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPointSize(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glPolygonMode(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glScissor(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilFunc(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilMask(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glStencilOp(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glTexImage2D(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glTexParameteri(X64Ctx* c) { ret0(c, 0); }
-void shim_OPENGL32_glViewport(X64Ctx* c) { ret0(c, 0); }
-
-// ---- 动态表登记的 159 个符号：定义散落在本文件各处，这里统一前置声明 ----
-void shim_GDI32_CreateCompatibleDC(X64Ctx*);
-void shim_GDI32_CreateDCW(X64Ctx*);
-void shim_GDI32_CreateDCA(X64Ctx*);
-void shim_GDI32_CreateFontIndirectW(X64Ctx*);
-void shim_GDI32_DeleteDC(X64Ctx*);
-void shim_GDI32_DeleteObject(X64Ctx*);
-void shim_GDI32_GetDeviceCaps(X64Ctx*);
-void shim_GDI32_GetTextExtentPoint32A(X64Ctx*);
-void shim_GDI32_GetTextMetricsW(X64Ctx*);
-void shim_GDI32_SelectObject(X64Ctx*);
-void shim_KERNEL32_AddVectoredExceptionHandler(X64Ctx*);
-void shim_KERNEL32_AttachConsole(X64Ctx*);
-void shim_KERNEL32_CloseThreadpoolWork(X64Ctx*);
-void shim_KERNEL32_CompareStringA(X64Ctx*);
-void shim_KERNEL32_CompareStringW(X64Ctx*);
-void shim_KERNEL32_CreateDirectoryW(X64Ctx*);
-void shim_KERNEL32_CreateMutexW(X64Ctx*);
-void shim_KERNEL32_CreateSemaphoreW(X64Ctx*);
-void shim_KERNEL32_CreateThreadpoolWork(X64Ctx*);
-void shim_KERNEL32_DeleteFileW(X64Ctx*);
-void shim_KERNEL32_DeviceIoControl(X64Ctx*);
-void shim_KERNEL32_EnumSystemLocalesW(X64Ctx*);
-void shim_KERNEL32_ExitThread(X64Ctx*);
-void shim_KERNEL32_FindClose(X64Ctx*);
-void shim_KERNEL32_FindFirstFileW(X64Ctx*);
-void shim_KERNEL32_FindNextFileW(X64Ctx*);
-void shim_KERNEL32_FormatMessageA(X64Ctx*);
-void shim_KERNEL32_FormatMessageW(X64Ctx*);
-void shim_KERNEL32_FreeLibrary(X64Ctx*);
-void shim_KERNEL32_FreeLibraryWhenCallbackReturns(X64Ctx*);
-void shim_KERNEL32_GetConsoleMode(X64Ctx*);
-void shim_KERNEL32_GetConsoleOutputCP(X64Ctx*);
-void shim_KERNEL32_GetCurrentDirectoryW(X64Ctx*);
-void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx*);
-void shim_KERNEL32_GetExitCodeThread(X64Ctx*);
-void shim_KERNEL32_GetLocaleInfoA(X64Ctx*);
-void shim_KERNEL32_GetLocaleInfoW(X64Ctx*);
-void shim_KERNEL32_GetLogicalDrives(X64Ctx*);
-void shim_KERNEL32_GetModuleFileNameA(X64Ctx*);
-void shim_KERNEL32_GetNativeSystemInfo(X64Ctx*);
-void shim_KERNEL32_GetProcAddress(X64Ctx*);
-void shim_KERNEL32_GetSystemTime(X64Ctx*);
-void shim_KERNEL32_GetTimeZoneInformation(X64Ctx*);
-void shim_KERNEL32_GetUserDefaultLCID(X64Ctx*);
-void shim_KERNEL32_GlobalAlloc(X64Ctx*);
-void shim_KERNEL32_GlobalFree(X64Ctx*);
-void shim_KERNEL32_GlobalLock(X64Ctx*);
-void shim_KERNEL32_GlobalMemoryStatusEx(X64Ctx*);
-void shim_KERNEL32_GlobalSize(X64Ctx*);
-void shim_KERNEL32_GlobalUnlock(X64Ctx*);
-void shim_KERNEL32_InitOnceBeginInitialize(X64Ctx*);
-void shim_KERNEL32_InitOnceComplete(X64Ctx*);
-void shim_KERNEL32_IsWow64Process(X64Ctx*);
-void shim_KERNEL32_LoadLibraryA(X64Ctx*);
-void shim_KERNEL32_LoadLibraryExW(X64Ctx*);
-void shim_KERNEL32_LoadLibraryW(X64Ctx*);
-void shim_KERNEL32_MulDiv(X64Ctx*);
-void shim_KERNEL32_ReadConsoleW(X64Ctx*);
-void shim_KERNEL32_ReleaseSemaphore(X64Ctx*);
-void shim_KERNEL32_RemoveVectoredExceptionHandler(X64Ctx*);
-void shim_KERNEL32_RtlCaptureStackBackTrace(X64Ctx*);
-void shim_KERNEL32_RtlUnwindEx(X64Ctx*);
-void shim_KERNEL32_SetConsoleCtrlHandler(X64Ctx*);
-void shim_KERNEL32_SetEnvironmentVariableA(X64Ctx*);
-void shim_KERNEL32_SetEnvironmentVariableW(X64Ctx*);
-void shim_KERNEL32_SetErrorMode(X64Ctx*);
-void shim_KERNEL32_SetStdHandle(X64Ctx*);
-void shim_KERNEL32_SetThreadExecutionState(X64Ctx*);
-void shim_KERNEL32_SubmitThreadpoolWork(X64Ctx*);
-void shim_KERNEL32_TerminateProcess(X64Ctx*);
-void shim_KERNEL32_WaitForSingleObjectEx(X64Ctx*);
-void shim_KERNEL32_WaitForThreadpoolWorkCallbacks(X64Ctx*);
-void shim_KERNEL32_WriteConsoleW(X64Ctx*);
-void shim_SHELL32_SHGetFolderPathW(X64Ctx*);
-void shim_USER32_AdjustWindowRectEx(X64Ctx*);
-void shim_USER32_CallWindowProcW(X64Ctx*);
-void shim_USER32_ChangeDisplaySettingsExW(X64Ctx*);
-void shim_USER32_ClientToScreen(X64Ctx*);
-void shim_USER32_ClipCursor(X64Ctx*);
-void shim_USER32_CloseClipboard(X64Ctx*);
-void shim_USER32_CreateIconFromResource(X64Ctx*);
-void shim_USER32_CreateWindowExA(X64Ctx*);
-void shim_USER32_CreateWindowExW(X64Ctx*);
-void shim_USER32_DefWindowProcW(X64Ctx*);
-void shim_USER32_DestroyWindow(X64Ctx*);
-void shim_USER32_DialogBoxIndirectParamW(X64Ctx*);
-void shim_USER32_DispatchMessageW(X64Ctx*);
-void shim_USER32_DrawTextW(X64Ctx*);
-void shim_USER32_EmptyClipboard(X64Ctx*);
-void shim_USER32_EnableWindow(X64Ctx*);
-void shim_USER32_EndDialog(X64Ctx*);
-void shim_USER32_EnumClipboardFormats(X64Ctx*);
-void shim_USER32_EnumDisplayDevicesW(X64Ctx*);
-void shim_USER32_EnumDisplayMonitors(X64Ctx*);
-void shim_USER32_EnumDisplaySettingsW(X64Ctx*);
-void shim_USER32_FlashWindowEx(X64Ctx*);
-void shim_USER32_GetAsyncKeyState(X64Ctx*);
-void shim_USER32_GetClientRect(X64Ctx*);
-void shim_USER32_GetClipCursor(X64Ctx*);
-void shim_USER32_GetClipboardData(X64Ctx*);
-void shim_USER32_GetClipboardSequenceNumber(X64Ctx*);
-void shim_USER32_GetDC(X64Ctx*);
-void shim_USER32_GetDesktopWindow(X64Ctx*);
-void shim_USER32_GetDlgItem(X64Ctx*);
-void shim_USER32_GetForegroundWindow(X64Ctx*);
-void shim_USER32_GetKeyState(X64Ctx*);
-void shim_USER32_GetKeyboardLayout(X64Ctx*);
-void shim_USER32_GetKeyboardState(X64Ctx*);
-void shim_USER32_GetMessageExtraInfo(X64Ctx*);
-void shim_USER32_GetMessagePos(X64Ctx*);
-void shim_USER32_GetMessageTime(X64Ctx*);
-void shim_USER32_GetMessageW(X64Ctx*);
-void shim_USER32_GetMonitorInfoW(X64Ctx*);
-void shim_USER32_GetRawInputDeviceInfoA(X64Ctx*);
-void shim_USER32_GetRawInputDeviceList(X64Ctx*);
-void shim_USER32_GetSystemMetrics(X64Ctx*);
-void shim_USER32_GetWindowLongPtrW(X64Ctx*);
-void shim_USER32_GetWindowLongW(X64Ctx*);
-void shim_USER32_GetWindowPlacement(X64Ctx*);
-void shim_USER32_GetWindowRect(X64Ctx*);
-void shim_USER32_GetWindowTextLengthW(X64Ctx*);
-void shim_USER32_GetWindowTextW(X64Ctx*);
-void shim_USER32_GetWindowThreadProcessId(X64Ctx*);
-void shim_USER32_IntersectRect(X64Ctx*);
-void shim_USER32_IsClipboardFormatAvailable(X64Ctx*);
-void shim_USER32_IsWindow(X64Ctx*);
-void shim_USER32_LoadCursorW(X64Ctx*);
-void shim_USER32_MonitorFromWindow(X64Ctx*);
-void shim_USER32_OpenClipboard(X64Ctx*);
-void shim_USER32_PeekMessageW(X64Ctx*);
-void shim_USER32_PostMessageW(X64Ctx*);
-void shim_USER32_PostThreadMessageW(X64Ctx*);
-void shim_USER32_PtInRect(X64Ctx*);
-void shim_USER32_RegisterClassExW(X64Ctx*);
-void shim_USER32_RegisterClassW(X64Ctx*);
-void shim_USER32_RegisterWindowMessageA(X64Ctx*);
-void shim_USER32_ReleaseCapture(X64Ctx*);
-void shim_USER32_ReleaseDC(X64Ctx*);
-void shim_USER32_ScreenToClient(X64Ctx*);
-void shim_USER32_SendMessageA(X64Ctx*);
-void shim_USER32_SendMessageW(X64Ctx*);
-void shim_USER32_SetActiveWindow(X64Ctx*);
-void shim_USER32_SetCapture(X64Ctx*);
-void shim_USER32_SetClipboardData(X64Ctx*);
-void shim_USER32_SetCursor(X64Ctx*);
-void shim_USER32_SetCursorPos(X64Ctx*);
-void shim_USER32_SetForegroundWindow(X64Ctx*);
-void shim_USER32_SetLayeredWindowAttributes(X64Ctx*);
-void shim_USER32_SetParent(X64Ctx*);
-void shim_USER32_SetWindowLongPtrW(X64Ctx*);
-void shim_USER32_SetWindowLongW(X64Ctx*);
-void shim_USER32_SetWindowPos(X64Ctx*);
-void shim_USER32_SetWindowRgn(X64Ctx*);
-void shim_USER32_SetWindowTextW(X64Ctx*);
-void shim_USER32_SetWindowsHookExW(X64Ctx*);
-void shim_USER32_ShowWindow(X64Ctx*);
-void shim_USER32_SystemParametersInfoA(X64Ctx*);
-void shim_USER32_SystemParametersInfoW(X64Ctx*);
-void shim_USER32_ToUnicode(X64Ctx*);
-void shim_USER32_TranslateMessage(X64Ctx*);
-void shim_USER32_UnhookWindowsHookEx(X64Ctx*);
-
 // ---------------- 动态加载：伪造模块句柄 + 合成函数地址 -> 真垫片 ----------------
 namespace {
 
@@ -2604,6 +1486,7 @@ struct DynApi { const char* name; RecompFn fn; };
 
 uint64_t fake_module_handle() { return 0x7FFF00000000ULL; }
 
+uint64_t synth_va_for(const char* name);
 
 // 映射表：引擎/CRT 会 GetProcAddress 的常见入口
 RecompFn lookup_api(const char* name) {
@@ -2639,6 +1522,8 @@ RecompFn lookup_api(const char* name) {
         {"SleepConditionVariableSRW", shim_KERNEL32_SleepConditionVariableSRW},
         {"WakeConditionVariable", shim_KERNEL32_WakeConditionVariable},
         {"WakeAllConditionVariable", shim_KERNEL32_WakeAllConditionVariable},
+        {"InitializeSRWLock", shim_KERNEL32_InitializeSRWLock},
+        {"InitializeConditionVariable", shim_KERNEL32_InitializeConditionVariable},
         {"AcquireSRWLockExclusive", shim_KERNEL32_AcquireSRWLockExclusive},
         {"AcquireSRWLockShared", shim_KERNEL32_AcquireSRWLockShared},
         {"ReleaseSRWLockExclusive", shim_KERNEL32_ReleaseSRWLockExclusive},
@@ -2740,262 +1625,6 @@ RecompFn lookup_api(const char* name) {
         {"IsValidLocale", shim_KERNEL32_IsValidLocale},
         {"WideCharToMultiByte", shim_KERNEL32_WideCharToMultiByte},
         {"MultiByteToWideChar", shim_KERNEL32_MultiByteToWideChar},
-        // 错误弹窗一族：SDL3 的 SDL_ShowSimpleMessageBox 优先走 TaskDialogIndirect，
-        // 取不到才回落 MessageBoxW/A。三个名字都要登记，否则 SDL 只走自绘旧框。
-        // 注意：9cde606 那次提交把这段定义连同登记一起删掉了（基于旧版文件打的补丁），
-        // 这里按原样恢复。
-        {"TaskDialogIndirect", shim_COMCTL32_TaskDialogIndirect},
-        {"MessageBoxA", shim_USER32_MessageBoxA},
-        {"MessageBoxW", shim_USER32_MessageBoxW},
-        // ---- 像素格式 + 假 GL（引擎动态表要的 5 个 GDI32 + 27 个 gl*/wgl*）----
-        {"ChoosePixelFormat", shim_GDI32_ChoosePixelFormat},
-        {"SetPixelFormat", shim_GDI32_SetPixelFormat},
-        {"GetPixelFormat", shim_GDI32_GetPixelFormat},
-        {"DescribePixelFormat", shim_GDI32_DescribePixelFormat},
-        {"SwapBuffers", shim_GDI32_SwapBuffers},
-        {"wglCreateContext", shim_OPENGL32_wglCreateContext},
-        {"wglCreateContextAttribsARB", shim_OPENGL32_wglCreateContextAttribsARB},
-        {"wglMakeCurrent", shim_OPENGL32_wglMakeCurrent},
-        {"wglDeleteContext", shim_OPENGL32_wglDeleteContext},
-        {"wglGetCurrentContext", shim_OPENGL32_wglGetCurrentContext},
-        {"wglGetCurrentDC", shim_OPENGL32_wglGetCurrentDC},
-        {"wglSwapBuffers", shim_OPENGL32_wglSwapBuffers},
-        {"wglSwapIntervalEXT", shim_OPENGL32_wglSwapIntervalEXT},
-        {"wglGetProcAddress", shim_OPENGL32_wglGetProcAddress},
-        {"wglChoosePixelFormatARB", shim_OPENGL32_wglChoosePixelFormatARB},
-        {"glGetString", shim_OPENGL32_glGetString},
-        {"glGetIntegerv", shim_OPENGL32_glGetIntegerv},
-        {"glGenTextures", shim_OPENGL32_glGenTextures},
-        {"glBindTexture", shim_OPENGL32_glBindTexture},
-        {"glBlendFunc", shim_OPENGL32_glBlendFunc},
-        {"glClear", shim_OPENGL32_glClear},
-        {"glClearColor", shim_OPENGL32_glClearColor},
-        {"glColorMask", shim_OPENGL32_glColorMask},
-        {"glCopyTexSubImage2D", shim_OPENGL32_glCopyTexSubImage2D},
-        {"glDeleteTextures", shim_OPENGL32_glDeleteTextures},
-        {"glDepthMask", shim_OPENGL32_glDepthMask},
-        {"glDisable", shim_OPENGL32_glDisable},
-        {"glDrawArrays", shim_OPENGL32_glDrawArrays},
-        {"glEnable", shim_OPENGL32_glEnable},
-        {"glLineWidth", shim_OPENGL32_glLineWidth},
-        {"glPixelStorei", shim_OPENGL32_glPixelStorei},
-        {"glPointSize", shim_OPENGL32_glPointSize},
-        {"glPolygonMode", shim_OPENGL32_glPolygonMode},
-        {"glScissor", shim_OPENGL32_glScissor},
-        {"glStencilFunc", shim_OPENGL32_glStencilFunc},
-        {"glStencilMask", shim_OPENGL32_glStencilMask},
-        {"glStencilOp", shim_OPENGL32_glStencilOp},
-        {"glTexImage2D", shim_OPENGL32_glTexImage2D},
-        {"glTexParameteri", shim_OPENGL32_glTexParameteri},
-        {"glViewport", shim_OPENGL32_glViewport},
-        // ---- 动态表剩余高频：绘制 / 输入 / 图标 / 注册表 / COM ----
-        {"BeginPaint", shim_USER32_BeginPaint},
-        {"EndPaint", shim_USER32_EndPaint},
-        {"GetUpdateRect", shim_USER32_GetUpdateRect},
-        {"InvalidateRect", shim_USER32_InvalidateRect},
-        {"ValidateRect", shim_USER32_ValidateRect},
-        {"FillRect", shim_USER32_FillRect},
-        {"GetFocus", shim_USER32_GetFocus},
-        {"SetFocus", shim_USER32_SetFocus},
-        {"GetCursorPos", shim_USER32_GetCursorPos},
-        {"SetTimer", shim_USER32_SetTimer},
-        {"KillTimer", shim_USER32_KillTimer},
-        {"GetQueueStatus", shim_USER32_GetQueueStatus},
-        {"RegisterRawInputDevices", shim_USER32_RegisterRawInputDevices},
-        {"GetRawInputData", shim_USER32_GetRawInputData},
-        {"GetRawInputBuffer", shim_USER32_GetRawInputBuffer},
-        {"LoadIconW", shim_USER32_LoadIconW},
-        {"CreateIconIndirect", shim_USER32_CreateIconIndirect},
-        {"DestroyIcon", shim_USER32_DestroyIcon},
-        {"DestroyCursor", shim_USER32_DestroyCursor},
-        {"TrackMouseEvent", shim_USER32_TrackMouseEvent},
-        {"GetClassInfoExW", shim_USER32_GetClassInfoExW},
-        {"UnregisterClassW", shim_USER32_UnregisterClassW},
-        {"UnregisterClassA", shim_USER32_UnregisterClassA},
-        {"RegisterClassExA", shim_USER32_RegisterClassExA},
-        {"GetPropW", shim_USER32_GetPropW},
-        {"SetPropW", shim_USER32_SetPropW},
-        {"RemovePropW", shim_USER32_RemovePropW},
-        {"GetDoubleClickTime", shim_USER32_GetDoubleClickTime},
-        {"MapVirtualKeyW", shim_USER32_MapVirtualKeyW},
-        {"MapVirtualKeyA", shim_USER32_MapVirtualKeyA},
-        {"MonitorFromPoint", shim_USER32_MonitorFromPoint},
-        {"SetRectEmpty", shim_USER32_SetRectEmpty},
-        {"RegOpenKeyExW", shim_ADVAPI32_RegOpenKeyExW},
-        {"RegQueryValueExW", shim_ADVAPI32_RegQueryValueExW},
-        {"RegCloseKey", shim_ADVAPI32_RegCloseKey},
-        {"CoInitializeEx", shim_OLE32_CoInitializeEx},
-        {"OleInitialize", shim_OLE32_OleInitialize},
-        {"CoUninitialize", shim_OLE32_CoUninitialize},
-        {"OleUninitialize", shim_OLE32_OleUninitialize},
-        // ---- 引擎自带动态 API 表（455 个名字）里「有强垫片但没登记」的 159 个 ----
-        // 引擎不只用导入表，它还走自己的函数指针表：`jmp [.data 槽]` → 槽里是
-        // 「{u16 id}{name}」描述符（0x140e3f000 起 910 项），解析失败就把 0 当函数调。
-        // run 46055985114 的 `title="ERROR" content="Could not create window: "`
-        // （SDL_GetError() 为空）就是这么来的：CreateWindowExW 在这里查到 0，
-        // 引擎的建窗调用变成「返回 0」，而 SDL 侧根本没参与，所以没有错误串。
-        // 这一批按「动态表 ∩ 强垫片 − 已登记」算出来，机械补齐。
-        {"AddVectoredExceptionHandler", shim_KERNEL32_AddVectoredExceptionHandler},
-        {"AdjustWindowRectEx", shim_USER32_AdjustWindowRectEx},
-        {"AttachConsole", shim_KERNEL32_AttachConsole},
-        {"CallWindowProcW", shim_USER32_CallWindowProcW},
-        {"ChangeDisplaySettingsExW", shim_USER32_ChangeDisplaySettingsExW},
-        {"ClientToScreen", shim_USER32_ClientToScreen},
-        {"ClipCursor", shim_USER32_ClipCursor},
-        {"CloseClipboard", shim_USER32_CloseClipboard},
-        {"CloseThreadpoolWork", shim_KERNEL32_CloseThreadpoolWork},
-        {"CompareStringA", shim_KERNEL32_CompareStringA},
-        {"CompareStringW", shim_KERNEL32_CompareStringW},
-        {"CreateCompatibleDC", shim_GDI32_CreateCompatibleDC},
-        {"CreateDCW", shim_GDI32_CreateDCW},
-        {"CreateDCA", shim_GDI32_CreateDCA},
-        {"CreateDirectoryW", shim_KERNEL32_CreateDirectoryW},
-        {"CreateFontIndirectW", shim_GDI32_CreateFontIndirectW},
-        {"CreateIconFromResource", shim_USER32_CreateIconFromResource},
-        {"CreateMutexW", shim_KERNEL32_CreateMutexW},
-        {"CreateSemaphoreW", shim_KERNEL32_CreateSemaphoreW},
-        {"CreateThreadpoolWork", shim_KERNEL32_CreateThreadpoolWork},
-        {"CreateWindowExA", shim_USER32_CreateWindowExA},
-        {"CreateWindowExW", shim_USER32_CreateWindowExW},
-        {"DefWindowProcW", shim_USER32_DefWindowProcW},
-        {"DeleteDC", shim_GDI32_DeleteDC},
-        {"DeleteFileW", shim_KERNEL32_DeleteFileW},
-        {"DeleteObject", shim_GDI32_DeleteObject},
-        {"DestroyWindow", shim_USER32_DestroyWindow},
-        {"DeviceIoControl", shim_KERNEL32_DeviceIoControl},
-        {"DialogBoxIndirectParamW", shim_USER32_DialogBoxIndirectParamW},
-        {"DispatchMessageW", shim_USER32_DispatchMessageW},
-        {"DrawTextW", shim_USER32_DrawTextW},
-        {"EmptyClipboard", shim_USER32_EmptyClipboard},
-        {"EnableWindow", shim_USER32_EnableWindow},
-        {"EndDialog", shim_USER32_EndDialog},
-        {"EnumClipboardFormats", shim_USER32_EnumClipboardFormats},
-        {"EnumDisplayDevicesW", shim_USER32_EnumDisplayDevicesW},
-        {"EnumDisplayMonitors", shim_USER32_EnumDisplayMonitors},
-        {"EnumDisplaySettingsW", shim_USER32_EnumDisplaySettingsW},
-        {"EnumSystemLocalesW", shim_KERNEL32_EnumSystemLocalesW},
-        {"ExitThread", shim_KERNEL32_ExitThread},
-        {"FindClose", shim_KERNEL32_FindClose},
-        {"FindFirstFileW", shim_KERNEL32_FindFirstFileW},
-        {"FindNextFileW", shim_KERNEL32_FindNextFileW},
-        {"FlashWindowEx", shim_USER32_FlashWindowEx},
-        {"FormatMessageA", shim_KERNEL32_FormatMessageA},
-        {"FormatMessageW", shim_KERNEL32_FormatMessageW},
-        {"FreeLibrary", shim_KERNEL32_FreeLibrary},
-        {"FreeLibraryWhenCallbackReturns", shim_KERNEL32_FreeLibraryWhenCallbackReturns},
-        {"GetAsyncKeyState", shim_USER32_GetAsyncKeyState},
-        {"GetClientRect", shim_USER32_GetClientRect},
-        {"GetClipCursor", shim_USER32_GetClipCursor},
-        {"GetClipboardData", shim_USER32_GetClipboardData},
-        {"GetClipboardSequenceNumber", shim_USER32_GetClipboardSequenceNumber},
-        {"GetConsoleMode", shim_KERNEL32_GetConsoleMode},
-        {"GetConsoleOutputCP", shim_KERNEL32_GetConsoleOutputCP},
-        {"GetCurrentDirectoryW", shim_KERNEL32_GetCurrentDirectoryW},
-        {"GetDC", shim_USER32_GetDC},
-        {"GetDesktopWindow", shim_USER32_GetDesktopWindow},
-        {"GetDeviceCaps", shim_GDI32_GetDeviceCaps},
-        {"GetDlgItem", shim_USER32_GetDlgItem},
-        {"GetEnvironmentVariableA", shim_KERNEL32_GetEnvironmentVariableA},
-        {"GetExitCodeThread", shim_KERNEL32_GetExitCodeThread},
-        {"GetForegroundWindow", shim_USER32_GetForegroundWindow},
-        {"GetKeyState", shim_USER32_GetKeyState},
-        {"GetKeyboardLayout", shim_USER32_GetKeyboardLayout},
-        {"GetKeyboardState", shim_USER32_GetKeyboardState},
-        {"GetLocaleInfoA", shim_KERNEL32_GetLocaleInfoA},
-        {"GetLocaleInfoW", shim_KERNEL32_GetLocaleInfoW},
-        {"GetLogicalDrives", shim_KERNEL32_GetLogicalDrives},
-        {"GetMessageExtraInfo", shim_USER32_GetMessageExtraInfo},
-        {"GetMessagePos", shim_USER32_GetMessagePos},
-        {"GetMessageTime", shim_USER32_GetMessageTime},
-        {"GetMessageW", shim_USER32_GetMessageW},
-        {"GetModuleFileNameA", shim_KERNEL32_GetModuleFileNameA},
-        {"GetMonitorInfoW", shim_USER32_GetMonitorInfoW},
-        {"GetNativeSystemInfo", shim_KERNEL32_GetNativeSystemInfo},
-        {"GetProcAddress", shim_KERNEL32_GetProcAddress},
-        {"GetRawInputDeviceInfoA", shim_USER32_GetRawInputDeviceInfoA},
-        {"GetRawInputDeviceList", shim_USER32_GetRawInputDeviceList},
-        {"GetSystemMetrics", shim_USER32_GetSystemMetrics},
-        {"GetSystemTime", shim_KERNEL32_GetSystemTime},
-        {"GetTextExtentPoint32A", shim_GDI32_GetTextExtentPoint32A},
-        {"GetTextMetricsW", shim_GDI32_GetTextMetricsW},
-        {"GetTimeZoneInformation", shim_KERNEL32_GetTimeZoneInformation},
-        {"GetUserDefaultLCID", shim_KERNEL32_GetUserDefaultLCID},
-        {"GetWindowLongPtrW", shim_USER32_GetWindowLongPtrW},
-        {"GetWindowLongW", shim_USER32_GetWindowLongW},
-        {"GetWindowPlacement", shim_USER32_GetWindowPlacement},
-        {"GetWindowRect", shim_USER32_GetWindowRect},
-        {"GetWindowTextLengthW", shim_USER32_GetWindowTextLengthW},
-        {"GetWindowTextW", shim_USER32_GetWindowTextW},
-        {"GetWindowThreadProcessId", shim_USER32_GetWindowThreadProcessId},
-        {"GlobalAlloc", shim_KERNEL32_GlobalAlloc},
-        {"GlobalFree", shim_KERNEL32_GlobalFree},
-        {"GlobalLock", shim_KERNEL32_GlobalLock},
-        {"GlobalMemoryStatusEx", shim_KERNEL32_GlobalMemoryStatusEx},
-        {"GlobalSize", shim_KERNEL32_GlobalSize},
-        {"GlobalUnlock", shim_KERNEL32_GlobalUnlock},
-        {"InitOnceBeginInitialize", shim_KERNEL32_InitOnceBeginInitialize},
-        {"InitOnceComplete", shim_KERNEL32_InitOnceComplete},
-        {"IntersectRect", shim_USER32_IntersectRect},
-        {"IsClipboardFormatAvailable", shim_USER32_IsClipboardFormatAvailable},
-        {"IsWindow", shim_USER32_IsWindow},
-        {"IsWow64Process", shim_KERNEL32_IsWow64Process},
-        {"LoadCursorW", shim_USER32_LoadCursorW},
-        {"LoadLibraryA", shim_KERNEL32_LoadLibraryA},
-        {"LoadLibraryExW", shim_KERNEL32_LoadLibraryExW},
-        {"LoadLibraryW", shim_KERNEL32_LoadLibraryW},
-        {"MonitorFromWindow", shim_USER32_MonitorFromWindow},
-        {"MulDiv", shim_KERNEL32_MulDiv},
-        {"OpenClipboard", shim_USER32_OpenClipboard},
-        {"PeekMessageW", shim_USER32_PeekMessageW},
-        {"PostMessageW", shim_USER32_PostMessageW},
-        {"PostThreadMessageW", shim_USER32_PostThreadMessageW},
-        {"PtInRect", shim_USER32_PtInRect},
-        {"ReadConsoleW", shim_KERNEL32_ReadConsoleW},
-        {"RegisterClassExW", shim_USER32_RegisterClassExW},
-        {"RegisterClassW", shim_USER32_RegisterClassW},
-        {"RegisterWindowMessageA", shim_USER32_RegisterWindowMessageA},
-        {"ReleaseCapture", shim_USER32_ReleaseCapture},
-        {"ReleaseDC", shim_USER32_ReleaseDC},
-        {"ReleaseSemaphore", shim_KERNEL32_ReleaseSemaphore},
-        {"RemoveVectoredExceptionHandler", shim_KERNEL32_RemoveVectoredExceptionHandler},
-        {"RtlCaptureStackBackTrace", shim_KERNEL32_RtlCaptureStackBackTrace},
-        {"RtlUnwindEx", shim_KERNEL32_RtlUnwindEx},
-        {"SHGetFolderPathW", shim_SHELL32_SHGetFolderPathW},
-        {"ScreenToClient", shim_USER32_ScreenToClient},
-        {"SelectObject", shim_GDI32_SelectObject},
-        {"SendMessageA", shim_USER32_SendMessageA},
-        {"SendMessageW", shim_USER32_SendMessageW},
-        {"SetActiveWindow", shim_USER32_SetActiveWindow},
-        {"SetCapture", shim_USER32_SetCapture},
-        {"SetClipboardData", shim_USER32_SetClipboardData},
-        {"SetConsoleCtrlHandler", shim_KERNEL32_SetConsoleCtrlHandler},
-        {"SetCursor", shim_USER32_SetCursor},
-        {"SetCursorPos", shim_USER32_SetCursorPos},
-        {"SetEnvironmentVariableA", shim_KERNEL32_SetEnvironmentVariableA},
-        {"SetEnvironmentVariableW", shim_KERNEL32_SetEnvironmentVariableW},
-        {"SetErrorMode", shim_KERNEL32_SetErrorMode},
-        {"SetForegroundWindow", shim_USER32_SetForegroundWindow},
-        {"SetLayeredWindowAttributes", shim_USER32_SetLayeredWindowAttributes},
-        {"SetParent", shim_USER32_SetParent},
-        {"SetStdHandle", shim_KERNEL32_SetStdHandle},
-        {"SetThreadExecutionState", shim_KERNEL32_SetThreadExecutionState},
-        {"SetWindowLongPtrW", shim_USER32_SetWindowLongPtrW},
-        {"SetWindowLongW", shim_USER32_SetWindowLongW},
-        {"SetWindowPos", shim_USER32_SetWindowPos},
-        {"SetWindowRgn", shim_USER32_SetWindowRgn},
-        {"SetWindowTextW", shim_USER32_SetWindowTextW},
-        {"SetWindowsHookExW", shim_USER32_SetWindowsHookExW},
-        {"ShowWindow", shim_USER32_ShowWindow},
-        {"SubmitThreadpoolWork", shim_KERNEL32_SubmitThreadpoolWork},
-        {"SystemParametersInfoA", shim_USER32_SystemParametersInfoA},
-        {"SystemParametersInfoW", shim_USER32_SystemParametersInfoW},
-        {"TerminateProcess", shim_KERNEL32_TerminateProcess},
-        {"ToUnicode", shim_USER32_ToUnicode},
-        {"TranslateMessage", shim_USER32_TranslateMessage},
-        {"UnhookWindowsHookEx", shim_USER32_UnhookWindowsHookEx},
-        {"WaitForSingleObjectEx", shim_KERNEL32_WaitForSingleObjectEx},
-        {"WaitForThreadpoolWorkCallbacks", shim_KERNEL32_WaitForThreadpoolWorkCallbacks},
-        {"WriteConsoleW", shim_KERNEL32_WriteConsoleW},
     };
     for (const auto& e : kApis)
         if (std::strcmp(e.name, name) == 0) return e.fn;
@@ -3322,19 +1951,7 @@ void shim_KERNEL32_GetModuleHandleExA(X64Ctx* c) {
 void shim_KERNEL32_ExitProcess(X64Ctx* c) {
     std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
     call_trace().dump("ExitProcess");
-    // 真线程下不能用 std::exit：它会去析构静态对象（计数表/互斥量），
-    // 而 worker 线程此刻还在调 WakeAllConditionVariable -> mew_api_hit，
-    // 于是崩在 std::map 插入里（run 46068371903：
-    // [CRASH] signal=11 fault=0x0，栈 _Rb_tree_decrement <- std::map::operator[] <- mew_api_hit）。
-    // 正确收尾：① 先关计数闸门，worker 之后直接返回不再插入；
-    //           ② 等一小会让已经在锁里的插入跑完；
-    //           ③ 把 UNIMPL / API 两张表打出来（这是整轮唯一的出口，不能丢）；
-    //           ④ _exit 直接终止宿主进程，绕开所有静态析构。
-    mew_api_counting().store(false, std::memory_order_relaxed);
-    usleep(50000);
-    mew_unimpl_dump("exitprocess");
-    std::fflush(stderr);
-    _exit((int)(uint32_t)arg0(c));
+    std::exit((int)arg0(c));
 }
 
 void shim_KERNEL32_InitializeCriticalSectionAndSpinCount(X64Ctx* c) {
@@ -3523,18 +2140,6 @@ constexpr uint64_t kFakeDC = 0x7FFE0001E000ULL;
 constexpr uint64_t kFakeFont = 0x7FFE0002F000ULL;
 inline void put_i32(X64Ctx* c, uint64_t addr, int32_t v) { std::memcpy(guest_ptr_from_ctx(c, addr), &v, 4); }
 }  // namespace
-
-// run 46070229625 的 UNIMPL API TABLE 里，真线程轮唯一被调到的图形相关缺项就是
-// GDI32!CreateDCW（1 次，返回 0）。initGraphics 在建 GL 上下文之前要先拿设备 DC，
-// 拿不到就等于图形初始化第一步就失败——而 appmain 的返回值正是 3。
-// 这里返回一个假 HDC（和 kFakeHdc 一致），让 GetDeviceCaps / wgl 那条链能继续走。
-void shim_GDI32_CreateDCW(X64Ctx* c) {
-    mew_api_hit("CreateDCW");
-    std::fprintf(stderr, "[shim] CreateDCW(...) -> fake hdc=0x%llx caller=0x%llx\n",
-                 (unsigned long long)kFakeHdc, (unsigned long long)cur_fn_va());
-    ret0(c, kFakeHdc);
-}
-void shim_GDI32_CreateDCA(X64Ctx* c) { mew_api_hit("CreateDCA"); ret0(c, kFakeHdc); }
 
 void shim_GDI32_CreateCompatibleDC(X64Ctx* c) {
     static int logged = 0;
