@@ -1588,6 +1588,31 @@ static bool readGuestQword(const PeImage& pe, uint64_t va, uint64_t* out) {
 }
 std::string shimSym(const ImportSlot& im) { return "shim_" + im.dll + "_" + im.name; }
 
+// ---- 一操作数 imul/mul/div/idiv 的识别（F6/F7 组）----
+// 为什么不能用 operand_count 判断：Zydis 会把隐式操作数（rax / flags）也放进操作数数组。
+// `48 F7 EF`（imul rdi，一操作数）如果被报成 2 个「可用」操作数，就会走进两操作数分支
+//     write_reg(ctx, 7 /*rdi*/, read_reg(ctx,7) * <隐式 rax>)
+// 于是**乘积被写进 rdi** —— callee-saved 被踩，调用方拿到的槽指针变成魔数乘法的残值。
+// run 46149048002 的 rdi=0x8e38e38e38e38f00 正好等于 0xe38e38e38e38e39 × 0x700 的低 64 位，
+// 而 0x140d77412 就是 `48 F7 EF`。判据改用原始编码：跳过 legacy/REX 前缀后的第一个
+// opcode 字节是 0xF6/0xF7 时，强制走一操作数（rax:rdx）分支。
+static int firstOpcodeByte(const PeImage& pe, uint64_t va, unsigned len) {
+    if (va < pe.image_base) return -1;
+    const Section* sec = pe.byRva((uint32_t)(va - pe.image_base));
+    if (!sec) return -1;
+    uint32_t off = sec->raw + (uint32_t)(va - pe.image_base - sec->va);
+    if ((uint64_t)off + len > (uint64_t)sec->raw + sec->rawsize) return -1;
+    const uint8_t* p = pe.data.data() + off;
+    for (unsigned i = 0; i < len; ++i) {
+        const uint8_t b = p[i];
+        if (b == 0x66 || b == 0x67 || b == 0xF0 || b == 0xF2 || b == 0xF3 ||
+            b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) continue;
+        if (b >= 0x40 && b <= 0x4F) continue;   // REX
+        return (int)b;
+    }
+    return -1;
+}
+
 // ---------------- MSVC 的 32 位 RVA 跳转表 ----------------
 // 形状（三段紧挨着，实测见 P0-16 / 0x140c116d9）：
 //     mov  r32, [base + idx*4 + disp32]    ; disp32 是 **RVA**，不是 VA
@@ -2086,6 +2111,11 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
             };
             int opn = (int)insn.operand_count;
             while (opn > 1 && !imulOpUsable(ops[opn - 1])) --opn;
+            // 一操作数形态（F6/F7 组）必须走 rax:rdx 的 128 位乘法，见 firstOpcodeByte 注释
+            {
+                const int opc = firstOpcodeByte(pe, rip, insn.length);
+                if (opc == 0xF6 || opc == 0xF7) opn = 1;
+            }
             if (opn <= 1) {
                 e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
                       << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
@@ -3472,6 +3502,11 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
             };
             int opn = (int)insn.operand_count;
             while (opn > 1 && !imulOpUsable(ops[opn - 1])) --opn;
+            // 一操作数形态（F6/F7 组）必须走 rax:rdx 的 128 位乘法，见 firstOpcodeByte 注释
+            {
+                const int opc = firstOpcodeByte(pe, rip, insn.length);
+                if (opc == 0xF6 || opc == 0xF7) opn = 1;
+            }
             if (opn <= 1) {
                 e.out << "  { int64_t x=(int64_t)read_reg(ctx,0,8), y=(int64_t)"
                       << valExpr(pe, insn, ops[0], next_rip, e) << "; __int128 p=(__int128)x*y;"
