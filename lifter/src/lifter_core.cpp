@@ -1015,6 +1015,71 @@ bool tryEmitSse(Emit& e, const PeImage& pe, const std::string& mn,
         return true;
     }
 
+    // ==== 批次4：VEX 交错 / 置换 / 掩码存取 ====
+    // 依据（run 282 stub_list 逐函数缺口，ucrt AVX2 叶子函数簇 0x140d1a760..0x140d1b930）：
+    //   vpmaskmovd 出现在 6 行，其中 a760/a8b0/aad0 三行**只差它一条**；
+    //   vpermq 独占 b760/b930 两行，vpermd 独占 b850 一行；
+    //   vpunpcklwd / vpunpcklqdq 再各补一行。五条 = 8 行真正的整函数解锁。
+    // vpunpckl* 的尺寸字母在 mn[8]（v-p-u-n-p-c-k-l-<size>-q），末位恒为 'q'，不能取 back()。
+    if (mn.rfind("vpunpckl", 0) == 0 && mn.size() >= 10 && insn.operand_count >= 3) {
+        const char sz = mn[8];
+        const int unit = (sz == 'b') ? 1 : (sz == 'w') ? 2 : (sz == 'd') ? 4 : (sz == 'q') ? 8 : 0;
+        if (unit == 0) return false;
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int s1 = xmmId(ops[1].reg.value);
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::i_punpckl(ctx, " << dx << ", " << s1 << ", "
+                  << xmmId(ops[2].reg.value) << ", " << bytes << ", " << unit << ");\n";
+        } else {
+            e.out << "  avx::i_punpckl_mem(ctx, " << dx << ", " << s1 << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << bytes << ", " << unit << ");\n";
+        }
+        return true;
+    }
+    // vpermq：上面两个操作数 + imm8（ops[2]），没有 vvvv 源。
+    if (mn == "vpermq" && insn.operand_count >= 3 &&
+        ops[2].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int imm = (int)(ops[2].imm.value.u & 0xFFULL);
+        if (is_xmm_reg(ops[1])) {
+            e.out << "  avx::i_permq(ctx, " << dx << ", " << xmmId(ops[1].reg.value)
+                  << ", " << imm << ", " << bytes << ");\n";
+        } else {
+            e.out << "  avx::i_permq_mem(ctx, " << dx << ", "
+                  << addrExpr(pe, ops[1], next_rip, e) << ", " << imm << ", " << bytes << ");\n";
+        }
+        return true;
+    }
+    // vpermd：索引在 ops[1]（VEX.vvvv），数据在 ops[2]（寄存器或内存）。
+    if (mn == "vpermd" && insn.operand_count >= 3) {
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        const int idx = xmmId(ops[1].reg.value);
+        if (is_xmm_reg(ops[2])) {
+            e.out << "  avx::i_permd(ctx, " << dx << ", " << idx << ", "
+                  << xmmId(ops[2].reg.value) << ", " << bytes << ");\n";
+        } else {
+            e.out << "  avx::i_permd_mem(ctx, " << dx << ", " << idx << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << bytes << ");\n";
+        }
+        return true;
+    }
+    // vpmaskmovd / vpmaskmovq：两种形态的**操作数位置不同**，必须分开处理
+    //   load : ops[0]=dest xmm, ops[1]=mask xmm, ops[2]=m128/m256
+    //   store: ops[0]=m128/m256, ops[1]=mask xmm, ops[2]=data xmm
+    if ((mn == "vpmaskmovd" || mn == "vpmaskmovq") && insn.operand_count >= 3) {
+        const int unit = (mn.back() == 'q') ? 8 : 4;
+        const int bytes = (ops[0].size == 256) ? 32 : 16;
+        if (ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            e.out << "  avx::i_maskmov_store(ctx, " << xmmId(ops[1].reg.value) << ", "
+                  << xmmId(ops[2].reg.value) << ", " << addrExpr(pe, ops[0], next_rip, e) << ", "
+                  << bytes << ", " << unit << ");\n";
+        } else {
+            e.out << "  avx::i_maskmov_load(ctx, " << dx << ", " << xmmId(ops[1].reg.value) << ", "
+                  << addrExpr(pe, ops[2], next_rip, e) << ", " << bytes << ", " << unit << ");\n";
+        }
+        return true;
+    }
+
     // ---- VSHUFPS：4 操作数（dest, src1, src2, imm），立即数在 ops[3] ----
     if (mn == "vshufps" && insn.operand_count >= 4) {
         const unsigned imm = (unsigned)ops[3].imm.value.u;
