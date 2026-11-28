@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <atomic>   // P5：CvSlot 的 wakes 计数
 #include <ctime>
 #include <string>
 #include <vector>
@@ -1663,7 +1664,7 @@ void shim_KERNEL32_OutputDebugStringA(X64Ctx* c) {
 // 所以宿主按「槽地址」建表，用真正的 pthread 原语实现，而不是返回成功骗过去。
 namespace {
 struct SrwSlot { pthread_rwlock_t rw; int shared; };
-struct CvSlot  { pthread_cond_t cv; pthread_mutex_t mu; };
+struct CvSlot  { pthread_cond_t cv; pthread_mutex_t mu; std::atomic<uint64_t> wakes{0}; };
 
 std::mutex& g_sync_mu() { static std::mutex m; return m; }
 std::unordered_map<uint64_t, SrwSlot*>& srw_table() { static std::unordered_map<uint64_t, SrwSlot*> m; return m; }
@@ -1754,6 +1755,29 @@ void shim_KERNEL32_TryAcquireSRWLockShared(X64Ctx* c) {
 // SleepConditionVariableSRW：释放 srw → 等条件 → 重新加锁。
 // pthread 的 rwlock 不会告诉你「当前是共享还是独占」，所以重新加锁的模式按
 // 「等之前有没有人持共享锁」近似；单线程初始化路径下这是精确的。
+// ---- P5（2026-11-29）：真阻塞所需的小工具 ----
+// pthread_cond_timedwait 用的是 cond 自己的时钟；cv_for 里 pthread_cond_init(&s->cv, nullptr)
+// 没设 CLOCK_MONOTONIC，所以默认 CLOCK_REALTIME，这里必须用同一只钟算绝对时间。
+static timespec mew_deadline_ms(uint32_t ms) {
+    timespec ts{};
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t ns = (uint64_t)ts.tv_nsec + (uint64_t)(ms % 1000u) * 1000000ULL;
+    ts.tv_sec  += (time_t)(ms / 1000u) + (time_t)(ns / 1000000000ULL);
+    ts.tv_nsec  = (long)(ns % 1000000000ULL);
+    return ts;
+}
+// 存活工作线程数（started && !finished）。INFINITE 等待时若为 0，说明没有任何线程
+// 会来 WakeConditionVariable —— 与其烧 600 秒，不如 0.6 秒就报出来。
+static int mew_live_workers() {
+    std::lock_guard<std::mutex> lk(g_thread_mu);
+    int n = 0;
+    for (const auto& kv : g_threads) {
+        const GuestThread* t = kv.second;
+        if (t && t->started && !t->finished) ++n;
+    }
+    return n;
+}
+
 void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepConditionVariableSRW");
     // [condstat] 空转分布统计（纯诊断，不改语义）。
     // run 46169415454：600 秒里 41,000,000 次等待全部立刻返回 TRUE，但 [cond] 日志有 12 条上限，
@@ -1821,14 +1845,49 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
     // 结果没有任何线程能让 predicate 变化，等待方在 _Cnd_wait 里空转到超时
     // （run 46098382772 实测 216,779,760 次；adfd412 的 205,042,261 次是同一个死结，
     //  那次能推进只是抢锁顺序恰好对）。这才是「关检测 / 加退让都推不动」的真正原因。
+    // ===== P5 修法（2026-11-29）：真阻塞，不再「假装已唤醒」 =====
+    // 旧实现 unlock→sched_yield→relock→return TRUE：real_threads=1 下主线程以 68k/s
+    // 死占 SRW，负责置 predicate 的后台线程在 AcquireSRWLockExclusive 上被饿死，
+    // predicate 永远不变、帧循环起不来（run 46169415454：600 秒 4100 万次、glClear=4）。
+    // 现在真的把 SRW 释放出去，在 cv 自带的 mutex+cond 上按 200ms 分段等待（最多 5 秒），
+    // 醒来后重新获取 SRW；CV 的 wakes 计数兜住「signal 发生在进入等待之前」的竞态。
     {
         SrwSlot* s = srw_for(arg1(c), false);   // false：调用方一定已经持有，不要新建
+        CvSlot* cvp = cv_for(arg0(c), true);
         const uint32_t flags = (uint32_t)arg3(c);
         const bool shared = (flags & 1u) != 0;  // CONDITION_VARIABLE_LOCKMODE_SHARED
-        if (s) {
+        if (s && cvp) {
+            const uint64_t w0 = cvp->wakes.load(std::memory_order_relaxed);
             pthread_rwlock_unlock(&s->rw);
             if (shared) __atomic_sub_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
-            sched_yield();                      // 让抢锁的线程先跑，别自己立刻拿回来
+
+            int woke = 0;
+            const int slices = ms_inf ? 25 : 1;   // INFINITE：5 秒上限；限时：一次到位
+            for (int i = 0; i < slices; ++i) {
+                const uint32_t slice = ms_inf ? 200u : ms;
+                if (slice == 0) break;            // ms==0：不睡，立刻回上层重检 predicate
+                timespec ts = mew_deadline_ms(slice);
+                pthread_mutex_lock(&cvp->mu);
+                const int rc = pthread_cond_timedwait(&cvp->cv, &cvp->mu, &ts);
+                pthread_mutex_unlock(&cvp->mu);
+                if (rc == 0 || cvp->wakes.load(std::memory_order_relaxed) != w0) { woke = 1; break; }
+                if (ms_inf && i == 2 && mew_live_workers() == 0) {
+                    static int dead_logged = 0;
+                    if (dead_logged++ < 8)
+                        std::fprintf(stderr,
+                            "[cond-DEADLOCK] INFINITE 等待但存活工作线程=0 cv=0x%llx srw=0x%llx caller=0x%llx\n",
+                            (unsigned long long)arg0(c), (unsigned long long)arg1(c),
+                            (unsigned long long)cur_fn_va());
+                    break;                        // 0.6 秒内逃生，不再烧满 600 秒
+                }
+            }
+            if (!woke && ms_inf) {
+                static int slow_logged = 0;
+                if (slow_logged++ < 10)
+                    std::fprintf(stderr, "[cond-SLOW] 5s 未唤醒 workers=%d cv=0x%llx srw=0x%llx\n",
+                                 mew_live_workers(), (unsigned long long)arg0(c),
+                                 (unsigned long long)arg1(c));
+            }
             if (shared) {
                 pthread_rwlock_rdlock(&s->rw);
                 __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
@@ -1837,6 +1896,9 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
             }
         }
     }
+    // 真等待已经发生，超时仍返回 TRUE：run 46118344430 证明「返回 FALSE + GetLastError
+    // 残留」会让 CRT 的 _Cnd_wait 抛 system_error(35/11) 把进程打死。让调用方回上层
+    // 重检 predicate 是安全的那一半，先把「锁饿死」这条根因拿掉。
     ret0(c, ret);
 }
 // 语义修正（run 46055985114 的实测）：x64 下 WakeConditionVariable /
@@ -1845,7 +1907,7 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
 // WakeAllConditionVariable（35%），就是被这个 0 引着反复重试。
 void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
     CvSlot* cv = cv_for(arg0(c), true);
-    if (cv) pthread_cond_signal(&cv->cv);
+    if (cv) { cv->wakes.fetch_add(1, std::memory_order_relaxed); pthread_cond_signal(&cv->cv); }
     static int logged = 0;
     if (logged++ < 20)
         std::fprintf(stderr, "[cond] wake cv=0x%llx caller=0x%llx\n",
@@ -1854,7 +1916,7 @@ void shim_KERNEL32_WakeConditionVariable(X64Ctx* c) {
 }
 void shim_KERNEL32_WakeAllConditionVariable(X64Ctx* c) { mew_api_hit("WakeAllConditionVariable");
     CvSlot* cv = cv_for(arg0(c), true);
-    if (cv) pthread_cond_broadcast(&cv->cv);
+    if (cv) { cv->wakes.fetch_add(1, std::memory_order_relaxed); pthread_cond_broadcast(&cv->cv); }
     static int logged = 0;
     if (logged++ < 20) {
         std::fprintf(stderr, "[cond] wakeall cv=0x%llx caller=0x%llx\n",
