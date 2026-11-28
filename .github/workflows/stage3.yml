@@ -395,6 +395,16 @@ jobs:
             -lpthread 2>&1 | tee generated/runner_build.log
           ls -l build-stage3/mew_runner
 
+      # 实验（纯 yml）：预置一个空 settings.txt，让 CreateFileW(".../settings.txt") 成功。
+      # 依据 run 46149048002：3756 行 settings.txt 打开失败(nil)，3757 行立刻落
+      # [SAFE] read 0x38 in_fn=0x140d77dd4（rdx=0x80000000=GENERIC_READ）。
+      # 6 条表族 SAFE 若因此消失/减少 → (A) 失败路径：-1 fd 被拿去算块号；
+      # 一条不少 → (B) 分配路径，与 settings 无关。
+      - name: 预置 settings.txt（实验：让 _open 成功，看表族 SAFE 是否消失）
+        run: |
+          mkdir -p "Mewgenics/Glaiel Games/Mewgenics/0/logs"
+          : > "Mewgenics/Glaiel Games/Mewgenics/0/settings.txt"
+          ls -la "Mewgenics/Glaiel Games/Mewgenics/0/" | head -20
       - name: Stage 5 - run launcher (log driven)
         run: |
           set +e
