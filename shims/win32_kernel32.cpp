@@ -806,7 +806,19 @@ void shim_KERNEL32_GetModuleHandleA(X64Ctx* c) { ret0(c, 0x140000000ULL); }
 void shim_KERNEL32_GetModuleFileNameW(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_IsDebuggerPresent(X64Ctx* c) { ret0(c, 0); }
 void shim_KERNEL32_GetCurrentProcessId(X64Ctx* c) { ret0(c, (uint64_t)getpid()); }
-void shim_KERNEL32_GetCurrentThreadId(X64Ctx* c) { ret0(c, (uint64_t)(uintptr_t)pthread_self()); }
+// GetCurrentThreadId 返回的是 **DWORD（32 位线程号）**，不是指针。
+// 旧实现直接返回 pthread_self() 的 64 位指针，只要客代码把它截到 32 位存进结构里再比较，
+// 得到的就是一个指针残值。MSVC 的函数内 static 正是这么用的：_Init_thread_header 把当前
+// tid 写进 _Init_once_t+0x48，下一次拿它判断「是不是同一线程重入」。
+// run 46131162726 实测那个字段是 0x146f3fc0 —— 就是 pthread_self() 的低 32 位。
+// 这里改成真正稳定的小整数：每个宿主线程首次调用时分配 0x101、0x102…
+static uint32_t mew_thread_id() {
+    static uint32_t g_next_tid = 0x100;
+    static thread_local uint32_t g_my_tid = 0;
+    if (!g_my_tid) g_my_tid = __atomic_add_fetch(&g_next_tid, 1u, __ATOMIC_SEQ_CST);
+    return g_my_tid;
+}
+void shim_KERNEL32_GetCurrentThreadId(X64Ctx* c) { ret0(c, (uint64_t)mew_thread_id()); }
 void shim_KERNEL32_GetSystemInfo(X64Ctx* c) {
     // SYSTEM_INFO（x64 布局，48 字节）。旧实现把页大小写到了 p+20（那是
     // lpMaximumApplicationAddress 的中间），且把架构报成 x86；这里按 1 核 ARM64 填。
