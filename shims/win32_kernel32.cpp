@@ -751,6 +751,22 @@ thread_local std::unordered_map<uint64_t, int> g_cs_depth;
 // 这正是「rdi 被别的线程踩成 IMUL 残值」这类竞态的温床（run 46149048002，6 条表族 SAFE）。
 // 这里做延迟初始化：第一次用到时补一把真 mutex 并写回 guest 结构。
 std::mutex g_cs_init_mu;
+// CS 观测开关：MEW_CS_LOG_N（上限，默认 40；<=0 不封顶）/ MEW_CS_LOG_MIN（只记 cs >= min，默认 0）。
+// 以前 40 条上限在 398 行就用完，而表族 SAFE 落在 3,617 行——关键区间完全没观测。
+static bool cs_log_want(uint64_t cs, int& seen) {
+    static const long long cap = [] {
+        const char* e = std::getenv("MEW_CS_LOG_N");
+        return e ? (long long)std::atoll(e) : 40LL;
+    }();
+    static const uint64_t min_cs = [] {
+        const char* e = std::getenv("MEW_CS_LOG_MIN");
+        return e ? (uint64_t)std::strtoull(e, nullptr, 0) : 0ULL;
+    }();
+    if (cs < min_cs) return false;
+    if (cap <= 0) return true;
+    return seen++ < cap;
+}
+
 static uint64_t ensure_cs_mutex(X64Ctx* c, uint64_t cs) {
     uint64_t m = cs ? mem_read<uint64_t>(c, cs) : 0;
     if (m || !cs) return m;
@@ -773,8 +789,8 @@ void shim_KERNEL32_EnterCriticalSection(X64Ctx* c) {
     uint64_t cs = arg0(c);
     uint64_t m = ensure_cs_mutex(c, cs);
     int d = ++g_cs_depth[cs];   // thread_local：只看本线程的重入深度
-    static int logged = 0;
-    if (logged++ < 40)
+    static int seen = 0;
+    if (cs_log_want(cs, seen))
         std::fprintf(stderr, "[shim] EnterCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
                      (unsigned long long)cs, (unsigned long long)m, d);
     if (d == 1 && m)
@@ -788,8 +804,8 @@ void shim_KERNEL32_LeaveCriticalSection(X64Ctx* c) {
     int d = 0;
     auto it = g_cs_depth.find(cs);
     if (it != g_cs_depth.end() && it->second > 0) d = --it->second;
-    static int logged = 0;
-    if (logged++ < 40)
+    static int seen = 0;
+    if (cs_log_want(cs, seen))
         std::fprintf(stderr, "[shim] LeaveCS(cs=0x%llx mutex=0x%llx depth=%d)\n",
                      (unsigned long long)cs, (unsigned long long)m, d);
     if (d == 0 && m) pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)((int64_t)m + c->mem_bias));
