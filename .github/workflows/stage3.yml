@@ -102,6 +102,8 @@ jobs:
           # 用户把真包直链存成仓库 secret 后，这一步自动改走下真包；没设就仍是稀疏回退。
           # 用 secret 而不是硬编码：预签名 URL 本身就是凭证，不该进仓库也不该进日志。
           MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
+          # 公有读直链（桶本身公有读，匿名 GET 206）；secret 里有可用 URL 时优先用 secret。
+          MEW_ASSET_PUBLIC_URL: "https://dsh-1-1544009507.cos.ap-guangzhou.myqcloud.com/resources.gpak"
         run: |
           if [ "${{ github.event.inputs.assets || '0' }}" != "1" ]; then
             echo "[assets] disabled for this run (inputs.assets != 1) -> no resources.gpak on disk"
@@ -111,6 +113,10 @@ jobs:
           # 只取第一行，去掉 CR 和可能残留的 "GET=" 前缀 —— 否则换行会把 URL 拼坏，表现为 403。
           URL=$(printf '%s' "${MEW_ASSET_URL_GPak:-}" | head -n1 | tr -d '\r')
           URL=${URL#GET=}
+          if ! printf '%s' "$URL" | grep -q '^https://'; then
+            echo "[assets] secret has no usable URL -> using public read URL"
+            URL="${MEW_ASSET_PUBLIC_URL}"
+          fi
           case "$URL" in
             https://*) echo "[assets] presigned GET url accepted (len=${#URL})" ;;
             *) echo "[assets] first line is not an https URL (len=${#URL}) -> sparse fallback"; URL="" ;;
