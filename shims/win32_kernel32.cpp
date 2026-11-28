@@ -458,6 +458,78 @@ void shim_KERNEL32_CreateFileA(X64Ctx* c) {
 // FindExInfoStandard 处理（dir/path 直接 stat 就有），所以共用同一套枚举。
 void shim_KERNEL32_FindFirstFileExW(X64Ctx* c) { shim_KERNEL32_FindFirstFileW(c); }
 
+// ---------------- 路径规范化 + Local 堆（std::filesystem 的依赖）----------------
+// MSVC 的 std::filesystem 需要绝对化/规范化路径时走这一组：
+//   LocalAlloc -> GetFullPathNameW -> LocalFree
+// 这三个我们**一个都没实现**，直接后果在 run 46085714325 里可见：
+//   * UNIMPL API TABLE 只剩 LocalFree(distinct=1 total=2)，紧贴 RaiseException 之前
+//   * GetFullPathNameW 一次都没出现 —— 因为 LocalAlloc 先失败，没缓冲区可用
+//   * create_directories 的复核只查了盘符根（三次 GetFileAttributesExW("./")），
+//     叶子路径一次都没查到，正好符合「规范化阶段就把路径丢了」
+void shim_KERNEL32_LocalAlloc(X64Ctx* c) {
+    const uint32_t flags = (uint32_t)arg0(c);
+    const size_t n = (size_t)arg1(c);
+    // LMEM_ZEROINIT = 0x40；统一走固定 Guest 堆池，地址一定落在堆区
+    const uint64_t g = g_guest_heap.alloc(n ? n : 1, (flags & 0x40u) != 0);
+    static int traced = 0;
+    if (traced++ < 16)
+        std::fprintf(stderr, "[shim] LocalAlloc(flags=0x%x, %zu) -> 0x%llx caller=0x%llx\n",
+                     flags, n, (unsigned long long)g, (unsigned long long)cur_fn_va());
+    ret0(c, g);
+}
+void shim_KERNEL32_LocalFree(X64Ctx* c) {
+    // guest 堆没有逐个 free 的通道；Win32 语义里「成功返回 NULL」，
+    // 所以返回 0 既符合语义，也不会让上游把 LocalFree 当成失败。
+    ret0(c, 0);
+}
+
+void shim_KERNEL32_GetFullPathNameW(X64Ctx* c) {
+    const std::string in = guest_wstr(c, arg0(c));
+    const uint32_t cap = (uint32_t)arg1(c);
+    const uint64_t buf = arg2(c);
+    const uint64_t part = arg3(c);   // lpFilePart
+
+    std::string s = in;
+    for (char& ch : s) if (ch == '\\') ch = '/';
+    if (s.size() < 2 || s[1] != ':') s = "C:/" + s;   // 我们只有一个盘：C:
+    const std::string drv = s.substr(0, 2);
+    const std::string rest = s.substr(2);
+    const bool abs = !rest.empty() && rest[0] == '/';
+    std::vector<std::string> segs;
+    size_t i = 0;
+    while (i < rest.size()) {
+        while (i < rest.size() && rest[i] == '/') ++i;
+        size_t j = i;
+        while (j < rest.size() && rest[j] != '/') ++j;
+        const std::string seg = rest.substr(i, j - i);
+        if (seg == "..") { if (!segs.empty()) segs.pop_back(); }
+        else if (!seg.empty() && seg != ".") segs.push_back(seg);
+        i = j;
+    }
+    std::string out = drv + (abs ? "/" : "");
+    for (size_t k = 0; k < segs.size(); ++k) {
+        if (k) out += "/";
+        out += segs[k];
+    }
+    const uint64_t need = (uint64_t)out.size() + 1;
+
+    static int traced = 0;
+    if (traced++ < 24)
+        std::fprintf(stderr, "[shim] GetFullPathNameW(\"%s\") -> \"%s\" cap=%u caller=0x%llx\n",
+                     in.c_str(), out.c_str(), cap, (unsigned long long)cur_fn_va());
+
+    if (!buf || cap < need) { ret0(c, need); return; }   // 缓冲区不够：返回所需大小
+    uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, buf);
+    for (size_t k = 0; k < out.size(); ++k) p[k] = (uint16_t)(unsigned char)out[k];
+    p[out.size()] = 0;
+    if (part && guest_mapped(part, 8)) {
+        uint64_t off = out.size();
+        while (off > 0 && out[off - 1] != '/') --off;
+        mem_write<uint64_t>(c, part, off < out.size() ? buf + off * 2 : 0);
+    }
+    ret0(c, (uint64_t)out.size());
+}
+
 // GetFileAttributesExW：拿不到时返回 FALSE 并置 last error。
 // 同样先出声，避免「文件存在但游戏以为不存在」被静默吞掉。
 void shim_KERNEL32_GetFileAttributesExW(X64Ctx* c) {
@@ -2701,6 +2773,9 @@ RecompFn lookup_api(const char* name) {
         {"CreateFileA", shim_KERNEL32_CreateFileA},
         {"FindFirstFileExW", shim_KERNEL32_FindFirstFileExW},
         {"GetFileAttributesExW", shim_KERNEL32_GetFileAttributesExW},
+        {"GetFullPathNameW", shim_KERNEL32_GetFullPathNameW},
+        {"LocalAlloc", shim_KERNEL32_LocalAlloc},
+        {"LocalFree", shim_KERNEL32_LocalFree},
         {"GetFileAttributesW", shim_KERNEL32_GetFileAttributesW},
         {"SetEndOfFile", shim_KERNEL32_SetEndOfFile},
         {"GetModuleHandleExW", shim_KERNEL32_GetModuleHandleExW},
