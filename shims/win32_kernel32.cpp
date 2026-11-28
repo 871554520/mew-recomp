@@ -1442,14 +1442,26 @@ void shim_KERNEL32_EnumResourceNamesW(X64Ctx* c) { mew_api_hit("EnumResourceName
     ret0(c, 0);
 }
 
+static bool mew_flet_exit() {
+    static int cached = -1;
+    if (cached < 0) { const char* v = std::getenv("MEW_FLET_EXIT"); cached = (v && v[0] == '1') ? 1 : 0; }
+    return cached == 1;
+}
+
 // Windows 语义：先释放模块，然后**立即结束调用线程，永不返回**。
-// 以前没实现 → 返回 0 → 顺流跌进调用点后面那条 int3，被 int3-trap 当成崩溃停住。
-// 现在按语义收尾：worker 线程 pthread_exit，主线程 exit（能把日志刷干净）。
+// 但实测（46144294316）guest 在建窗口**之前**就走到这里：调用点 0x140d4ea8d，
+// 紧跟一条 int3，栈上是 0x140d4ea3c ← 0x140d4ebd8 这对 teardown helper。
+// 老行为是「没实现 → 返回 0 → int3 trap + rsp-repair → 继续跑」，而程序随后确实
+// 继续跑到了窗口创建（6155 行）、一直跑到 11,320 行收尾 —— 说明这条路径上 guest
+// 并不指望它真的结束进程。所以默认**只记录 + 返回**，保住可观测长度；
+// 要按 Windows 语义真结束，用 MEW_FLET_EXIT=1（worker pthread_exit / 主线程 exit）。
 void shim_KERNEL32_FreeLibraryAndExitThread(X64Ctx* c) { mew_api_hit("FreeLibraryAndExitThread");
     const uint32_t code = (uint32_t)arg1(c);
-    std::fprintf(stderr, "[shim] FreeLibraryAndExitThread(h=0x%llx code=%u)\n",
-                 (unsigned long long)arg0(c), code);
+    const bool do_exit = mew_flet_exit();
+    std::fprintf(stderr, "[shim] FreeLibraryAndExitThread(h=0x%llx code=%u) -> %s\n",
+                 (unsigned long long)arg0(c), code, do_exit ? "exit" : "return（默认，保持旧行为）");
     std::fflush(stderr);
+    if (!do_exit) { ret0(c, 0); return; }
     if (real_threads() && is_guest_worker_thread())
         pthread_exit(reinterpret_cast<void*>((uintptr_t)code));
     std::exit((int)code);
