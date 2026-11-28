@@ -1,0 +1,17 @@
+# 手工登记的额外种子（走 --seeds 通道，不是 --seeds-inside）
+# 用途：目标地址不在任何 .pdata 区间内时，seeds-inside 会被 tools/verify_lists.py 判为
+#       「应改走 extra_seeds 而不是 seeds-inside」，所以只能从这条通道进。
+# 用法：CI 在 mine_hidden_entries.py 生成 generated/extra_seeds.txt 之后追加本文件的 VA 行。
+#
+# run 46149048002 运行期新发现（两个 VA 都不在任何 .pdata 区间内）：
+#
+# 0x140be0ee0  被 0x140c799e0 间接调用；FATAL 在 runner.err:8439
+#              [FATAL] Unmapped indirect target: 0x140be0ee0 (nearest_lo=0x140be0ec0 delta=32)
+#              字节：48 c7 c2 ff ff ff ff = mov rdx,-1，随后 e9 跳走，无 .pdata 条目。
+#              它是 step 28 二次构建唯一收到的种子（runtime_seeds.txt 只有这一条）。
+0x140be0ee0
+#
+# 0x140bba300  被 0x140c7a1f0 间接调用 3 次（discovered_entries.txt 记了 3 行）；
+#              字节：33 d2 / 33 c0 / f0 48 0f b1 11 / c3 = 7 字节原子助手，无 .pdata 条目。
+#              step 28 读文件时它还没写进去（reflow 读得太早），所以上一轮没被收进来。
+0x140bba300
