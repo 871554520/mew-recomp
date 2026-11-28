@@ -120,6 +120,16 @@ inline bool mew_trace_match(uint64_t va) {
     return false;
 }
 
+// MEW_TRACE_N：每个被观测函数最多打多少条 [fn] 快照（默认 40）。
+// 设成 0 表示不封顶（真线程长跑慎用）。
+inline int mew_trace_cap() {
+    static int v = [] {
+        const char* e = std::getenv("MEW_TRACE_N");
+        return e ? (int)std::strtol(e, nullptr, 0) : 40;
+    }();
+    return v;
+}
+
 inline uint64_t mew_trace_fn() {
     const auto& v = mew_trace_fns();
     return v.empty() ? 0ULL : v.front();
@@ -230,7 +240,8 @@ inline void mew_note_entry(uint64_t va) {
         }                                                                         \
         if (mew_trace_match((uint64_t)(VA))) {                                   \
             static int _mew_tn = 0;                                               \
-            if (_mew_tn++ < 40) {                                                 \
+            const int _cap = mew_trace_cap();                              \
+            if (_cap <= 0 || _mew_tn++ < _cap) {                                                 \
                 std::fprintf(stderr,                                               \
                     "[fn] 0x%llx rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsp=0x%llx rax=0x%llx\n", \
                     (unsigned long long)(VA), (unsigned long long)(CTX)->rcx,      \
