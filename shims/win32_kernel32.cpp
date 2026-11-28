@@ -2111,8 +2111,11 @@ void shim_USER32_CreateWindowExW(X64Ctx* c) { mew_api_hit("CreateWindowExW");
     win().title = (const char*)guest_ptr_from_ctx(c, arg2(c));
     // 带 caller：建窗失败时能立刻区分「SDL 在 WIN_CreateWindow 里建的」还是
     // 「引擎自己走动态表建的」（前者 caller 在 0x140c8xxxx 的 SDL 区，后者在 0x1409bxxxx）。
-    std::fprintf(stderr, "[shim] CreateWindowExW(w=%d h=%d title=%s) -> hwnd=0x%llx caller=0x%llx\n",
-                 win().w, win().h, win().title ? win().title : "(n/a)",
+    // arg6/arg7 原值可能是 0（尺寸走 SetWindowPos），而 win().w/h 是**持久化**的上一只
+    // 窗口尺寸 —— 只打 win().w/h 会让「w=1280 h=720」这种行看着像本次真尺寸，实际可能是残留。
+    // 两个值分开打，以后不再拿陈旧值当判据。
+    std::fprintf(stderr, "[shim] CreateWindowExW(arg=%dx%d state=%dx%d title=%s) -> hwnd=0x%llx caller=0x%llx\n",
+                 w, h, win().w, win().h, win().title ? win().title : "(n/a)",
                  (unsigned long long)kFakeHwnd, (unsigned long long)cur_fn_va());
     ret0(c, kFakeHwnd);
 }
