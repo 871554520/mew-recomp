@@ -4121,7 +4121,12 @@ void shim_KERNEL32_GetModuleHandleExA(X64Ctx* c) {
 
 // ---------------- 被误删的强定义（补回，避免弱占位顶替） ----------------
 void shim_KERNEL32_ExitProcess(X64Ctx* c) {
-    std::fprintf(stderr, "[shim] ExitProcess(%u)\n", (unsigned) arg0(c));
+    // 谁在叫进程退出必须打出来：worker 线程正常结束也会绕到这里（CRT exit(0)），
+    // 而我们的 _exit 会把整个进程收掉。caller 配上 tools/sym_full.tsv 就能直接点名。
+    std::fprintf(stderr, "[shim] ExitProcess(%u) caller=0x%llx worker=%d\n",
+                 (unsigned) arg0(c), (unsigned long long)cur_fn_va(),
+                 (real_threads() && is_guest_worker_thread()) ? 1 : 0);
+    std::fflush(stderr);
     call_trace().dump("ExitProcess");
     // 真线程下不能用 std::exit：它会去析构静态对象（计数表/互斥量），
     // 而 worker 线程此刻还在调 WakeAllConditionVariable -> mew_api_hit，
