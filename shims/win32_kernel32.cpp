@@ -1537,6 +1537,16 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
                      ret ? "signaled" : "timeout",
                      (unsigned long long)ret, (unsigned long long)cur_fn_va());
     (void)cv_for; (void)srw_for;
+    // 反空转：real_threads 下这条「假装已唤醒」会被**同一线程**调用上亿次
+    // （run 46090073899 实测 205,042,261 次 / 600s ≈ 34 万次/秒），CPU 全被它吃掉，
+    // 负责真正 signal 的 worker 线程没机会推进，于是谁也不动。
+    // 前 1 万次保持零开销；之后每次退让 50µs，把空转压到每秒几千次。
+    // 计数用 thread_local —— 不需要锁也不需要 atomic。
+    static thread_local uint64_t spin_hits = 0;
+    if (ret && ms == 0xFFFFFFFFu) {
+        ++spin_hits;
+        if (spin_hits > 10000 && real_threads()) usleep(50);
+    }
     ret0(c, ret);
 }
 // 语义修正（run 46055985114 的实测）：x64 下 WakeConditionVariable /
