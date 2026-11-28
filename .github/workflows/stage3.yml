@@ -96,18 +96,27 @@ jobs:
       - name: Prepare assets (real gpak if URL provided, else header + holes)
         env:
           # 用户把真包直链存成仓库 secret 后，这一步自动改走下真包；没设就仍是稀疏回退。
-          # 之所以用 secret 而不是硬编码：URL 可能是预签名凭证，不该进仓库也不该进日志。
+          # 用 secret 而不是硬编码：预签名 URL 本身就是凭证，不该进仓库也不该进日志。
           MEW_ASSET_URL_GPak: ${{ secrets.MEW_ASSET_URL_GPak }}
         run: |
-          if [ -n "${MEW_ASSET_URL_GPak:-}" ]; then
-            echo "[assets] real resources.gpak from provided URL"
+          # secret 里可能有两行（第一行 GET 直链，第二行 HEAD=... 给 curl -sI 用）。
+          # 只取第一行，去掉 CR 和可能残留的 "GET=" 前缀 —— 否则换行会把 URL 拼坏，表现为 403。
+          URL=$(printf '%s' "${MEW_ASSET_URL_GPak:-}" | head -n1 | tr -d '\r')
+          URL=${URL#GET=}
+          case "$URL" in
+            https://*) echo "[assets] presigned GET url accepted (len=${#URL})" ;;
+            *) echo "[assets] first line is not an https URL (len=${#URL}) -> sparse fallback"; URL="" ;;
+          esac
+
+          if [ -n "$URL" ]; then
+            echo "[assets] downloading real resources.gpak (resume enabled)"
             curl -fL -C - --retry 5 --retry-delay 3 --retry-connrefused \
-                 -o resources.gpak "$MEW_ASSET_URL_GPak"
+                 -o resources.gpak "$URL"
             ls -l resources.gpak
             python3 -c "import os;n=os.path.getsize('resources.gpak');print('[assets] bytes =',n,'expected 5134616316','OK' if n==5134616316 else 'MISMATCH')"
             sha256sum resources.gpak | cut -c1-32 || true
           else
-            echo "[assets] no MEW_ASSET_URL_GPak -> sparse fallback: directory table + zero-filled data"
+            echo "[assets] sparse fallback: directory table + zero-filled data area"
             truncate -s 5134616316 resources.gpak
             dd if=assets/gpak-dir.bin of=resources.gpak conv=notrunc bs=4096
             ls -l resources.gpak
