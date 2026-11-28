@@ -1925,8 +1925,9 @@ void shim_KERNEL32_GetEnvironmentVariableW(X64Ctx* c) {
     const std::string name = guest_wstr(c, arg0(c));
     const uint64_t buf = arg1(c);
     const uint32_t cap = (uint32_t)arg2(c);
-    const char* val = nullptr;
-    if (name == "SDL_VIDEO_DRIVER") val = "windows";
+    const char* val = mew_host_env(name);
+    if (!val && name == "SDL_VIDEODRIVER") val = "windows";
+    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";
     static int traced = 0;
     if (traced++ < 16)
         std::fprintf(stderr, "[shim] GetEnvironmentVariableW(\"%s\",cap=%u) -> %s\n",
@@ -1951,8 +1952,9 @@ void shim_KERNEL32_GetEnvironmentVariableA(X64Ctx* c) {
     }
     const uint64_t buf = arg1(c);
     const uint32_t cap = (uint32_t)arg2(c);
-    const char* val = nullptr;
-    if (name == "SDL_VIDEO_DRIVER") val = "windows";
+    const char* val = mew_host_env(name);
+    if (!val && name == "SDL_VIDEODRIVER") val = "windows";
+    if (!val && name == "SDL_VIDEO_DRIVER") val = "windows";
     static int traced = 0;
     if (traced++ < 16)
         std::fprintf(stderr, "[shim] GetEnvironmentVariableA(\"%s\",cap=%u) -> %s\n",
@@ -3796,6 +3798,19 @@ namespace {
 uint64_t g_cmdline_a = 0;
 uint64_t g_cmdline_w = 0;
 uint64_t g_env_w = 0;
+
+// ---- 宿主 env 透传（SDL_* 前缀）----
+// 以前 GetEnvironmentStringsW 只返回 "PATH=C:\"，GetEnvironmentVariableA/W 只特判
+// SDL_VIDEO_DRIVER=windows —— 于是 CI 里设 SDL_RENDER_DRIVER 根本到不了 guest。
+// run 46155264395 实测全程只有 1 次 GetEnvironmentVariableA("SDL3_DYNAMIC_API")，
+// 说明 SDL3 主要靠 CRT 的环境块（GetEnvironmentStringsW 建 _environ）。两条路都喂上。
+static bool mew_env_is_sdl(const char* name) {
+    return name && std::strncmp(name, "SDL_", 4) == 0;
+}
+static const char* mew_host_env(const std::string& name) {
+    if (name.rfind("SDL_", 0) != 0) return nullptr;
+    return std::getenv(name.c_str());
+}
 }
 
 void shim_KERNEL32_GetCommandLineA(X64Ctx* c) {
@@ -3846,14 +3861,32 @@ void shim_SHELL32_CommandLineToArgvW(X64Ctx* c) {
 
 void shim_KERNEL32_GetEnvironmentStringsW(X64Ctx* c) {
     if (!g_env_w) {
-        g_env_w = guest_alloc(c, 256);
+        std::vector<std::pair<std::string, std::string>> vars;
+        vars.emplace_back("PATH", "C:\\");
+        extern char** environ;
+        for (char** e = environ; e && *e; ++e) {
+            const char* eq = std::strchr(*e, '=');
+            if (!eq) continue;
+            const std::string k(*e, (size_t)(eq - *e));
+            if (!mew_env_is_sdl(k.c_str())) continue;
+            vars.emplace_back(k, std::string(eq + 1));
+        }
+        size_t need = 2;  // 结尾双 NUL
+        for (const auto& kv : vars) need += kv.first.size() + 1 + kv.second.size() + 1;
+        g_env_w = guest_alloc(c, (need + 1) * 2);
         uint16_t* p = (uint16_t*)guest_ptr_from_ctx(c, g_env_w);
-        std::memset(p, 0, 256);
-        const char* s = "PATH=C:\\";
         size_t i = 0;
-        for (; s[i]; ++i) p[i] = (uint16_t)s[i];
-        p[i] = 0;      // 第一个字符串结束
-        p[i + 1] = 0;  // 块结束（双 NUL）
+        for (const auto& kv : vars) {
+            for (char ch : kv.first) p[i++] = (uint16_t)(unsigned char)ch;
+            p[i++] = '=';
+            for (char ch : kv.second) p[i++] = (uint16_t)(unsigned char)ch;
+            p[i++] = 0;
+        }
+        p[i] = 0;  // 块结束（双 NUL 的第二个）
+        static int logged = 0;
+        if (logged++ < 3)
+            std::fprintf(stderr, "[shim] GetEnvironmentStringsW -> %zu 项（SDL_* %zu 条）\n",
+                         vars.size(), vars.size() - 1);
     }
     ret0(c, g_env_w);
 }
