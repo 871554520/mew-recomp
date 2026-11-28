@@ -24,6 +24,41 @@ jobs:
             sudo cmake --install /tmp/zydis/build > /dev/null
             sudo ldconfig
           fi
+      # 头文件语法探针：生成的 66 个 TU 是 `g++ -std=c++17 -I runtime/include` 编的，
+      # 但 `Lifter build probe` 只编 mew_lifter，**根本不会碰 x64_sse_helpers.h**，
+      # 所以头文件写错要等到 40 分钟后 stage3 的 shard 编译才炸，白烧一轮。
+      # 这里 20 秒先过一遍：语法 + lifter 实际发射的调用形态（光编头文件查不出实参个数）。
+      - name: Header syntax probe (runtime/include)
+        run: |
+          cat > /tmp/hdr_probe.cpp <<'CPP'
+          #include "x64_sse_helpers.h"
+
+          // lifter 会发射的调用形态各写一遍：签名/实参个数在这里就能对上。
+          // 批次2 之前踩过一次「发射了助手根本没有的参数」，那时没人编过这段。
+          void mew_hdr_probe(X64Ctx* ctx) {
+              const uint64_t a = 0x1000ULL;
+              avx::i_binop(ctx, 0, 1, 2, 16, 4, 0, false);
+              avx::i_binop_mem(ctx, 0, 1, a, 16, 4, 1, true);
+              avx::i_shift(ctx, 0, 1, 0, 4, 5, 16);
+              avx::i_shift_reg(ctx, 0, 1, 2, 1, 4, 16);
+              avx::i_shift_mem(ctx, 0, 1, a, 2, 8, 16);
+              avx::i_shift_lane(ctx, 0, 1, 2, 2, 4, 16);
+              avx::i_shift_lane_mem(ctx, 0, 1, a, 2, 4, 16);
+              avx::pshufb(ctx, 0, 1, 2, 16);
+              avx::pshufb_mem(ctx, 0, 1, a, 16);
+              avx::bitop_reg(ctx, 0, 1, 2, 16, 0);
+              avx::cmpeq_reg(ctx, 0, 1, 2, 16, 4);
+              avx::zero_hi(ctx, 0);
+              sse::pcmpistri(ctx, ctx->xmm[0], ctx->xmm[1], 0x0C);
+              sse::ptest(ctx, ctx->xmm[0], ctx->xmm[1]);
+              (void)sse::cvtss2si(1.0f);
+              (void)sse::cvtsd2si(1.0);
+              (void)sse::cvttsd2si(1.0);
+          }
+          CPP
+          g++ -std=c++17 -fsyntax-only -I runtime/include /tmp/hdr_probe.cpp
+          echo "[hdr] runtime/include 头文件 + 发射形态语法通过"
+
       - name: Build lifter only
         run: |
           set +e

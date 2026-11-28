@@ -2168,6 +2168,11 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
             if (flags & LIFT_STUB_UNKNOWN) {
                 e.stubbed = true;
                 e.out << "  UNIMPL_INSN(0x" << hexStr(rip) << "ULL, \"decode-fail\");\n";
+                // Zydis 解不出来的字节要留指纹：哪个函数、哪个 rip。stub_list 里
+                // 空 mnemonics 列的行大多出自这里，没有 rip 就只能靠猜。
+                e.stubMnems.push_back("decode-fail");
+                std::fprintf(stderr, "[zydis] decode failed va=0x%llx off=0x%zx\n",
+                             (unsigned long long)va, off);
                 e.count++;
             } else {
                 e.unsupported.push_back("decode-fail");
@@ -2785,6 +2790,11 @@ LiftResult liftLinearExCore(const PeImage& pe, uint64_t va, uint32_t size, uint3
     res.iatCall = e.iatCall;
     res.stubbed = e.stubbed;
     res.stubMnems = e.stubMnems;
+    // 诊断：stub 了却一条原因都没记下来 -> 补一个占位标签。
+    // 为什么：stub_list.tsv 里有 12 行 mnemonics 列是空的（0x1401c3760、0x1402aac60 等），
+    // 空列等于「不知道为什么被 stub」，下一批补什么全靠猜。加上标签后至少能二分到
+    // 「解码失败 / 跳转出界 / 目标寄存器不支持」这三类，不用再靠推测。
+    if (res.stubbed && res.stubMnems.empty()) res.stubMnems.push_back("stub-noreason");
     return res;
 }
 
@@ -4187,6 +4197,11 @@ LiftResult liftReachableEx(const PeImage& pe, uint64_t va, uint32_t size, uint32
     res.iatCall = e.iatCall;
     res.stubbed = e.stubbed;
     res.stubMnems = e.stubMnems;
+    // 诊断：stub 了却一条原因都没记下来 -> 补一个占位标签。
+    // 为什么：stub_list.tsv 里有 12 行 mnemonics 列是空的（0x1401c3760、0x1402aac60 等），
+    // 空列等于「不知道为什么被 stub」，下一批补什么全靠猜。加上标签后至少能二分到
+    // 「解码失败 / 跳转出界 / 目标寄存器不支持」这三类，不用再靠推测。
+    if (res.stubbed && res.stubMnems.empty()) res.stubMnems.push_back("stub-noreason");
     return res;
 }
 
