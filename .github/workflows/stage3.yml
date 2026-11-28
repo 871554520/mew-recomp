@@ -124,12 +124,23 @@ jobs:
 
           if [ -n "$URL" ]; then
             echo "[assets] downloading real resources.gpak (resume enabled)"
-            curl -fL -C - --retry 5 --retry-delay 3 --retry-connrefused \
-                 -o resources.gpak "$URL"
-            ls -l resources.gpak
-            python3 -c "import os;n=os.path.getsize('resources.gpak');print('[assets] bytes =',n,'expected 5134616316','OK' if n==5134616316 else 'MISMATCH')"
-            sha256sum resources.gpak | cut -c1-32 || true
-          else
+            # 下载失败 / 字节数不对都退回稀疏包：不能让 5 GB 下载把整轮日志一起带走。
+            if curl -fL -C - --retry 5 --retry-delay 3 --retry-connrefused \
+                 -o resources.gpak "$URL"; then
+              ls -l resources.gpak
+              python3 -c "import os;n=os.path.getsize('resources.gpak');print('[assets] bytes =',n,'expected 5134616316','OK' if n==5134616316 else 'MISMATCH')"
+              sha256sum resources.gpak | cut -c1-32 || true
+              if [ "$(stat -c %s resources.gpak)" != "5134616316" ]; then
+                echo "[assets] byte count mismatch -> sparse fallback"
+                URL=""
+              fi
+            else
+              echo "[assets] download failed -> sparse fallback (this run is a baseline run)"
+              URL=""
+            fi
+          fi
+          if [ -z "$URL" ]; then
+            rm -f resources.gpak
             echo "[assets] sparse fallback: directory table + zero-filled data area"
             truncate -s 5134616316 resources.gpak
             dd if=assets/gpak-dir.bin of=resources.gpak conv=notrunc bs=4096
