@@ -18,6 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Gate 0：比 g++ 快十几毫秒，专门抓「kApis 表引用了没前置声明的垫片函数」。
+      # 这次 H 就是这么挂的（shim_KERNEL32_VerSetConditionMask not declared），
+      # 有了这步，报错会直接给出可以贴回声明区的那一行。
+      - name: Gate 0 - kApis 声明显式检查
+        run: python3 tools/check_shim_decls.py shims/win32_kernel32.cpp
+
       - name: 装 g++
         run: |
           if ! command -v g++ >/dev/null; then
