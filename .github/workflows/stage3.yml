@@ -93,6 +93,22 @@ jobs:
           curl -fL -o Mewgenics.exe https://raw.githubusercontent.com/871554520/mew-decomp/main/Mewgenics.exe
           ls -l Mewgenics.exe
 
+      - name: Prepare assets (GPAK header ready, data holes)
+        run: |
+          # resources.gpak 布局（大肥鱼按字节实测 + 本地独立复算一致）：
+          #   [count: u32]                              = 19,979
+          #   [namelen: u16][name: utf8][size: u32] × n  ← 目录表 824,693 B，在**文件开头**
+          #   [data]                                     ← offset 824,693 起，按记录顺序紧密排列
+          #   Σsize = 5,133,791,623，文件总长 = 5,134,616,316
+          # 仓库里只放目录表（assets/gpak-dir.bin，纯名字+长度，**不含任何资产字节**），
+          # 这里 truncate 出一个长度完全正确的稀疏文件：目录表是真的，数据区是 0。
+          # 这样游戏 CreateFileW / GetFileSize 看到 5,134,616,316 B，loader 能解出全部 19,979 条；
+          # 真正读资源内容会拿到 0 —— 那是下一步（真包直链）才需要的。
+          truncate -s 5134616316 resources.gpak
+          dd if=assets/gpak-dir.bin of=resources.gpak conv=notrunc bs=4096
+          ls -l resources.gpak
+          python3 -c "import struct;f=open('resources.gpak','rb');print('gpak count =',struct.unpack('<I',f.read(4))[0]);f.seek(824693);print('first obj head =',f.read(32))"
+
       - name: Build lifter
         run: |
           mkdir -p generated
