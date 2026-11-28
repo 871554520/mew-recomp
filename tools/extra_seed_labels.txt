@@ -3,15 +3,31 @@
 #       「应改走 extra_seeds 而不是 seeds-inside」，所以只能从这条通道进。
 # 用法：CI 在 mine_hidden_entries.py 生成 generated/extra_seeds.txt 之后追加本文件的 VA 行。
 #
-# run 46149048002 运行期新发现（两个 VA 都不在任何 .pdata 区间内）：
+# =============== run 46149048002 运行期新发现（2 条） ===============
 #
 # 0x140be0ee0  被 0x140c799e0 间接调用；FATAL 在 runner.err:8439
 #              [FATAL] Unmapped indirect target: 0x140be0ee0 (nearest_lo=0x140be0ec0 delta=32)
 #              字节：48 c7 c2 ff ff ff ff = mov rdx,-1，随后 e9 跳走，无 .pdata 条目。
 #              它是 step 28 二次构建唯一收到的种子（runtime_seeds.txt 只有这一条）。
-0x140be0ee0
-#
 # 0x140bba300  被 0x140c7a1f0 间接调用 3 次（discovered_entries.txt 记了 3 行）；
 #              字节：33 d2 / 33 c0 / f0 48 0f b1 11 / c3 = 7 字节原子助手，无 .pdata 条目。
-#              step 28 读文件时它还没写进去（reflow 读得太早），所以上一轮没被收进来。
+#
+# =============== run 46151590541 新暴露的共享尾声桩（6 条） ===============
+# 背景：0x140c79b00 里 110 万次 dispatch miss，每次漏 8 字节栈 → 栈从 0x7fb6fce00000
+#       跌到 0x7fb6fbfffff8（-14 MB）才 SIGSEGV。这些桩服务于 SRW / 条件变量：
+#       SleepConditionVariableSRW 从 75,659 涨到 4,575,307，就是「锁桩不映射 → 永远不成立 → 自旋」。
+# 下面每条的形态都按本地反汇编核对过（都不在 .pdata）：
+# 0x140be0e90  test r8d,r8d / js / movsxd rax,r8d / imul r8,rax,0xf4240 / jmp 0x140bddbf0
+# 0x140be0ea4  mov r8,-1 / jmp 0x140bddbf0
+# 0x140be0eb0  mov r8,-1 / jmp 0x140bddbf0      ← 本轮新暴露，文件里此前没有
+# 0x140be0ec0  test edx,edx / js / movsxd rdx,edx / imul rdx,rax,0xf4240 / jmp
+# 0x140be0ed3  mov rdx,-1 / jmp 0x140bf81e0
+# 0x140bba2f0  prefetchw / mov eax,[rcx] / mov edx,eax / lock cmpxchg / jne / ret
+0x140be0e90
+0x140be0ea4
+0x140be0eb0
+0x140be0ec0
+0x140be0ed3
+0x140bba2f0
 0x140bba300
+0x140be0ee0
