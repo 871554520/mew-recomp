@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <cctype>
 #include <pthread.h>
+#include <sched.h>      // sched_yield()：SleepConditionVariableSRW 释放 SRW 后让一下 CPU
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <cerrno>
@@ -1537,24 +1538,27 @@ void shim_KERNEL32_SleepConditionVariableSRW(X64Ctx* c) { mew_api_hit("SleepCond
                      ret ? "signaled" : "timeout",
                      (unsigned long long)ret, (unsigned long long)cur_fn_va());
     (void)cv_for; (void)srw_for;
-    // 反空转：real_threads 下这条「假装已唤醒」会被**同一线程**调用上亿次
-    // （run 46090073899 实测 205,042,261 次 / 600s ≈ 34 万次/秒），CPU 全被它吃掉，
-    // 负责真正 signal 的 worker 线程没机会推进，于是谁也不动。
-    // 前 1 万次保持零开销；之后每次退让 50µs，把空转压到每秒几千次。
-    // 计数用 thread_local —— 不需要锁也不需要 atomic。
-    // 退让时长用环境变量控制，**默认 0 = 不退让**（保持 run 46090073899/adfd412 的
-    // 行为：那次 2.05 亿次空转但主线程照样推进到了 SDL_VideoInit）。
-    // 为什么改成可关：同一条路径上「退让」和「空转」可能是相反的，
-    // 2.05 亿次空转只用了 600s 里的一部分，加 50µs 退让后同样次数要上千秒，
-    // 反而会把 600s 预算耗光。这样一笔改动就能 A/B 两种配置，不用来回改代码。
-    static const long cv_sleep_us = [] {
-        const char* e = std::getenv("MEW_CV_SLEEP_US");
-        return e ? std::strtol(e, nullptr, 0) : 0L;
-    }();
-    static thread_local uint64_t spin_hits = 0;
-    if (ret && ms == 0xFFFFFFFFu && cv_sleep_us > 0) {
-        ++spin_hits;
-        if (spin_hits > 10000 && real_threads()) usleep((useconds_t)cv_sleep_us);
+    // **真正的语义：释放调用方持有的 SRW → 等待 → 重新获取。**
+    // 以前这里只「假装已唤醒」就返回，SRW 一直攥在等待方手里；别的线程要改 predicate
+    // 就必须先拿同一把 SRW，于是全都堵在 pthread_rwlock_wrlock 里进不来，
+    // 结果没有任何线程能让 predicate 变化，等待方在 _Cnd_wait 里空转到超时
+    // （run 46098382772 实测 216,779,760 次；adfd412 的 205,042,261 次是同一个死结，
+    //  那次能推进只是抢锁顺序恰好对）。这才是「关检测 / 加退让都推不动」的真正原因。
+    {
+        SrwSlot* s = srw_for(arg1(c), false);   // false：调用方一定已经持有，不要新建
+        const uint32_t flags = (uint32_t)arg3(c);
+        const bool shared = (flags & 1u) != 0;  // CONDITION_VARIABLE_LOCKMODE_SHARED
+        if (s) {
+            pthread_rwlock_unlock(&s->rw);
+            if (shared) __atomic_sub_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+            sched_yield();                      // 让抢锁的线程先跑，别自己立刻拿回来
+            if (shared) {
+                pthread_rwlock_rdlock(&s->rw);
+                __atomic_add_fetch(&s->shared, 1, __ATOMIC_SEQ_CST);
+            } else {
+                pthread_rwlock_wrlock(&s->rw);
+            }
+        }
     }
     ret0(c, ret);
 }
