@@ -412,6 +412,38 @@ inline void pcmpestri(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm) 
     c->rcx = (uint64_t)(uint32_t)idx;
 }
 
+// PCMPISTRI：隐式长度版（长度由串尾 0 决定，**不读** RAX/RDX）。
+// 长度口径取「第一个 0 之前的元素个数」（不含 0 本身）：
+//   MSVC 的 strstr 把 needle 放进 xmm 后靠这个长度做 equal-ordered 匹配，
+//   若把终止 0 也算进长度，匹配还会要求 haystack 同位置也是 0，等于只在串尾命中 —— 与 strstr 语义相反。
+//   顺带：haystack 的 0 落在第 15 字节时，不含 0 的长度=15 < 16，pcmp_flags 才能正确置 zf（串已结束）。
+inline int pcmp_implen(const XmmReg& r, int n_elem, int unit) {
+    for (int i = 0; i < n_elem; ++i) {
+        if (unit == 1) { if (r.u8[i] == 0) return i; }
+        else            { if (r.u16[i] == 0) return i; }
+    }
+    return n_elem;
+}
+
+inline void pcmpistri(X64Ctx* c, const XmmReg& a, const XmmReg& b, uint8_t imm) {
+    const int fmt = imm & 3;
+    const int unit = (fmt == 1 || fmt == 3) ? 2 : 1;
+    const int n_elem = 16 / unit;
+    const int nA = pcmp_implen(a, n_elem, unit);
+    const int nB = pcmp_implen(b, n_elem, unit);
+    const PcmpStr r = pcmp_core(a, b, nA, nB, imm);
+    pcmp_flags(c, r, nA, nB);
+    int idx = n_elem;
+    if (r.bits) {
+        if (imm & 0x40) {
+            for (int i = 0; i < n_elem; ++i) if (r.bits & (1u << i)) idx = i;
+        } else {
+            for (int i = 0; i < n_elem; ++i) if (r.bits & (1u << i)) { idx = i; break; }
+        }
+    }
+    c->rcx = (uint64_t)(uint32_t)idx;
+}
+
 
 
 }  // namespace sse
